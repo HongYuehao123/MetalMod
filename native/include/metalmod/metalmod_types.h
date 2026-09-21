@@ -33,6 +33,8 @@ typedef struct MetalModConfig {
     bool enableHDR;
     bool enableUIOverlay;
     uint32_t targetDisplayFPS;     // e.g. 60 or 120 (ProMotion)
+    bool enableUnifiedMemoryPool;
+    bool enableMemoryPressureHandler;
 } MetalModConfig;
 
 typedef struct MetalModFrameParams {
@@ -57,6 +59,18 @@ typedef struct MetalModTelemetry {
     uint64_t totalFramesRendered;
     uint64_t totalFramesPresented;
 } MetalModTelemetry;
+
+typedef struct MetalModMemoryTelemetry {
+    uint64_t totalPhysicalMemoryBytes;
+    uint64_t availableMemoryBytes;
+    uint64_t compressedMemoryBytes;
+    uint64_t swapUsedBytes;
+    uint64_t processResidentBytes;
+    uint64_t metalAllocatedBytes;
+    uint64_t metalMaxWorkingSetBytes;
+    int32_t memoryPressureLevel; // 0 = Normal, 1 = Warning, 2 = Critical
+    int32_t reserved;            // 8-byte alignment padding
+} MetalModMemoryTelemetry;
 
 #ifdef __cplusplus
 }

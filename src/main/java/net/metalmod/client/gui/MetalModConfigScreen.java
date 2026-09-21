@@ -68,13 +68,22 @@ public class MetalModConfigScreen extends Screen {
             VulkanFrameManager.getInstance().markConfigDirty();
             MetalBridge.updateWindowTitle();
             btn.setMessage(getDisplayRateText());
-        }).bounds(centerX - buttonWidth / 2, startY + 78, buttonWidth, buttonHeight).build();
+        }).bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(displayRateButton);
 
-        // 5. Done Button
+        // 5. Zero-Copy UMA Memory Pool Button
+        Button umaButton = Button.builder(getUmaText(), btn -> {
+            MetalConfig.INSTANCE.enableUnifiedMemoryPool = !MetalConfig.INSTANCE.enableUnifiedMemoryPool;
+            MetalConfig.INSTANCE.save();
+            VulkanFrameManager.getInstance().markConfigDirty();
+            btn.setMessage(getUmaText());
+        }).bounds(centerX - buttonWidth / 2, startY + 96, buttonWidth, buttonHeight).build();
+        this.addRenderableWidget(umaButton);
+
+        // 6. Done Button
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 116, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 128, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
     }
 
@@ -92,6 +101,10 @@ public class MetalModConfigScreen extends Screen {
 
     private Component getDisplayRateText() {
         return Component.literal("Target Display: " + MetalConfig.INSTANCE.targetDisplayFPS + " Hz (ProMotion)");
+    }
+
+    private Component getUmaText() {
+        return Component.literal("Apple Silicon UMA Zero-Copy: " + (MetalConfig.INSTANCE.enableUnifiedMemoryPool ? "ON" : "OFF"));
     }
 
     @Override

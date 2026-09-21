@@ -32,6 +32,12 @@ Leveraging Minecraft's new **Vulkan backend** and Apple's **Metal 4** framework,
 6. **Modern Panama FFI Architecture**:
    - Java 22+ Foreign Function & Memory API eliminates JNI wrapper overhead and simplifies native calls.
 
+7. **Apple Silicon Unified Memory Architecture (UMA) Engine**:
+   - **Zero-Copy Shared Buffers**: Direct allocation of Metal buffers with `MTLResourceStorageModeShared` and `MTLResourceCPUCacheModeWriteCombined`, mapped into Java `MemorySegment` to eliminate redundant host-staging and GPU-blit memory copies.
+   - **16 KB Hardware Page Alignment**: Matches Apple Silicon ARM64 16 KB virtual memory pages to eliminate sub-allocator page fragmentation and slack.
+   - **Kernel Memory Pressure Awareness**: Intercepts macOS `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` kernel events. Implements conservative, non-destructive memory reclamation using Apple Mach VM `madvise(MADV_FREE_REUSABLE)` without intrusive GC stutters.
+   - **Live Mach VM Telemetry**: Real-time tracking of Apple Silicon physical RAM, process resident footprint, Metal GPU working set cap, and disk swap usage on the F3 overlay.
+
 ---
 
 ## Architecture Diagram

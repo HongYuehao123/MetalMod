@@ -27,6 +27,11 @@ public final class MetalBridge {
     private static MethodHandle mh_is_temporal_supported;
     private static MethodHandle mh_is_frame_gen_supported;
     private static MethodHandle mh_update_window_title;
+    private static MethodHandle mh_uma_alloc;
+    private static MethodHandle mh_uma_free;
+    private static MethodHandle mh_uma_purge_idle;
+    private static MethodHandle mh_get_memory_telemetry;
+    private static MethodHandle mh_memory_pressure_init;
 
     // Struct Layout: MetalModConfig
     // uint32_t inputWidth, inputHeight, outputWidth, outputHeight (4 x 4 = 16 bytes)
@@ -38,6 +43,9 @@ public final class MetalBridge {
     // bool enableUIOverlay (1 byte)
     // 2 bytes padding
     // uint32_t targetDisplayFPS (4 bytes)
+    // bool enableUnifiedMemoryPool (1 byte)
+    // bool enableMemoryPressureHandler (1 byte)
+    // 2 bytes padding
     public static final GroupLayout CONFIG_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT.withName("inputWidth"),
             ValueLayout.JAVA_INT.withName("inputHeight"),
@@ -50,7 +58,32 @@ public final class MetalBridge {
             ValueLayout.JAVA_BOOLEAN.withName("enableHDR"),
             ValueLayout.JAVA_BOOLEAN.withName("enableUIOverlay"),
             MemoryLayout.paddingLayout(2),
-            ValueLayout.JAVA_INT.withName("targetDisplayFPS")
+            ValueLayout.JAVA_INT.withName("targetDisplayFPS"),
+            ValueLayout.JAVA_BOOLEAN.withName("enableUnifiedMemoryPool"),
+            ValueLayout.JAVA_BOOLEAN.withName("enableMemoryPressureHandler"),
+            MemoryLayout.paddingLayout(2)
+    );
+
+    // Struct Layout: MetalModMemoryTelemetry (64 bytes total)
+    // uint64_t totalPhysicalMemoryBytes (8 bytes)
+    // uint64_t availableMemoryBytes (8 bytes)
+    // uint64_t compressedMemoryBytes (8 bytes)
+    // uint64_t swapUsedBytes (8 bytes)
+    // uint64_t processResidentBytes (8 bytes)
+    // uint64_t metalAllocatedBytes (8 bytes)
+    // uint64_t metalMaxWorkingSetBytes (8 bytes)
+    // int32_t memoryPressureLevel (4 bytes)
+    // int32_t reserved (4 bytes)
+    public static final GroupLayout MEMORY_TELEMETRY_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.JAVA_LONG.withName("totalPhysicalMemoryBytes"),
+            ValueLayout.JAVA_LONG.withName("availableMemoryBytes"),
+            ValueLayout.JAVA_LONG.withName("compressedMemoryBytes"),
+            ValueLayout.JAVA_LONG.withName("swapUsedBytes"),
+            ValueLayout.JAVA_LONG.withName("processResidentBytes"),
+            ValueLayout.JAVA_LONG.withName("metalAllocatedBytes"),
+            ValueLayout.JAVA_LONG.withName("metalMaxWorkingSetBytes"),
+            ValueLayout.JAVA_INT.withName("memoryPressureLevel"),
+            ValueLayout.JAVA_INT.withName("reserved")
     );
 
     // Struct Layout: MetalModFrameParams
@@ -197,6 +230,31 @@ public final class MetalBridge {
                 FunctionDescriptor.ofVoid()
         );
 
+        mh_uma_alloc = linker.downcallHandle(
+                lookup.find("metalmod_uma_alloc").orElseThrow(),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        );
+
+        mh_uma_free = linker.downcallHandle(
+                lookup.find("metalmod_uma_free").orElseThrow(),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+
+        mh_uma_purge_idle = linker.downcallHandle(
+                lookup.find("metalmod_uma_purge_idle").orElseThrow(),
+                FunctionDescriptor.ofVoid()
+        );
+
+        mh_get_memory_telemetry = linker.downcallHandle(
+                lookup.find("metalmod_get_memory_telemetry").orElseThrow(),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+
+        mh_memory_pressure_init = linker.downcallHandle(
+                lookup.find("metalmod_memory_pressure_init").orElseThrow(),
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+        );
+
         available = true;
         System.out.println("[MetalMod] Successfully loaded libmetalmod.dylib via Panama FFI!");
     }
@@ -308,6 +366,55 @@ public final class MetalBridge {
             mh_update_window_title.invokeExact();
         } catch (Throwable t) {
             // non-fatal
+        }
+    }
+
+    public static MemorySegment allocateUnifiedBuffer(long size) {
+        if (!available || size <= 0 || mh_uma_alloc == null) return MemorySegment.NULL;
+        try {
+            MemorySegment rawPtr = (MemorySegment) mh_uma_alloc.invokeExact(size);
+            if (rawPtr.equals(MemorySegment.NULL) || rawPtr.address() == 0) {
+                return MemorySegment.NULL;
+            }
+            return MemorySegment.ofAddress(rawPtr.address()).reinterpret(size);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to allocate UMA buffer of size " + size, t);
+        }
+    }
+
+    public static void freeUnifiedBuffer(MemorySegment segment) {
+        if (!available || segment == null || segment.equals(MemorySegment.NULL) || mh_uma_free == null) return;
+        try {
+            mh_uma_free.invokeExact(segment);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to free UMA buffer", t);
+        }
+    }
+
+    public static void purgeIdleMemory() {
+        if (!available || mh_uma_purge_idle == null) return;
+        try {
+            mh_uma_purge_idle.invokeExact();
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to purge idle memory", t);
+        }
+    }
+
+    public static void getMemoryTelemetry(MemorySegment outTelemetry) {
+        if (!available || outTelemetry == null || outTelemetry.equals(MemorySegment.NULL) || mh_get_memory_telemetry == null) return;
+        try {
+            mh_get_memory_telemetry.invokeExact(outTelemetry);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to get memory telemetry", t);
+        }
+    }
+
+    public static int initMemoryPressure(MemorySegment callbackStub) {
+        if (!available || mh_memory_pressure_init == null) return -1;
+        try {
+            return (int) mh_memory_pressure_init.invokeExact(callbackStub);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to init memory pressure listener", t);
         }
     }
 }

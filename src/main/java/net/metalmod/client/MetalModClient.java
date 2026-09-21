@@ -5,6 +5,8 @@ import net.metalmod.config.MetalConfig;
 import net.metalmod.ffi.MetalBridge;
 import net.metalmod.render.VulkanFrameManager;
 
+import net.metalmod.memory.UnifiedMemoryManager;
+
 import java.lang.foreign.MemorySegment;
 
 public class MetalModClient implements ClientModInitializer {
@@ -28,6 +30,9 @@ public class MetalModClient implements ClientModInitializer {
             }
             VulkanFrameManager.getInstance().markConfigDirty();
 
+            // Initialize Apple Silicon Unified Memory Architecture engine
+            UnifiedMemoryManager.getInstance().initialize();
+
             // Start background telemetry & macOS window title updater thread
             Thread titleThread = new Thread(() -> {
                 try {
@@ -35,6 +40,7 @@ public class MetalModClient implements ClientModInitializer {
                     Thread.sleep(2000);
                     while (!Thread.currentThread().isInterrupted()) {
                         VulkanFrameManager.getInstance().onFrameBegin();
+                        UnifiedMemoryManager.getInstance().updateTelemetry();
                         MetalBridge.updateWindowTitle();
                         Thread.sleep(1000);
                     }

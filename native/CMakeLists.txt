@@ -25,6 +25,7 @@ set(SOURCES
     src/metalmod_interpolator.mm
     src/metalmod_compositor.mm
     src/metalmod_pacer.mm
+    src/metalmod_memory.mm
 )
 
 add_library(metalmod SHARED ${SOURCES})

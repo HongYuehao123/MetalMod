@@ -28,6 +28,24 @@ public class DebugScreenOverlayMixin {
             lines.add("§6[MetalMod Telemetry]§r Render FPS: §a" + String.format("%.1f", mgr.getRenderFPS()) +
                       "§r | Display FPS: §a" + String.format("%.1f", mgr.getPresentedFPS()) +
                       "§r | GPU Frame Time: §e" + String.format("%.2f ms", mgr.getGpuFrameTimeMs()) + "§r");
+
+            if (config.enableUnifiedMemoryPool) {
+                net.metalmod.memory.UnifiedMemoryManager mem = net.metalmod.memory.UnifiedMemoryManager.getInstance();
+                long totalRam = mem.getTotalPhysicalMemory();
+                long availRam = mem.getAvailableMemory();
+                long resident = mem.getProcessResident();
+                long metalAlloc = mem.getMetalAllocated();
+                long metalMax = mem.getMetalMaxWorkingSet();
+                long swap = mem.getSwapUsed();
+
+                lines.add("§6[MetalMod UMA Memory]§r RAM: §a" + net.metalmod.memory.UnifiedMemoryManager.formatBytes(totalRam - availRam) +
+                          "§r / " + net.metalmod.memory.UnifiedMemoryManager.formatBytes(totalRam) +
+                          " | Footprint: §b" + net.metalmod.memory.UnifiedMemoryManager.formatBytes(resident) +
+                          "§r | Pressure: " + mem.getPressureString());
+                lines.add("§6[MetalMod Metal VRAM]§r Allocated: §e" + net.metalmod.memory.UnifiedMemoryManager.formatBytes(metalAlloc) +
+                          "§r (Cap: " + net.metalmod.memory.UnifiedMemoryManager.formatBytes(metalMax) +
+                          ") | Swap: §d" + net.metalmod.memory.UnifiedMemoryManager.formatBytes(swap) + "§r");
+            }
         }
     }
 }

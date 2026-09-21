@@ -1,6 +1,7 @@
 #pragma once
 
 #include "metalmod_types.h"
+#include "metalmod_memory.h"
 #include "vulkan/vulkan_metal.h"
 
 #ifdef __cplusplus

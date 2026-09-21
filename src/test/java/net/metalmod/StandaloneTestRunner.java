@@ -91,6 +91,9 @@ public class StandaloneTestRunner {
             System.out.println("PASS");
         }
 
+        // 6. Unified Memory Architecture (UMA) Engine Tests
+        UnifiedMemoryTest.runTests();
+
         System.out.println("==================================================");
         System.out.println("ALL TESTS PASSED SUCCESSFULLY! Ready for in-game execution.");
         System.out.println("==================================================");

@@ -64,6 +64,8 @@ public class MetalConfig {
     public boolean enableHDR = false;
     public boolean enableUIOverlay = true;
     public int targetDisplayFPS = 120; // ProMotion 120Hz default
+    public boolean enableUnifiedMemoryPool = true; // Apple Silicon 16KB zero-copy UMA pool
+    public boolean enableMemoryPressureHandler = true; // macOS kernel memory pressure listener
 
     public void load() {
         if (!CONFIG_FILE.exists()) {
@@ -89,6 +91,8 @@ public class MetalConfig {
             this.enableHDR = Boolean.parseBoolean(props.getProperty("enableHDR", "false"));
             this.enableUIOverlay = Boolean.parseBoolean(props.getProperty("enableUIOverlay", "true"));
             this.targetDisplayFPS = Integer.parseInt(props.getProperty("targetDisplayFPS", "120"));
+            this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "true"));
+            this.enableMemoryPressureHandler = Boolean.parseBoolean(props.getProperty("enableMemoryPressureHandler", "true"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());
         }
@@ -109,6 +113,8 @@ public class MetalConfig {
                 props.setProperty("enableHDR", Boolean.toString(this.enableHDR));
                 props.setProperty("enableUIOverlay", Boolean.toString(this.enableUIOverlay));
                 props.setProperty("targetDisplayFPS", Integer.toString(this.targetDisplayFPS));
+                props.setProperty("enableUnifiedMemoryPool", Boolean.toString(this.enableUnifiedMemoryPool));
+                props.setProperty("enableMemoryPressureHandler", Boolean.toString(this.enableMemoryPressureHandler));
                 props.store(writer, "MetalMod Apple Silicon Configuration");
             }
         } catch (Exception e) {

@@ -171,6 +171,8 @@ public final class VulkanFrameManager {
         persistentConfigSegment.set(ValueLayout.JAVA_BOOLEAN, 28, config.enableHDR);
         persistentConfigSegment.set(ValueLayout.JAVA_BOOLEAN, 29, config.enableUIOverlay);
         persistentConfigSegment.set(ValueLayout.JAVA_INT, 32, config.targetDisplayFPS);
+        persistentConfigSegment.set(ValueLayout.JAVA_BOOLEAN, 36, config.enableUnifiedMemoryPool);
+        persistentConfigSegment.set(ValueLayout.JAVA_BOOLEAN, 37, config.enableMemoryPressureHandler);
 
         MetalBridge.configure(persistentConfigSegment);
     }
