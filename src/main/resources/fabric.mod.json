@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "metalmod",
+  "version": "1.0.0",
+  "name": "MetalMod",
+  "description": "Native Apple Silicon MetalFX Upscaling (Spatial & Temporal) and Metal 4 Frame Generation for Minecraft Vulkan backend.",
+  "authors": [
+    "Antigravity"
+  ],
+  "contact": {
+    "homepage": "https://github.com/metalmod/metalmod"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.metalmod.client.MetalModClient"
+    ],
+    "modmenu": [
+      "net.metalmod.client.gui.MetalModMenuApiImpl"
+    ]
+  },
+  "mixins": [
+    "metalmod.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": ">=26.2",
+    "java": ">=22"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}

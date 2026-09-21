@@ -1,0 +1,43 @@
+plugins {
+    id 'fabric-loom' version '1.8-SNAPSHOT' apply false
+    id 'java'
+}
+
+group = 'net.metalmod'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_22
+    targetCompatibility = JavaVersion.VERSION_22
+}
+
+repositories {
+    mavenCentral()
+    maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    // Loom dependencies configured when running inside Loom
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+task compileNative(type: Exec) {
+    description = 'Compiles the native Metal 4 library using CMake'
+    workingDir = file('native')
+    commandLine 'sh', '-c', 'cmake -B build -S . && cmake --build build --config Release'
+    doLast {
+        copy {
+            from 'native/build/libmetalmod.dylib'
+            into 'src/main/resources/natives'
+        }
+    }
+}
+
+processResources {
+    dependsOn compileNative
+}
+
+test {
+    useJUnitPlatform()
+}

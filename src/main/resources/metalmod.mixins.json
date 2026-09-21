@@ -1,0 +1,16 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "net.metalmod.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "GameRendererMixin",
+    "WindowMixin",
+    "RenderTargetMixin",
+    "MinecraftMixin",
+    "DebugScreenOverlayMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}
