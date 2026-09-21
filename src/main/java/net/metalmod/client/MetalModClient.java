@@ -33,6 +33,17 @@ public class MetalModClient implements ClientModInitializer {
             // Initialize Apple Silicon Unified Memory Architecture engine
             UnifiedMemoryManager.getInstance().initialize();
 
+            // Install Apple Silicon UMA Allocator into LWJGL MemoryUtil
+            if (MetalConfig.INSTANCE.enableUnifiedMemoryPool) {
+                try {
+                    System.setProperty("org.lwjgl.system.allocator", "net.metalmod.memory.MetalMemoryAllocator");
+                    org.lwjgl.system.Configuration.MEMORY_ALLOCATOR.set(new net.metalmod.memory.MetalMemoryAllocator());
+                    System.out.println("[MetalMod UMA] Successfully installed Apple Silicon 16KB UMA allocator into LWJGL!");
+                } catch (Throwable t) {
+                    System.err.println("[MetalMod UMA] Note: LWJGL allocator dynamic bind: " + t.getMessage());
+                }
+            }
+
             // Start background telemetry & macOS window title updater thread
             Thread titleThread = new Thread(() -> {
                 try {

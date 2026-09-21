@@ -28,7 +28,11 @@ public final class MetalBridge {
     private static MethodHandle mh_is_frame_gen_supported;
     private static MethodHandle mh_update_window_title;
     private static MethodHandle mh_uma_alloc;
+    private static MethodHandle mh_uma_calloc;
+    private static MethodHandle mh_uma_realloc;
     private static MethodHandle mh_uma_free;
+    private static MethodHandle mh_uma_aligned_alloc;
+    private static MethodHandle mh_uma_aligned_free;
     private static MethodHandle mh_uma_purge_idle;
     private static MethodHandle mh_get_memory_telemetry;
     private static MethodHandle mh_memory_pressure_init;
@@ -234,9 +238,28 @@ public final class MetalBridge {
                 lookup.find("metalmod_uma_alloc").orElseThrow(),
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
         );
+        mh_uma_calloc = linker.downcallHandle(
+                lookup.find("metalmod_uma_calloc").orElseThrow(),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+
+        mh_uma_realloc = linker.downcallHandle(
+                lookup.find("metalmod_uma_realloc").orElseThrow(),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        );
 
         mh_uma_free = linker.downcallHandle(
                 lookup.find("metalmod_uma_free").orElseThrow(),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+
+        mh_uma_aligned_alloc = linker.downcallHandle(
+                lookup.find("metalmod_uma_aligned_alloc").orElseThrow(),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
+        );
+
+        mh_uma_aligned_free = linker.downcallHandle(
+                lookup.find("metalmod_uma_aligned_free").orElseThrow(),
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
 
@@ -388,6 +411,49 @@ public final class MetalBridge {
             mh_uma_free.invokeExact(segment);
         } catch (Throwable t) {
             throw new RuntimeException("Failed to free UMA buffer", t);
+        }
+    }
+
+    public static MemorySegment allocateUnifiedCalloc(long num, long size) {
+        if (!available || num <= 0 || size <= 0 || mh_uma_calloc == null) return MemorySegment.NULL;
+        try {
+            MemorySegment rawPtr = (MemorySegment) mh_uma_calloc.invokeExact(num, size);
+            if (rawPtr.equals(MemorySegment.NULL) || rawPtr.address() == 0) return MemorySegment.NULL;
+            return MemorySegment.ofAddress(rawPtr.address()).reinterpret(num * size);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to calloc UMA buffer", t);
+        }
+    }
+
+    public static MemorySegment reallocateUnified(long address, long newSize) {
+        if (!available || mh_uma_realloc == null) return MemorySegment.NULL;
+        try {
+            MemorySegment oldPtr = (address == 0) ? MemorySegment.NULL : MemorySegment.ofAddress(address);
+            MemorySegment rawPtr = (MemorySegment) mh_uma_realloc.invokeExact(oldPtr, newSize);
+            if (rawPtr.equals(MemorySegment.NULL) || rawPtr.address() == 0) return MemorySegment.NULL;
+            return MemorySegment.ofAddress(rawPtr.address()).reinterpret(newSize);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to realloc UMA buffer", t);
+        }
+    }
+
+    public static MemorySegment allocateUnifiedAligned(long alignment, long size) {
+        if (!available || size <= 0 || mh_uma_aligned_alloc == null) return MemorySegment.NULL;
+        try {
+            MemorySegment rawPtr = (MemorySegment) mh_uma_aligned_alloc.invokeExact(alignment, size);
+            if (rawPtr.equals(MemorySegment.NULL) || rawPtr.address() == 0) return MemorySegment.NULL;
+            return MemorySegment.ofAddress(rawPtr.address()).reinterpret(size);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to allocate aligned UMA buffer", t);
+        }
+    }
+
+    public static void freeUnifiedBufferAddress(long address) {
+        if (!available || address == 0 || mh_uma_free == null) return;
+        try {
+            mh_uma_free.invokeExact(MemorySegment.ofAddress(address));
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to free UMA buffer address 0x" + Long.toHexString(address), t);
         }
     }
 

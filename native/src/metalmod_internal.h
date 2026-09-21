@@ -36,6 +36,7 @@
 @property (nonatomic, strong) id<MTLTexture> upscaledTexture;
 @property (nonatomic, strong) id<MTLTexture> prevColorTexture;
 @property (nonatomic, strong) id<MTLTexture> interpolatedTexture;
+@property (nonatomic, strong) id<MTLTexture> fallbackColorTexture;
 
 // UI Compositor pipeline
 @property (nonatomic, strong) id<MTLRenderPipelineState> compositePipelineState;

@@ -76,5 +76,33 @@ public class UnifiedMemoryTest {
         System.out.print("[UMA TEST 3] Testing non-destructive idle scratch purge (MADV_FREE_REUSABLE)... ");
         MetalBridge.purgeIdleMemory();
         System.out.println("PASS");
+
+        // Test 4: MetalMemoryAllocator (LWJGL Interface)
+        System.out.print("[UMA TEST 4] Testing MetalMemoryAllocator (malloc, calloc, realloc, aligned, free)... ");
+        net.metalmod.memory.MetalMemoryAllocator alloc = new net.metalmod.memory.MetalMemoryAllocator();
+        long p1 = alloc.malloc(32768L);
+        if (p1 == 0L || (p1 & 16383L) != 0) {
+            System.out.println("FAIL (p1 not allocated or not 16KB aligned: 0x" + Long.toHexString(p1) + ")");
+            System.exit(1);
+        }
+        long p2 = alloc.calloc(4, 8192L);
+        if (p2 == 0L) {
+            System.out.println("FAIL (calloc failed)");
+            System.exit(1);
+        }
+        long p3 = alloc.realloc(p1, 65536L);
+        if (p3 == 0L) {
+            System.out.println("FAIL (realloc failed)");
+            System.exit(1);
+        }
+        long p4 = alloc.aligned_alloc(32768L, 32768L);
+        if (p4 == 0L) {
+            System.out.println("FAIL (aligned_alloc failed)");
+            System.exit(1);
+        }
+        alloc.free(p2);
+        alloc.free(p3);
+        alloc.aligned_free(p4);
+        System.out.println("PASS");
     }
 }

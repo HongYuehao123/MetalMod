@@ -80,6 +80,73 @@ void metalmod_uma_free(void* ptr) {
     }
 }
 
+void* metalmod_uma_calloc(size_t num, size_t size) {
+    size_t total = num * size;
+    void *ptr = metalmod_uma_alloc(total);
+    if (ptr) {
+        memset(ptr, 0, align_up_16k(total));
+    }
+    return ptr;
+}
+
+void* metalmod_uma_realloc(void* ptr, size_t newSize) {
+    if (!ptr) return metalmod_uma_alloc(newSize);
+    if (newSize == 0) {
+        metalmod_uma_free(ptr);
+        return nullptr;
+    }
+
+    size_t newAligned = align_up_16k(newSize);
+
+    id<MTLBuffer> oldBuf = nil;
+    {
+        std::lock_guard<std::mutex> lock(g_UmaMutex);
+        auto it = g_UmaAllocations.find(ptr);
+        if (it != g_UmaAllocations.end()) {
+            oldBuf = it->second;
+        }
+    }
+
+    if (!oldBuf) {
+        return metalmod_uma_alloc(newSize);
+    }
+
+    size_t oldLen = [oldBuf length];
+    if (newAligned <= oldLen) {
+        return ptr; // Already fits inside the 16KB-aligned memory page
+    }
+
+    MetalModState *state = [MetalModState sharedState];
+    id<MTLDevice> device = state.device ?: MTLCreateSystemDefaultDevice();
+    if (!device) return nullptr;
+
+    MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
+    id<MTLBuffer> newBuf = [device newBufferWithLength:newAligned options:options];
+    if (!newBuf) return nullptr;
+
+    void *newPtr = [newBuf contents];
+    memcpy(newPtr, ptr, oldLen);
+
+    {
+        std::lock_guard<std::mutex> lock(g_UmaMutex);
+        g_UmaAllocations.erase(ptr);
+        g_UmaAllocations[newPtr] = newBuf;
+    }
+    madvise(ptr, oldLen, MADV_FREE_REUSABLE);
+
+    return newPtr;
+}
+
+void* metalmod_uma_aligned_alloc(size_t alignment, size_t size) {
+    size_t effectiveAlign = alignment > kAppleSiliconPageSize ? alignment : kAppleSiliconPageSize;
+    size_t alignedSize = (size + effectiveAlign - 1) & ~(effectiveAlign - 1);
+    return metalmod_uma_alloc(alignedSize);
+}
+
+void metalmod_uma_aligned_free(void* ptr) {
+    metalmod_uma_free(ptr);
+}
+
 void metalmod_uma_purge_idle(void) {
     // Conservative trimming:
     // Only inform Mach VM about uncommitted or idle reusable pages.

@@ -63,6 +63,18 @@ public abstract class RenderTargetMixin {
     )
     private void onBlitToScreen(int width, int height, CallbackInfo ci) {
         if (isMainTarget()) {
+            try {
+                long texId = (long) ((com.mojang.blaze3d.pipeline.RenderTarget) (Object) this).getColorTextureId();
+                if (texId != 0) {
+                    VulkanFrameManager.getInstance().setVulkanImages(
+                        java.lang.foreign.MemorySegment.ofAddress(texId),
+                        java.lang.foreign.MemorySegment.NULL,
+                        java.lang.foreign.MemorySegment.NULL,
+                        java.lang.foreign.MemorySegment.NULL
+                    );
+                }
+            } catch (Throwable ignored) {
+            }
             VulkanFrameManager.getInstance().onFramePresent(70.0f, 0.05f, 1000.0f);
         }
     }

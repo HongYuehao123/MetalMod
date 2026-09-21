@@ -180,6 +180,25 @@ public class CallbackInfoReturnable<R> extends CallbackInfo {
     public R getReturnValue() { return null; }
     public void setReturnValue(R returnValue) {}
 }
+""",
+    "org/lwjgl/system/MemoryUtil.java": """package org.lwjgl.system;
+public class MemoryUtil {
+    public interface MemoryAllocator {
+        long malloc(long size);
+        long calloc(long num, long size);
+        long realloc(long ptr, long size);
+        void free(long ptr);
+        long aligned_alloc(long alignment, long size);
+        void aligned_free(long ptr);
+    }
+}
+""",
+    "org/lwjgl/system/Configuration.java": """package org.lwjgl.system;
+public class Configuration<T> {
+    public static final Configuration<Object> MEMORY_ALLOCATOR = new Configuration<>();
+    public void set(T value) {}
+    public T get() { return null; }
+}
 """
 }
 

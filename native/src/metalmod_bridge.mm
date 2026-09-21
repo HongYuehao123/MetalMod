@@ -60,6 +60,12 @@
 extern "C" {
 
 int metalmod_init(void* nsWindowHandle) {
+    // Set Apple Silicon MoltenVK environment optimizations
+    setenv("MVK_CONFIG_HOST_COHERENT_MEMORY_FLUSH_MODE", "0", 1);
+    setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "1", 1);
+    setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", 1);
+    setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "1", 1);
+
     MetalModState *state = [MetalModState sharedState];
     if (!state.device || !state.commandQueue) {
         return -2;
@@ -149,13 +155,31 @@ int metalmod_process_frame(
     VkImage uiImage,
     const MetalModFrameParams* params
 ) {
-    if (!colorImage || !params) return -1;
+    if (!params) return -1;
 
     MetalModState *state = [MetalModState sharedState];
     id<MTLTexture> colorTex = [state exportTextureFromVkImage:colorImage aspect:VK_IMAGE_ASPECT_COLOR_BIT];
     id<MTLTexture> depthTex = [state exportTextureFromVkImage:depthImage aspect:VK_IMAGE_ASPECT_DEPTH_BIT];
     id<MTLTexture> motionTex = [state exportTextureFromVkImage:motionImage aspect:VK_IMAGE_ASPECT_COLOR_BIT];
     id<MTLTexture> uiTex = [state exportTextureFromVkImage:uiImage aspect:VK_IMAGE_ASPECT_COLOR_BIT];
+
+    if (!colorTex) {
+        // Fallback to shared Metal render texture if direct VkImage export was not bound
+        uint32_t inW = state.config.inputWidth > 0 ? state.config.inputWidth : 1280;
+        uint32_t inH = state.config.inputHeight > 0 ? state.config.inputHeight : 720;
+        if (!state.fallbackColorTexture ||
+            state.fallbackColorTexture.width != inW ||
+            state.fallbackColorTexture.height != inH) {
+            MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                             width:inW
+                                                                                            height:inH
+                                                                                         mipmapped:NO];
+            desc.storageMode = MTLStorageModeShared;
+            desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+            state.fallbackColorTexture = [state.device newTextureWithDescriptor:desc];
+        }
+        colorTex = state.fallbackColorTexture;
+    }
 
     if (!colorTex) return -2;
 

@@ -19,13 +19,11 @@ extern "C" {
  * @return Raw pointer to shared memory buffer, or NULL on failure.
  */
 METALMOD_API void* metalmod_uma_alloc(size_t size);
-
-/**
- * Free a buffer previously allocated with metalmod_uma_alloc.
- *
- * @param ptr Pointer returned by metalmod_uma_alloc.
- */
+METALMOD_API void* metalmod_uma_calloc(size_t num, size_t size);
+METALMOD_API void* metalmod_uma_realloc(void* ptr, size_t newSize);
 METALMOD_API void metalmod_uma_free(void* ptr);
+METALMOD_API void* metalmod_uma_aligned_alloc(size_t alignment, size_t size);
+METALMOD_API void metalmod_uma_aligned_free(void* ptr);
 
 /**
  * Perform conservative memory reclamation.

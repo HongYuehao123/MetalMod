@@ -143,6 +143,14 @@ public final class UnifiedMemoryManager {
         }
     }
 
+    public void free(long address) {
+        if (address == 0) return;
+        activeAllocationsCount.decrementAndGet();
+        if (MetalConfig.INSTANCE.enableUnifiedMemoryPool && MetalBridge.isAvailable()) {
+            MetalBridge.freeUnifiedBufferAddress(address);
+        }
+    }
+
     /**
      * Query macOS Mach VM and Metal runtime for live memory metrics.
      */
