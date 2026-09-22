@@ -154,7 +154,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             MemorySegment encoder = MetalNative.renderPassBegin(cb, count, colorTextures, loadClear,
                     clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
             boolean atlasTarget = needsYFlip(targetLabel);
-            noteRenderTarget(targetLabel, atlasTarget);
+            noteRenderTarget(targetLabel, atlasTarget,
+                    loadClear.getAtIndex(ValueLayout.JAVA_INT, 0) != 0, depthClear);
             if (encoder.address() != 0 && atlasTarget) {
                 // TextureAtlas.uploadInitialContents() composites every sprite into the atlas with a
                 // render pass per mip level, using a projection built by
@@ -202,13 +203,18 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     // seen rather than guessed at. A "?" label means the pass had no colour texture to name.
     private static final java.util.Set<String> notedRenderTargets = new java.util.HashSet<>();
 
-    private static void noteRenderTarget(String label, boolean flipped) {
+    private static void noteRenderTarget(String label, boolean flipped, boolean colorClear,
+                                         boolean depthClear) {
+        // Keyed by label *and* how it was loaded, so a target that is cleared in one pass and loaded
+        // in another reports both rather than whichever came first.
+        String key = label + "|" + colorClear + "|" + depthClear;
         synchronized (notedRenderTargets) {
-            if (!notedRenderTargets.add(label)) {
+            if (!notedRenderTargets.add(key)) {
                 return;
             }
         }
-        System.out.println("[MetalMod] render target '" + label + "' yFlip=" + flipped);
+        System.out.println("[MetalMod] render target '" + label + "' yFlip=" + flipped
+                + " clear=" + colorClear + " depthClear=" + depthClear);
     }
 
     /**
