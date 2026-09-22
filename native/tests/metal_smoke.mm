@@ -326,6 +326,112 @@ static void test_mip_filter(void) {
     mmm_device_release(device);
 }
 
+// BUG-007: MetalFormat had MTLSamplerAddressMode swapped, so every sampler used the opposite mode.
+// Prove the values are right by sampling outside [0,1]: REPEAT wraps, CLAMP_TO_EDGE clamps.
+static int draw_sampling_uv(void* device, void* queue, void* pipeline, void* texture,
+                            void* vertexBuffer, void* uvBuffer, int addressU, unsigned char* out) {
+    void* sampler = mmm_sampler_create(device, addressU, addressU, 0 /*nearest*/, 0 /*nearest*/,
+                                       0 /*not mipmapped*/, 1, false, 0.0);
+    if (sampler == NULL) return -1;
+    const int W = 32, H = 32;
+    void* target = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, 1u | 4u);
+    void* cb = mmm_command_buffer_create(queue);
+    void* colors[1] = { target };
+    int32_t clears[1] = { 1 };
+    float clear[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+    void* encoder = mmm_render_pass_begin(cb, 1, colors, clears, clear, NULL, 0, 0.0, W, H);
+    if (encoder != NULL) {
+        mmm_render_pass_set_pipeline(encoder, pipeline);
+        mmm_render_pass_set_vertex_buffer(encoder, vertexBuffer, 0, 0);
+        mmm_render_pass_set_fragment_buffer(encoder, uvBuffer, 0, 1);
+        mmm_render_pass_set_fragment_texture(encoder, texture, 0);
+        mmm_render_pass_set_fragment_sampler(encoder, sampler, 0);
+        mmm_render_pass_draw(encoder, 3, 0, 3, 1, 0);
+        mmm_render_pass_end(encoder);
+    }
+    mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb);
+
+    unsigned char pixels[32 * 32 * 4];
+    int rc = mmm_texture_read_region(target, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+    if (out != NULL && rc == 0) {
+        unsigned char* center = pixels + ((H / 2) * W + (W / 2)) * 4;
+        out[0] = center[0]; out[1] = center[1]; out[2] = center[2]; out[3] = center[3];
+    }
+    mmm_command_buffer_release(cb);
+    mmm_texture_release(target);
+    mmm_sampler_release(sampler);
+    return rc;
+}
+
+static void test_sampler_address_modes(void) {
+    printf("\n== sampler address modes (REPEAT must wrap, CLAMP_TO_EDGE must clamp) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const char* msl =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct VOut { float4 pos [[position]]; };\n"
+        "vertex VOut vmain(uint vid [[vertex_id]], const device float2* positions [[buffer(0)]]) {\n"
+        "    VOut o; o.pos = float4(positions[vid], 0.0, 1.0); return o;\n"
+        "}\n"
+        "fragment float4 fmain(constant float2& uv [[buffer(1)]],\n"
+        "                      texture2d<float> tex [[texture(0)]], sampler s [[sampler(0)]]) {\n"
+        "    return tex.sample(s, uv, level(0.0));\n"
+        "}\n";
+    void* library = mmm_library_create(device, msl, strlen(msl));
+    check("address-mode MSL library compiles", library != NULL, "");
+    void* pipeline = mmm_render_pipeline_create(device, library, "vmain", library, "fmain",
+            70, 15, 0, 0, 0, 0, 0, 0, 0,
+            0, 1, 0,
+            3, 1, 0, 0, 0.0f, 0.0f,
+            NULL, 0, NULL, 0);
+    check("address-mode pipeline created", pipeline != NULL, "");
+
+    // 4x1 texture: texels 0,1 red and texels 2,3 blue.
+    void* texture = mmm_texture_create_full(device, 70, 4, 1, 1, 1, 2, true, 1u | 4u);
+    unsigned char texels[4 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,   0, 0, 255, 255,   0, 0, 255, 255,
+    };
+    mmm_texture_replace_region(texture, 0, 0, 0, 0, 4, 1, texels, 4 * 4);
+    check("4x1 texture uploaded", texture != NULL, "");
+
+    void* vertexBuffer = mmm_buffer_create(device, 24);
+    float* positions = (float*)mmm_buffer_contents(vertexBuffer);
+    if (positions != NULL) {
+        positions[0] = -0.8f; positions[1] = -0.8f;
+        positions[2] =  0.8f; positions[3] = -0.8f;
+        positions[4] =  0.0f; positions[5] =  0.8f;
+    }
+    // u = 1.25 is outside [0,1]: REPEAT wraps it to 0.25 (texel 1, red), CLAMP_TO_EDGE pins it to
+    // texel 3 (blue). Which colour arrives names the address mode Metal actually used.
+    void* uvBuffer = mmm_buffer_create(device, 8);
+    float* uv = (float*)mmm_buffer_contents(uvBuffer);
+    if (uv != NULL) { uv[0] = 1.25f; uv[1] = 0.5f; }
+
+    unsigned char repeat[4] = { 0, 0, 0, 0 };
+    unsigned char clamp[4] = { 0, 0, 0, 0 };
+    // MTLSamplerAddressModeRepeat = 2, MTLSamplerAddressModeClampToEdge = 0.
+    int rcRepeat = draw_sampling_uv(device, queue, pipeline, texture, vertexBuffer, uvBuffer, 2, repeat);
+    int rcClamp = draw_sampling_uv(device, queue, pipeline, texture, vertexBuffer, uvBuffer, 0, clamp);
+    check("both address-mode draws read back", rcRepeat == 0 && rcClamp == 0, "");
+
+    printf("     addressMode=Repeat(2)       -> R%d G%d B%d\n", repeat[0], repeat[1], repeat[2]);
+    printf("     addressMode=ClampToEdge(0)  -> R%d G%d B%d\n", clamp[0], clamp[1], clamp[2]);
+    check("REPEAT wraps u=1.25 to texel 1 (red)", repeat[0] > 200 && repeat[2] < 40, "");
+    check("CLAMP_TO_EDGE pins u=1.25 to texel 3 (blue)", clamp[2] > 200 && clamp[0] < 40, "");
+
+    if (uvBuffer) mmm_buffer_release(uvBuffer);
+    if (vertexBuffer) mmm_buffer_release(vertexBuffer);
+    mmm_texture_release(texture);
+    mmm_render_pipeline_release(pipeline);
+    mmm_library_release(library);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 // Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
 static void test_draw(void) {
     printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
@@ -411,6 +517,7 @@ int main(void) {
         test_clear_and_readback();
         test_resources();
         test_mip_filter();
+        test_sampler_address_modes();
         test_draw();
         test_surface();
     }

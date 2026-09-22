@@ -250,6 +250,19 @@ Corrected the constants. `MetalFormatTest` now pins the address modes, the min/m
 `MTLTextureType`/`MTLTextureUsage` values against the SDK header, so this class of error cannot
 return silently.
 
+### Verified, not assumed
+
+`metalmod_smoke` proves Metal actually behaves as the corrected table claims. It uploads a 4x1
+texture (texels 0-1 red, texels 2-3 blue) and samples at `u = 1.25`, which is outside [0,1]:
+
+```
+addressMode=Repeat(2)       -> R255 G0 B0   (wrapped to texel 1)
+addressMode=ClampToEdge(0)  -> R0 G0 B255   (pinned to texel 3)
+```
+
+So REPEAT wraps and CLAMP_TO_EDGE clamps, with the raw values the mapping now produces. Had the two
+still been swapped, those two lines would be the other way round.
+
 ---
 
 ## BUG-006 — Five MTLBlendFactor values were wrong (latent for vanilla)
