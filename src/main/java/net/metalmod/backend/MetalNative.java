@@ -34,7 +34,7 @@ public final class MetalNative {
     private static MethodHandle mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
             mhCommandBufferRelease;
     private static MethodHandle mhLibraryCreate, mhLibraryRelease, mhRenderPipelineCreate,
-            mhRenderPipelineRelease;
+            mhRenderPipelineRelease, mhLastError;
     private static MethodHandle mhRenderPassBegin, mhRenderPassEnd, mhRenderPassSetPipeline,
             mhRenderPassSetVertexBuffer, mhRenderPassSetFragmentBuffer, mhRenderPassSetVertexTexture,
             mhRenderPassSetFragmentTexture, mhRenderPassSetVertexSampler, mhRenderPassSetFragmentSampler,
@@ -128,6 +128,10 @@ public final class MetalNative {
         mhRenderPipelineCreate = linker.downcallHandle(symbol(lookup, "mmm_render_pipeline_create"),
                 FunctionDescriptor.of(A, A, A, A, A, A, L, I, I, I, I, I, I, I, I, L, I, I, I, I, I, I, F, F, A, I, A, I));
         mhRenderPipelineRelease = linker.downcallHandle(symbol(lookup, "mmm_render_pipeline_release"), FunctionDescriptor.ofVoid(A));
+        // Optional: it is a diagnostic, so a stale dylib without it must not disable the backend.
+        mhLastError = lookup.find("mmm_last_error")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(A)))
+                .orElse(null);
 
         mhRenderPassBegin = linker.downcallHandle(symbol(lookup, "mmm_render_pass_begin"),
                 FunctionDescriptor.of(A, A, I, A, A, A, A, I, D, I, I));
@@ -286,6 +290,22 @@ public final class MetalNative {
         }
     }
     public static void renderPipelineRelease(MemorySegment p) { v(mhRenderPipelineRelease, p); }
+
+    /**
+     * Metal's own message for the most recent shader-library or pipeline failure. Without this the
+     * caller can only report "pipeline creation failed"; the reason (a shader compile error, or a
+     * pipeline validation error such as an interface mismatch) lives in the native layer.
+     */
+    public static String lastError() {
+        if (mhLastError == null) return "";
+        try {
+            MemorySegment p = addr(mhLastError);
+            if (isNull(p)) return "";
+            return p.reinterpret(1024).getString(0);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
 
     // Render pass --------------------------------------------------------------------------------
 

@@ -165,6 +165,11 @@ MMM_API void* mmm_render_pipeline_create(
     const MMMVertexAttribute* attributes, int32_t attributeCount);
 MMM_API void mmm_render_pipeline_release(void* pipeline);
 
+/// Human-readable message for the most recent failure from mmm_library_create or
+/// mmm_render_pipeline_create. Never NULL; empty when the last call succeeded. The pointer is owned
+/// by the library and stays valid until the next call that can fail.
+MMM_API const char* mmm_last_error(void);
+
 /// Begin a render pass. colorTextures/colorLoadClear/clearColors are parallel arrays of length
 /// colorCount; clearColors holds 4 floats per attachment. Returns an encoder or NULL.
 MMM_API void* mmm_render_pass_begin(

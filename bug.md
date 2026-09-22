@@ -86,14 +86,110 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-005 — Two pipelines draw with bindings that were never set
+
+**Status:** open, unfixed. **Scheduled for Phase 5.**
+**Severity:** high for world appearance — one of these is the lightmap.
+**Found by:** the Phase 4 unbound-binding diagnostic, in-game (run `[10:21:31]`, see below).
+
+### Symptoms
+
+The diagnostic named these during a normal in-world session:
+
+```
+[MetalMod] unbound uniform buffer 'lightmapInfo' in minecraft:pipeline/lightmap
+[MetalMod] unbound texture 'CloudFaces' in minecraft:pipeline/clouds
+[MetalMod] unbound sampler 'CloudFaces' in minecraft:pipeline/clouds
+```
+
+**`lightmapInfo` is the significant one.** The `lightmap` pipeline renders the lightmap texture that
+shades all terrain and entities; if its uniform block is never bound, the lightmap is wrong and the
+world is lit incorrectly or not at all. This is very likely a direct, named cause of the flat/unlit
+world in BUG-003 — a much more specific lead than "shader variants are not bound".
+
+`CloudFaces` unbound means the cloud pass samples an unbound texture.
+
+### Reproduce
+
+1. Metal backend enabled, enter a world.
+2. Watch stderr for `[MetalMod] unbound …` lines (they also appear in `logs/latest.log`).
+3. The count is reported in the 30 s telemetry summary as `unboundBindings=`.
+
+### Suspected cause (unconfirmed)
+
+Either the engine does not call `bindTexture`/`setUniform` for these names on this path, or the
+reflected GLSL name does not match the name the engine binds under (the lightmap uniform is a
+`std140` block, where SPIRV-Cross reports an empty *variable* name and the block *type* name is used
+as a fallback — a likely place for a mismatch). Needs a breakpoint/log of the names the engine
+actually passes to `RenderPass.setUniform`/`bindTexture` for those two pipelines.
+
+### Workaround
+
+None. Phase 5 work.
+
+---
+
+## BUG-004 — Multi-draw chunk passes never upload their per-draw uniforms
+
+**Status:** open, unfixed. **Scheduled for Phase 5 (draw path)** — see the note on why it was not
+fixed during Phase 4.
+**Severity:** high for world rendering; likely a direct cause of the flat/unlit world in BUG-003.
+**Found by:** the Phase 4 binding audit (code inspection against the Vulkan backend's contract).
+
+### Symptoms
+
+Every draw issued through `RenderPassBackend.drawMultipleIndexed` renders with stale or absent
+uniforms. A shader that reads a per-draw uniform (a section transform, for instance) samples
+whatever was bound before, or nothing at all.
+
+### Evidence
+
+`MetalRenderPassBackend.drawMultipleIndexed` ignores both `pushConstant` and each draw's
+`uniformUploaderConsumer()`, and also ignores the per-draw `indexBuffer()`/`indexType()` in favour of
+the pass-level arguments:
+
+```java
+for (RenderPass.Draw<T> draw : draws) {
+    if (draw.vertexBuffer() != null) setVertexBuffer(draw.slot(), draw.vertexBuffer().slice());
+    applyBindings(false);          // no uploader call
+    ...draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
+}
+```
+
+`VulkanRenderPass.drawMultipleIndexed` does the opposite: for each draw it first calls
+`draw.uniformUploaderConsumer().accept(pushConstant, uploader)`, where `uploader` forwards to
+`setUniform(name, slice)`, and it prefers `draw.indexBuffer()` / `draw.indexType()` when they are
+non-null. `net.minecraft.client.renderer.chunk.ChunkSectionsToRender` and `WorldBorderRenderer` are
+vanilla callers, so this is the terrain path, not a corner case.
+
+### Fix shape
+
+Mirror the Vulkan contract: construct a `RenderPass.UniformUploader` that forwards to
+`setUniform(String, GpuBufferSlice)`, invoke the consumer before each draw when present, and use the
+per-draw index buffer/type when they are set. The binding diagnostic can then be re-enabled on this
+path (`applyBindings(true)`), because uploader-supplied uniforms land in the same map.
+
+### Why it was not fixed in Phase 4
+
+It is a draw-path behaviour change on the terrain path, which is Phase 5 work, and it could not be
+runtime-verified from the development environment (no game run). Phase 4 shipped only
+behaviour-preserving diagnostics plus the shader fixes; this is left to Phase 5 where it can be
+validated against a real world.
+
+### Workaround
+
+None. Use the default (Vulkan/OpenGL) backend for normal play.
+
+---
+
 ## BUG-003 — Entities (squids/fish) and terrain render as flat black silhouettes
 
 > **Not a mystery artifact:** the small black shapes in the sky are **squids and fish** — real
 > entities that are being drawn, but without their textures/lighting. They only look unrecognisable
 > because entity rendering is unfinished. Filed so the missing entity/world shading is tracked.
 
-**Status:** open, unfixed.
-**Severity:** low / cosmetic, but it is the most visible sign that Phase 4/5 shader work is unfinished.
+**Status:** open, unfixed. **Scheduled for Phase 5 (vanilla render parity)** — not Phase 4.
+**Severity:** low / cosmetic, but it is the most visible sign that Phase 5 shading work is unfinished.
 **Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native.
 **Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)
 
@@ -106,8 +202,9 @@ render correctly, and the sky colour is right.
 ### Suspected cause (unconfirmed)
 
 Entity and terrain shaders are not fully bound yet: they are likely sampling an unbound
-lightmap/texture or using a shader variant whose inputs are not all mapped. This is the Phase 4
-(shaders) / Phase 5 (vanilla parity) work, not a Phase 3 regression.
+lightmap/texture or using a shader variant whose inputs are not all mapped. This is Phase 5
+(vanilla parity) work, not a Phase 3 regression and not a Phase 4 blocker — Phase 4 only makes
+bindings *observably* correct (see `docs/phase4-plan.md` §4.3).
 
 ### Workaround
 

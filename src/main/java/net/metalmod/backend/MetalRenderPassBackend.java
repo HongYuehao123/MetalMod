@@ -87,9 +87,12 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     }
 
     /** Resolve every recorded binding against the current pipeline and encode it. */
-    private void applyBindings() {
+    private void applyBindings(boolean reportMissing) {
         if (this.pipeline == null) {
             return;
+        }
+        if (reportMissing) {
+            reportMissingBindings();
         }
         for (Map.Entry<String, GpuBufferSlice> entry : this.uniforms.entrySet()) {
             String name = entry.getKey();
@@ -124,6 +127,32 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             int fs = this.pipeline.fragmentSampler(name);
             if (vs >= 0) MetalNative.renderPassSetVertexSampler(this.encoder, samplerHandle, vs);
             if (fs >= 0) MetalNative.renderPassSetFragmentSampler(this.encoder, samplerHandle, fs);
+        }
+    }
+
+    /**
+     * Report anything the shaders declare that nothing bound.
+     *
+     * <p>Without this, an unbound sampler is invisible: the draw succeeds, Metal reads undefined
+     * data, and the object renders black - which reads as "the shader is wrong" rather than "the
+     * binding never happened". Counting distinct names (MetalDevice caps and de-duplicates) keeps
+     * this cheap enough to run per draw.
+     */
+    private void reportMissingBindings() {
+        for (String name : this.pipeline.declaredTextures()) {
+            if (!this.textures.containsKey(name)) {
+                MetalDevice.reportUnboundBinding(this.pipelineName, "texture", name);
+            }
+        }
+        for (String name : this.pipeline.declaredSamplers()) {
+            if (!this.samplers.containsKey(name)) {
+                MetalDevice.reportUnboundBinding(this.pipelineName, "sampler", name);
+            }
+        }
+        for (String name : this.pipeline.declaredBuffers()) {
+            if (!this.uniforms.containsKey(name)) {
+                MetalDevice.reportUnboundBinding(this.pipelineName, "uniform buffer", name);
+            }
         }
     }
 
@@ -178,7 +207,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
-        applyBindings();
+        applyBindings(true);
         MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
                 this.indexType, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
@@ -190,7 +219,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         for (int i = 0; i < firstIndices.remaining(); i++) {
-            applyBindings();
+            applyBindings(true);
             MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
                     this.indexType, indexCount, instanceCount,
                     firstIndices.get(firstIndices.position() + i), 0, firstInstance);
@@ -205,7 +234,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         int draws = Math.min(firstIndices.remaining(), Math.min(indexCounts.remaining(), vertexOffsets.remaining()));
         for (int i = 0; i < draws; i++) {
-            applyBindings();
+            applyBindings(true);
             MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
                     this.indexType, indexCounts.get(indexCounts.position() + i), instanceCount,
                     (int) firstIndices.get(firstIndices.position() + i),
@@ -229,7 +258,11 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             if (draw.vertexBuffer() != null) {
                 setVertexBuffer(draw.slot(), draw.vertexBuffer().slice());
             }
-            applyBindings();
+            // This is the one path whose bindings are not fully expressed as setUniform/bindTexture:
+            // per-draw data arrives through the draw's uniformUploaderConsumer, and the
+            // dynamicUniforms collection names buffers filled that way. Reporting "unbound" here
+            // would flag those false positives, so the diagnostic is skipped.
+            applyBindings(false);
             MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
                     this.indexType, draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
@@ -240,7 +273,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
-        applyBindings();
+        applyBindings(true);
         MetalNative.renderPassDraw(this.encoder, this.topology, firstVertex, vertexCount,
                 instanceCount, firstInstance);
     }
@@ -252,7 +285,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         for (int i = 0; i < firstVertices.remaining(); i++) {
-            applyBindings();
+            applyBindings(true);
             MetalNative.renderPassDraw(this.encoder, this.topology,
                     firstVertices.get(firstVertices.position() + i), vertexCount, instanceCount, firstInstance);
         }
@@ -265,7 +298,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         int draws = Math.min(firstVertices.remaining(), vertexCounts.remaining());
         for (int i = 0; i < draws; i++) {
-            applyBindings();
+            applyBindings(true);
             MetalNative.renderPassDraw(this.encoder, this.topology,
                     firstVertices.get(firstVertices.position() + i),
                     vertexCounts.get(vertexCounts.position() + i), instanceCount, 0);

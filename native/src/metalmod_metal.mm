@@ -7,6 +7,24 @@
 
 #include "metalmod/metalmod_metal.h"
 
+#include <string.h>
+
+// Last failure reported by this API. Metal's own errors (shader compile, pipeline validation) are
+// only available as NSError objects here; without this they die in NSLog and the Java side can only
+// say "pipeline creation failed", which is not enough to act on.
+static char g_LastError[1024];
+
+static void mmm_set_last_error(NSString* message) {
+    const char* utf8 = (message != nil) ? [message UTF8String] : NULL;
+    if (utf8 == NULL) utf8 = "";
+    strncpy(g_LastError, utf8, sizeof(g_LastError) - 1);
+    g_LastError[sizeof(g_LastError) - 1] = '\0';
+}
+
+const char* mmm_last_error(void) {
+    return g_LastError;
+}
+
 // The device is process-wide: MTLCreateSystemDefaultDevice returns the same object on Apple
 // silicon anyway, and the game only ever wants one. Cached so repeated calls stay cheap and the
 // object cannot be released out from under an in-flight command buffer.
@@ -368,8 +386,11 @@ void* mmm_library_create(void* device, const char* source, size_t length) {
         id<MTLLibrary> library = [dev newLibraryWithSource:text options:nil error:&error];
         if (library == nil) {
             NSLog(@"[MetalMod] MSL compilation failed: %@", error.localizedDescription);
+            mmm_set_last_error([NSString stringWithFormat:@"MSL compilation failed: %@",
+                                                          error.localizedDescription]);
             return NULL;
         }
+        mmm_set_last_error(nil);
         return (__bridge_retained void*)library;
     }
 }
@@ -417,6 +438,8 @@ void* mmm_render_pipeline_create(
         id<MTLFunction> ffn = [flib newFunctionWithName:[NSString stringWithUTF8String:fragmentFunction]];
         if (vfn == nil || ffn == nil) {
             NSLog(@"[MetalMod] MSL function not found: %s / %s", vertexFunction, fragmentFunction);
+            mmm_set_last_error([NSString stringWithFormat:@"MSL function not found: %s / %s",
+                                                          vertexFunction, fragmentFunction]);
             return NULL;
         }
 
@@ -462,8 +485,11 @@ void* mmm_render_pipeline_create(
         id<MTLRenderPipelineState> state = [dev newRenderPipelineStateWithDescriptor:descriptor error:&error];
         if (state == nil) {
             NSLog(@"[MetalMod] Render pipeline creation failed: %@", error.localizedDescription);
+            mmm_set_last_error([NSString stringWithFormat:@"render pipeline creation failed: %@",
+                                                          error.localizedDescription]);
             return NULL;
         }
+        mmm_set_last_error(nil);
 
         // Only attach a depth-stencil state when the pipeline actually declares a depth format. A
         // depth state set on an encoder whose pass has no depth attachment is invalid and can wedge

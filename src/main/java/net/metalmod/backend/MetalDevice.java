@@ -54,7 +54,9 @@ public final class MetalDevice implements GpuDeviceBackend {
     private final Set<RenderPipeline> failedPipelines =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
-    private int placeholderLogCount;
+    private int pipelineLogCount;
+    private int pipelineFailureLogCount;
+    private static int pipelineFailureCount;
     private boolean closed;
 
     // Resource creation failures are counted and logged a bounded number of times: one unsupported
@@ -74,8 +76,15 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " views=" + TEXTURE_VIEW_COUNT.get()
                 + " buffers=" + BUFFER_COUNT.get()
                 + " samplers=" + SAMPLER_COUNT.get()
-                + " failures=" + resourceFailureCount;
+                + " failures=" + resourceFailureCount
+                + " pipelineFailures=" + pipelineFailureCount
+                + " unboundBindings=" + unboundBindingCount()
+                + " | " + SHADER_COMPILER_SUMMARY.get();
     }
+
+    // Set by MetalDevice so the telemetry summary can report shader cache effectiveness.
+    static final java.util.concurrent.atomic.AtomicReference<String> SHADER_COMPILER_SUMMARY =
+            new java.util.concurrent.atomic.AtomicReference<>("shader pairs: n/a");
 
     static synchronized void reportResourceFailure(String what) {
         resourceFailureCount++;
@@ -88,6 +97,30 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     public static synchronized int resourceFailureCount() {
         return resourceFailureCount;
+    }
+
+    // A shader that samples a texture the engine never bound reads garbage - usually black, which
+    // looks like a rendering bug rather than a binding bug. Count the distinct (pipeline, kind, name)
+    // combinations once each so the failure is visible instead of silent. Report-only: binding
+    // behaviour is unchanged.
+    private static final java.util.Set<String> reportedUnbound = new java.util.HashSet<>();
+    private static int unboundCount;
+    private static int unboundLogCount;
+
+    static synchronized void reportUnboundBinding(String pipeline, String kind, String name) {
+        if (reportedUnbound.size() >= 64 || !reportedUnbound.add(pipeline + "|" + kind + "|" + name)) {
+            return;
+        }
+        unboundCount++;
+        if (unboundLogCount < 20) {
+            unboundLogCount++;
+            System.err.println("[MetalMod] unbound " + kind + " '" + name + "' in " + pipeline
+                    + ": the shader reads it and nothing was bound (Metal returns undefined data)");
+        }
+    }
+
+    public static synchronized int unboundBindingCount() {
+        return unboundCount;
     }
 
     // The engine clears its main render target with the sky/background colour; capture it so the
@@ -282,20 +315,26 @@ public final class MetalDevice implements GpuDeviceBackend {
             return new MetalCompiledPipeline(true);
         }
         MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline, shaderSource);
+        SHADER_COMPILER_SUMMARY.set(this.shaderCompiler.cacheSummary());
         if (compiled != null) {
             MetalRenderPipeline previous = this.pipelines.put(pipeline, compiled);
             if (previous != null) {
                 previous.close();
             }
             this.failedPipelines.remove(pipeline);
-            if (this.placeholderLogCount < 30) {
-                this.placeholderLogCount++;
+            if (this.pipelineLogCount < 30) {
+                this.pipelineLogCount++;
                 System.out.println("[MetalMod] metal pipeline compiled: " + key);
             }
         } else {
             this.failedPipelines.add(pipeline);
-            if (this.placeholderLogCount < 30) {
-                this.placeholderLogCount++;
+            // Failures must NOT share the success budget. The engine precompiles the in-world
+            // pipelines (terrain, lightmap, clouds) only after ~30 have already been logged, so a
+            // shared cap silently swallows exactly the failures worth seeing - and a failed pipeline
+            // just draws nothing, which reads as missing geometry rather than a shader error.
+            pipelineFailureCount++;
+            if (this.pipelineFailureLogCount < 100) {
+                this.pipelineFailureLogCount++;
                 System.err.println("[MetalMod] metal pipeline FAILED (draws with it are skipped): " + key);
             }
         }
@@ -319,18 +358,20 @@ public final class MetalDevice implements GpuDeviceBackend {
         }
         MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline,
                 this.lastShaderSource);
+        SHADER_COMPILER_SUMMARY.set(this.shaderCompiler.cacheSummary());
         if (compiled == null) {
             this.failedPipelines.add(pipeline);
-            if (this.placeholderLogCount < 40) {
-                this.placeholderLogCount++;
+            pipelineFailureCount++;
+            if (this.pipelineFailureLogCount < 100) {
+                this.pipelineFailureLogCount++;
                 System.err.println("[MetalMod] metal pipeline FAILED (draws with it are skipped): "
-                        + pipeline.getLocation());
+                        + pipeline.getLocation() + ": " + MetalNative.lastError());
             }
             return null;
         }
         this.pipelines.put(pipeline, compiled);
-        if (this.placeholderLogCount < 40) {
-            this.placeholderLogCount++;
+        if (this.pipelineLogCount < 40) {
+            this.pipelineLogCount++;
             System.out.println("[MetalMod] metal pipeline compiled lazily: " + pipeline.getLocation());
         }
         return compiled;

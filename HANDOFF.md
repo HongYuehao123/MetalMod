@@ -73,12 +73,67 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
   blurred panorama) and an in-world view (sky + terrain). See `ROADMAP.md` Phase 3 for the five
   bugs fixed along the way.
 
+Re-verified after the Phase 4 work below: `./scripts/build_mod.sh` succeeds,
+`./native/build/metalmod_smoke` prints `ALL CHECKS PASSED`, and `net.metalmod.StandaloneTestRunner`
+prints `ALL TESTS PASSED SUCCESSFULLY!`.
+
+An in-game session (Metal backend, world loaded, clean shutdown) reported
+`textures=4466 views=9375 buffers=183 samplers=33 failures=0 pipelineFailures=0 unboundBindings=3 |
+shader pairs: compiled=53 reused=43 cached=53` — no failed pipelines, the cache reusing 43 pairs,
+and the binding diagnostic naming three real unbound bindings (BUG-005).
+
+## Phase 4 status (shaders) — DONE
+
+Plan, evidence and results: `docs/phase4-plan.md`.
+
+- **All 87 vanilla pipelines compile.** `tools/shader_inventory/run.sh` walks every `RenderPipelines`
+  field, compiles it through the real GLSL → SPIR-V → MSL → pipeline path outside the game, and
+  reports a list. Result: `total=87 ok=87 failed=0 no-source=0`. The boot log only ever proved the
+  ~28 pipelines the engine announces; the rest were compiled lazily and so were unverified.
+- **Cross-stage varying locations (fixed).** `animate_sprite_interpolate` failed because shaderc
+  assigns varying `Location` decorations per stage by declaration order, and this pair's two stages
+  disagreed — OpenGL links by name so vanilla never noticed, but Metal rejects the pipeline.
+  `MetalShaderCompiler` now aligns the fragment stage's locations to the vertex stage's by name.
+- **Shader-pair cache.** Keyed `(vertexId, fragmentId, ShaderDefines)`. The roadmap's per-stage
+  `(id, type, defines)` key is *not* usable here: varying alignment makes a fragment stage's compiled
+  form depend on its vertex partner. Pair keying gives essentially the whole benefit — the inventory
+  reports `compiled=52 reused=35` over 87 pipelines.
+- **Unbound bindings are visible.** `MetalRenderPipeline` exposes the names its shaders declare and
+  the render pass reports anything nothing bound, de-duplicated and capped; the count appears in the
+  telemetry summary as `unboundBindings=`. Report-only. It immediately found three in-game
+  (BUG-005), including `lightmapInfo` in the lightmap pass.
+- **Pipeline failures can no longer be silent.** Success and failure logging used to share one
+  counter, so once ~30 pipelines had been logged at startup, every later failure — including all the
+  in-world ones the engine precompiles last — was swallowed. Failures now have their own budget and a
+  `pipelineFailures=` count in the summary.
+- **Metal errors are visible.** `mmm_last_error()` carries Metal's own message (shader compile or
+  pipeline validation) to the Java log; previously it only reached `NSLog` and was never captured.
+- **Offline repro tool.** `tools/shader_repro/run.sh <vsh> <fsh>` runs one shader pair through the
+  real pipeline outside the game and prints the SPIR-V interfaces, both MSL sources and Metal's
+  verdict. Exits non-zero on rejection.
+- **Found and recorded, not fixed: BUG-004.** `drawMultipleIndexed` never invokes each draw's
+  `uniformUploaderConsumer`, nor its own index buffer, on a path vanilla terrain uses. It changes
+  rendering, belongs to Phase 5, and could not be runtime-verified here. See `bug.md`.
+
+**Traps worth remembering:**
+
+- `ByteBuffer.duplicate()` resets byte order to big-endian, so `spirv.duplicate().asIntBuffer()`
+  returns byte-swapped SPIR-V words. Feeding them to SPIRV-Cross works by accident (the native stack
+  writes them back in native order), but any code that *inspects* the words needs
+  `ByteOrder.nativeOrder()`.
+- The engine's preprocessor de-duplicates `#moj_import` per file: `ShaderManager$1` keeps an
+  `importedLocations` set and returns `null` for a repeat. Vanilla `rendertype_end_portal.vsh`
+  imports `projection.glsl` twice, so an offline reproduction that does not de-duplicate invents two
+  failures that the game does not have.
+
 ## What does not work
 
-- **`animate_sprite_interpolate`** fails to build (vertex/fragment varying mismatch). Non-fatal;
-  animated-sprite interpolation is not needed for the loading screen, menu or a static view.
-- **Vanilla visual parity (Phase 5):** terrain is geometry + textures but lighting/effects and
-  post-processing are not complete.
+- **Vanilla visual parity (Phase 5):** terrain and entities render unlit/flat (BUG-003), some GUI
+  screens are missing sprites (BUG-001), and the block-selection outline is wrong (BUG-002).
+  BUG-003 is Phase 5 work, not a Phase 4 shader item.
+- **Multi-draw uniforms (BUG-004, Phase 5):** `drawMultipleIndexed` ignores each draw's
+  `uniformUploaderConsumer()` and per-draw index buffer. Vanilla's chunk terrain path uses it, so
+  this is likely a direct cause of the flat world.
 - **Upscaling / frame generation:** inactive until the mod owns presentation and the later phases.
 - **Shaderpacks, MetalFX, ray tracing:** not started.
 
@@ -122,7 +177,10 @@ optimistic and the GPU share is therefore a lower bound. Worth re-measuring in n
 $HOME/Documents/.minecraft/versions/MetalMod_Test_26.2
 ```
 
-Mods present: Fabric API 0.161.0, Mod Menu 20.0.2, Sodium 0.9.2, Placeholder API 3.1.0.
+Mods present: Fabric API 0.161.0, Mod Menu 20.0.2, Placeholder API 3.1.0. **Sodium is *not*
+installed here** (it is in the separate `26.2-Fabric` instance) even though earlier revisions of this
+file said it was. The roadmap names Sodium as Phase 5's main compatibility risk, so reinstall it
+before Phase 5 parity testing rather than discovering the gap mid-way.
 
 Override the build target with `METALMOD_MC_INSTANCE`.
 

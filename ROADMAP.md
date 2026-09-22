@@ -221,19 +221,42 @@ Bugs found and fixed during the phase (kept here because they are easy to reintr
    triangle winding, so without the winding flip the mirrored quads are back-face culled and the
    atlas ends up empty.
 
-**Still open (moved to Phase 4):** `minecraft:pipeline/animate_sprite_interpolate` fails to build
-(varying mismatch between its vertex and fragment stages). Non-fatal: it is not needed for the
-loading screen, menu or terrain.
+**Open item, fixed in Phase 4:** `minecraft:pipeline/animate_sprite_interpolate` failed to build.
+Root cause was not what it looked like: shaderc assigns varying `Location` decorations per stage by
+declaration order, and this pair's vertex and fragment stages disagreed, which Metal rejects outright
+(`Fragment input(s) user(locn0),user(locn1) mismatching vertex shader output type(s)`). OpenGL links
+varyings by name, so vanilla never saw it. The pair is live — `SpriteContents$AnimationState` uses
+it — so animated-sprite cross-fading was not rendering. Fixed by aligning the fragment stage's
+locations to the vertex stage's by name in `MetalShaderCompiler.compilePair`. See
+[`docs/phase4-plan.md`](docs/phase4-plan.md) §3.1.
 
-### Phase 4 — Shaders · **M**
+### Phase 4 — Shaders · **M** · ✅ **DONE**
+
+> Detail, evidence and results: [`docs/phase4-plan.md`](docs/phase4-plan.md).
 
 - Reuse the GLSL front end: `GlslPreprocessor` → shaderc → SPIR-V.
 - **SPIR-V → MSL via SPIRV-Cross** (`org.lwjgl.util.spvc`, already bundled), then
   `newLibraryWithSource:` / `newLibraryWithData:`.
 - Translate reflection output (uniform buffers, samplers, inputs/outputs) into Metal bindings.
-- Shader cache keyed as `VulkanDevice$ShaderCompilationKey` does (id + type + defines).
+- Shader cache (the roadmap asked for a per-stage `(id, type, defines)` key, as
+  `VulkanDevice$ShaderCompilationKey`; the cache is keyed on the **pair** instead, because varying
+  alignment makes a fragment stage's compiled form depend on its vertex partner — see the plan §4.2).
 
-**Done when:** unmodified vanilla shaders compile and run.
+Most of the mechanism landed during Phase 3, because pipelines cannot be created without it. What
+Phase 4 added:
+
+- **Cross-stage varying locations now agree.** `animate_sprite_interpolate` failed because shaderc
+  assigns varying locations per stage by declaration order and this pair's stages disagreed; OpenGL
+  links by name, Metal rejects it. Fixed by aligning the fragment stage to the vertex stage by name.
+- **Metal's own errors are visible** (`mmm_last_error`), instead of dying in `NSLog`.
+- **Every vanilla pipeline compiles**: a new inventory compiles all **87** `RenderPipelines` fields
+  through the real path — the boot log only ever proved the ~28 the engine announces.
+- **A shader-pair cache**, plus an **unbound-binding diagnostic** that reports a shader sampling
+  something nothing bound, instead of rendering black silently.
+
+**Done when:** unmodified vanilla shaders compile and run. ✅ **87/87 compile**, verified by
+`tools/shader_inventory/run.sh`. "Run" belongs to Phase 5's parity work; the open draw-path defect is
+BUG-004.
 
 **Risk:** MC's `ShaderType` has only `VERTEX` and `FRAGMENT`. Any pack needing compute or geometry
 shaders — common in modern shaderpacks — requires extending the pipeline beyond what the vanilla
@@ -334,17 +357,15 @@ native Metal backend, since MoltenVK cannot express it at all.
 
 ## 7. Immediate next step
 
-**Phase 1.** Concretely:
+**Phase 5 — vanilla render parity.** Phases 0–4 are done. Phase 4's exit criterion is met: all 87
+vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`.
 
-1. `MetalBackend` + `MetalDeviceBackend` + `MetalSurfaceBackend` + a minimal clear-only encoder.
-2. A mixin on `PreferredGraphicsApi.getBackendsToTry()` to prepend Metal.
-3. Native Objective-C++ bridge for `MTLDevice`, `MTLCommandQueue`, `CAMetalLayer`.
-
-Success is a Minecraft window that opens, presents, and clears — with the vanilla renderer offline.
-
-Before starting, one question worth answering: **is the objective ray tracing and MetalFX
-capability, or frame rate?** If it is capability, Phase 1 is unambiguously right. If it is frame
-rate on the *existing* Vulkan path, the measurement in HANDOFF.md matters more than this roadmap.
+Suggested first move for Phase 5: **BUG-004**. `drawMultipleIndexed` never invokes each draw's
+`uniformUploaderConsumer`, so the chunk terrain path renders with stale/absent uniforms — vanilla's
+`ChunkSectionsToRender` uses it, and `VulkanRenderPass` explicitly calls the uploader. It is very
+likely a direct cause of the flat, unlit world, and it is a small, well-specified fix. Once wired, the
+Phase 4 binding diagnostic can be re-enabled on that path (`applyBindings(true)` in
+`MetalRenderPassBackend`) and will name any binding that is still missing.
 
 ---
 

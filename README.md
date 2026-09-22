@@ -10,7 +10,7 @@ Apple's **MetalFX** upscaling / frame interpolation, **dynamic lighting**, shade
 native ray tracing are later phases; see [ROADMAP.md](ROADMAP.md). Known defects are parked in
 [bug.md](bug.md).
 
-> ## Current status: Phases 0–3 are DONE — the game renders on Metal, visual parity is unfinished
+> ## Current status: Phases 0–4 are DONE — the game renders on Metal, visual parity is unfinished
 >
 > Minecraft selects the **Metal backend**, creates the device and a `CAMetalLayer`, creates real
 > Metal **textures, views, buffers and samplers**, compiles the engine's shaders
@@ -22,8 +22,9 @@ native ray tracing are later phases; see [ROADMAP.md](ROADMAP.md). Known defects
 > - in-world geometry (sky, hotbar, terrain silhouettes).
 >
 > It is **not yet visually correct**: terrain is unlit/flat, the block-selection outline is wrong,
-> and some screens have missing sprites. That is Phase 4 (shaders) and Phase 5 (vanilla parity) work;
-> the current bugs are listed in [bug.md](bug.md).
+> and some screens have missing sprites. That is Phase 5 (vanilla render parity) work; the current
+> bugs are listed in [bug.md](bug.md). Phase 4 (shaders) is **done** — see
+> [docs/phase4-plan.md](docs/phase4-plan.md).
 >
 > The backend is **opt-in and OFF by default** while parity is unfinished, so normal play keeps using
 > the bundled Vulkan/OpenGL path. Enable it from **Mod Menu → MetalMod → "Metal Renderer Backend"**,
@@ -41,7 +42,7 @@ native ray tracing are later phases; see [ROADMAP.md](ROADMAP.md). Known defects
 
 ## What is implemented
 
-### Metal backend (Phases 1–3)
+### Metal backend (Phases 1–4)
 - **Backend selection.** `PreferredGraphicsApiMixin` prepends `MetalBackend` to
   `PreferredGraphicsApi.getBackendsToTry()`, keeping the vanilla backends as a fallback. A failure
   during backend creation degrades cleanly to Vulkan/OpenGL.
@@ -52,7 +53,7 @@ native ray tracing are later phases; see [ROADMAP.md](ROADMAP.md). Known defects
   `MTLBuffer`, `MTLSamplerState`, fences and query pools. All storage is
   `MTLResourceStorageModeShared`, so uploads and readbacks are direct. `MetalFormat` holds the
   single `GpuFormat` → Metal mapping.
-- **Pipelines and shaders (Phase 3).** `MetalRenderPipeline` builds
+- **Pipelines and shaders (Phases 3–4).** `MetalRenderPipeline` builds
   `MTLRenderPipelineState` + `MTLDepthStencilState` (blend, cull, fill, topology, vertex
   layouts) from Minecraft's `RenderPipeline` + `ShaderSource`. Shaders go GLSL → SPIR-V
   (`GlslCompiler.createIntermediary`) → MSL (SPIRV-Cross), with reflection driving name-based
@@ -94,9 +95,10 @@ These are the reasons the mod is not a drop-in replacement yet.
 1. **Visual parity (Phase 5).** World rendering is geometry with textures/lighting incomplete:
    terrain and entities render as flat black silhouettes, the block-selection outline is a huge
    wireframe box, and some GUI screens are missing sprites. See [bug.md](bug.md).
-2. **Not every vanilla shader builds (Phase 4).** The GLSL → SPIR-V → MSL path works for the
-   pipelines used by the loading screen, menus and terrain, but some variants still fail to compile
-   (for example `animate_sprite_interpolate`) and are skipped.
+2. **Multi-draw passes lose their uniforms (Phase 5).** `drawMultipleIndexed` never invokes each
+   draw's `uniformUploaderConsumer()`, and vanilla's chunk terrain path uses it. See BUG-004 in
+   [bug.md](bug.md). Shader *compilation* is complete: all 87 vanilla pipelines compile, verified by
+   `tools/shader_inventory/run.sh`.
 3. **MetalFX / frame generation are not presented (Phase 8).** The native scalers and interpolator
    are not driven by the Metal backend, and frame generation additionally needs a
    `CAMetalDisplayLink` pacer so two drawables land on different refreshes.
@@ -153,6 +155,15 @@ Compile against a different instance with
 JAVA=/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/java
 $JAVA --enable-native-access=ALL-UNNAMED \
     -cp build/classes:build/test-classes:<client-classpath> net.metalmod.StandaloneTestRunner
+
+# one shader pair through the real pipeline, outside the game
+# (prints the SPIR-V interfaces, both MSL sources and Metal's verdict; non-zero exit on rejection)
+./tools/shader_repro/run.sh \
+    assets/minecraft/shaders/core/animate_sprite.vsh \
+    assets/minecraft/shaders/core/animate_sprite_interpolate.fsh
+
+# every vanilla pipeline: exits 0 only when all of them compile
+./tools/shader_inventory/run.sh        # total=87 ok=87 failed=0
 ```
 
 ---
@@ -184,8 +195,11 @@ MetalMod/
 │   ├── build_mod.sh                    # Authoritative build
 │   ├── build_classpath.py              # Classpath from the launcher's version JSON
 │   └── run_smoke.sh                    # Runs the native smoke test
+├── tools/
+│   ├── shader_repro/run.sh             # Reproduce one shader pair's Metal pipeline offline
+│   └── shader_inventory/run.sh         # Compile all 87 vanilla pipelines and report pass/fail
 ├── src/main/java/net/metalmod/
-│   ├── backend/                        # Metal GpuBackend implementation (Phases 1–3)
+│   ├── backend/                        # Metal GpuBackend implementation (Phases 1–4)
 │   ├── client/                         # Fabric entrypoint + Mod Menu config screen
 │   ├── config/                         # Presets and persistence
 │   ├── debug/                          # F3 debug entry

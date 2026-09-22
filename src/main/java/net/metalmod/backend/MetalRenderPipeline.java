@@ -41,6 +41,11 @@ public final class MetalRenderPipeline {
     private final Map<String, Integer> fragmentTextures;
     private final Map<String, Integer> vertexSamplers;
     private final Map<String, Integer> fragmentSamplers;
+    // Precomputed unions of the names the shaders declare, so the render pass can tell "the engine
+    // never bound this" from "this pipeline does not use it" without rebuilding sets per draw.
+    private final java.util.Set<String> declaredBuffers;
+    private final java.util.Set<String> declaredTextures;
+    private final java.util.Set<String> declaredSamplers;
     private final int topology;
     private boolean closed;
 
@@ -58,7 +63,16 @@ public final class MetalRenderPipeline {
         this.fragmentTextures = fragmentTextures;
         this.vertexSamplers = vertexSamplers;
         this.fragmentSamplers = fragmentSamplers;
+        this.declaredBuffers = union(vertexBuffers, fragmentBuffers);
+        this.declaredTextures = union(vertexTextures, fragmentTextures);
+        this.declaredSamplers = union(vertexSamplers, fragmentSamplers);
         this.topology = topology;
+    }
+
+    private static java.util.Set<String> union(Map<String, Integer> a, Map<String, Integer> b) {
+        java.util.Set<String> names = new java.util.HashSet<>(a.keySet());
+        names.addAll(b.keySet());
+        return java.util.Set.copyOf(names);
     }
 
     /** Compile both stages and build the native pipeline. Returns null on any failure. */
@@ -68,25 +82,29 @@ public final class MetalRenderPipeline {
             // Inject the pipeline's own shader defines on top of the source the ShaderManager
             // produced. Without these, defines like PORTAL_LAYERS are undefined, and worse, a
             // vertex and fragment stage can end up with different defines and therefore different
-            // varyings.
-            String vertexSource = com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
-                    source.get(pipeline.getVertexShader(), ShaderType.VERTEX), pipeline.getShaderDefines());
-            String fragmentSource = com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
-                    source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT), pipeline.getShaderDefines());
-            MetalShaderCompiler.CompiledShader vs = compiler.compile(
-                    pipeline.getVertexShader().toString(), vertexSource, ShaderType.VERTEX);
-            MetalShaderCompiler.CompiledShader fs = compiler.compile(
-                    pipeline.getFragmentShader().toString(), fragmentSource, ShaderType.FRAGMENT);
+            // varyings. Both are supplied lazily so a shader-pair cache hit skips them entirely.
+            MetalShaderCompiler.CompiledPair pair = compiler.compilePair(
+                    pipeline.getVertexShader(), pipeline.getFragmentShader(), pipeline.getShaderDefines(),
+                    () -> com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
+                            source.get(pipeline.getVertexShader(), ShaderType.VERTEX),
+                            pipeline.getShaderDefines()),
+                    () -> com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
+                            source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT),
+                            pipeline.getShaderDefines()));
+            MetalShaderCompiler.CompiledShader vs = pair.vertex();
+            MetalShaderCompiler.CompiledShader fs = pair.fragment();
 
             MemorySegment vlib = MetalNative.libraryCreate(device.deviceHandle(), vs.msl());
             if (vlib.address() == 0) {
-                System.err.println("[MetalMod] vertex MSL failed for " + pipeline.getLocation());
+                System.err.println("[MetalMod] vertex MSL failed for " + pipeline.getLocation()
+                        + ": " + MetalNative.lastError());
                 return null;
             }
             MemorySegment flib = MetalNative.libraryCreate(device.deviceHandle(), fs.msl());
             if (flib.address() == 0) {
                 MetalNative.libraryRelease(vlib);
-                System.err.println("[MetalMod] fragment MSL failed for " + pipeline.getLocation());
+                System.err.println("[MetalMod] fragment MSL failed for " + pipeline.getLocation()
+                        + ": " + MetalNative.lastError());
                 return null;
             }
 
@@ -171,7 +189,8 @@ public final class MetalRenderPipeline {
                 if (pipe.address() == 0) {
                     MetalNative.libraryRelease(vlib);
                     MetalNative.libraryRelease(flib);
-                    System.err.println("[MetalMod] native pipeline creation failed for " + pipeline.getLocation());
+                    System.err.println("[MetalMod] native pipeline creation failed for "
+                            + pipeline.getLocation() + ": " + MetalNative.lastError());
                     return null;
                 }
                 return new MetalRenderPipeline(pipe, vlib, flib,
@@ -192,6 +211,15 @@ public final class MetalRenderPipeline {
     public int fragmentTexture(String name) { return this.fragmentTextures.getOrDefault(name, -1); }
     public int vertexSampler(String name) { return this.vertexSamplers.getOrDefault(name, -1); }
     public int fragmentSampler(String name) { return this.fragmentSamplers.getOrDefault(name, -1); }
+
+    /** GLSL names of every uniform buffer the two stages declare. */
+    public java.util.Set<String> declaredBuffers() { return this.declaredBuffers; }
+
+    /** GLSL names of every texture the two stages declare. */
+    public java.util.Set<String> declaredTextures() { return this.declaredTextures; }
+
+    /** GLSL names of every sampler the two stages declare. */
+    public java.util.Set<String> declaredSamplers() { return this.declaredSamplers; }
 
     public void close() {
         if (this.closed) {
