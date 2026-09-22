@@ -334,6 +334,11 @@ public final class MetalDevice implements GpuDeviceBackend {
                 /* multiDrawIndirect */ false,
                 /* drawIndirect */ false,
                 /* nonZeroFirstInstance */ true,
+                // persistentMapping false is still correct: buffers are shared storage and written
+                // directly, and the engine only picks the persistently-mapped staging path when it
+                // is true *and* writeToBufferIsSlow is true. Vulkan reports false for the latter
+                // too, so both backends use StagingBuffer.Cpu; what made that path wrong was the
+                // synchronous writeToBuffer, not the staging choice (BUG-023).
                 /* persistentMapping */ false);
         DeviceInfo info = new DeviceInfo(
                 strings[0], strings[1], strings[2],

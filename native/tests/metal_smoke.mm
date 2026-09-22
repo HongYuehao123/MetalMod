@@ -536,6 +536,79 @@ static void test_fence(void) {
     mmm_device_release(device);
 }
 
+// The engine streams chunk meshes through a staging ring buffer into a persistent mesh buffer with
+// CommandEncoder.copyToBuffer. On Vulkan that is a vkCmdCopyBuffer recorded into the frame, so the
+// queue orders the overwrite after any earlier reads of the destination. A CPU memcpy (which is
+// what this used to be) races those reads, which is the transient wrong-section artefact. Check the
+// blit copies correctly at an offset and that a fence sees it complete.
+static void test_buffer_copy(void) {
+    printf("\n== buffer copy (staging -> mesh, ordered on the queue) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int length = 256;
+    void* source = mmm_buffer_create(device, length);
+    void* target = mmm_buffer_create(device, length);
+    check("buffers created", source != NULL && target != NULL, "");
+
+    unsigned char* sourceBytes = (unsigned char*)mmm_buffer_contents(source);
+    unsigned char* targetBytes = (unsigned char*)mmm_buffer_contents(target);
+    for (int i = 0; i < length; i++) sourceBytes[i] = (unsigned char)(i * 7 + 3);
+    memset(targetBytes, 0, length);
+
+    // Whole-buffer copy.
+    check("copy whole buffer issued",
+          mmm_copy_buffer_to_buffer(queue, source, 0, target, 0, length) == 0, "");
+    void* fence = mmm_fence_create(queue);
+    mmm_fence_wait(fence, 5000000000LL);
+    mmm_fence_release(fence);
+    bool wholeOk = true;
+    for (int i = 0; i < length; i++) {
+        if (targetBytes[i] != sourceBytes[i]) { wholeOk = false; break; }
+    }
+    check("a fenced whole-buffer copy is byte-exact", wholeOk, "");
+
+    // Offsets: copy source[64..192) into target[0..128) and source[0..32) into target[224..256).
+    memset(targetBytes, 0, length);
+    check("copy at offsets issued",
+          mmm_copy_buffer_to_buffer(queue, source, 64, target, 0, 128) == 0, "");
+    check("copy into the tail issued",
+          mmm_copy_buffer_to_buffer(queue, source, 0, target, 224, 32) == 0, "");
+    fence = mmm_fence_create(queue);
+    mmm_fence_wait(fence, 5000000000LL);
+    mmm_fence_release(fence);
+    bool offsetOk = true;
+    for (int i = 0; i < 128; i++) if (targetBytes[i] != sourceBytes[64 + i]) offsetOk = false;
+    for (int i = 0; i < 32; i++) if (targetBytes[224 + i] != sourceBytes[i]) offsetOk = false;
+    for (int i = 128; i < 224; i++) if (targetBytes[i] != 0) offsetOk = false;
+    check("source/destination offsets and the untouched gap are exact", offsetOk, "");
+
+    // CPU bytes into a buffer (CommandEncoder.writeToBuffer), also ordered on the queue.
+    memset(targetBytes, 0, length);
+    check("write-buffer-bytes issued",
+          mmm_write_buffer_bytes(queue, target, 0, sourceBytes, length) == 0, "");
+    fence = mmm_fence_create(queue);
+    mmm_fence_wait(fence, 5000000000LL);
+    mmm_fence_release(fence);
+    bool writeOk = true;
+    for (int i = 0; i < length; i++) {
+        if (targetBytes[i] != sourceBytes[i]) { writeOk = false; break; }
+    }
+    check("a fenced write-buffer-bytes is byte-exact", writeOk, "");
+
+    // Out-of-range and NULL must be refused, not abort.
+    check("out-of-range copy is refused",
+          mmm_copy_buffer_to_buffer(queue, source, 200, target, 0, 200) != 0, "");
+    check("null source is refused",
+          mmm_copy_buffer_to_buffer(queue, NULL, 0, target, 0, 4) != 0, "");
+
+    mmm_buffer_release(source);
+    mmm_buffer_release(target);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 // BUG-013: Minecraft declares CloudFaces as TEXEL_BUFFER with GpuFormat R8_SINT, and the generated
 // MSL reads it as an int texel buffer. Metal is strict about which pixel formats a texture_buffer<T>
 // accepts, so rather than guess, ask Metal directly which combinations it will build.
@@ -857,6 +930,7 @@ int main(void) {
         test_sampler_address_modes();
         test_region_clear();
         test_fence();
+        test_buffer_copy();
         test_texture_buffer();
         test_texel_buffer_emulation();
         test_base_instance();

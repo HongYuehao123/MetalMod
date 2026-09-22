@@ -312,21 +312,73 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     @Override
     public void writeToBuffer(GpuBufferSlice slice, ByteBuffer data) {
         MetalBuffer buffer = bufferOf(slice);
-        if (buffer == null || !buffer.isMapped() || data == null || data.remaining() <= 0) {
+        if (buffer == null || data == null || data.remaining() <= 0) {
             return;
         }
-        buffer.dataSlice(slice.offset(), data.remaining()).asByteBuffer().put(data.duplicate());
+        int length = data.remaining();
+        // GPU-ordered, not a CPU memcpy: the engine rewrites its per-frame uniform buffers (Globals -
+        // which carries CameraBlockPos/CameraOffset - plus lighting, projection and weather) with no
+        // fence, so a direct write races the previous frame still drawing from the same buffer while
+        // the camera moves. A shift of a fraction of a block opens a dark seam at section borders,
+        // which is glaring on a large flat water plane (BUG-023).
+        long offset = buffer.baseOffset() + slice.offset();
+        if (buffer.handle().address() != 0) {
+            MemorySegment bytes = MemorySegment.ofBuffer(data.duplicate());
+            int result;
+            if (bytes.isNative()) {
+                result = MetalNative.writeBufferBytes(this.device.queueHandle(), buffer.handle(),
+                        offset, bytes, length);
+            } else {
+                try (Arena arena = Arena.ofConfined()) {
+                    MemorySegment copy = arena.allocate(Math.max(1, length));
+                    MemorySegment.copy(bytes, 0L, copy, 0L, length);
+                    result = MetalNative.writeBufferBytes(this.device.queueHandle(), buffer.handle(),
+                            offset, copy, length);
+                }
+            }
+            if (result == 0) {
+                return;
+            }
+            MetalDevice.reportResourceFailure("writeToBuffer returned " + result
+                    + " length " + length);
+        }
+        // Fall back to the CPU path only when the native blit is unavailable (e.g. a stale dylib).
+        if (!buffer.isMapped()) {
+            return;
+        }
+        buffer.dataSlice(slice.offset(), length).asByteBuffer().put(data.duplicate());
     }
 
     @Override
     public void copyToBuffer(GpuBufferSlice source, GpuBufferSlice target) {
         MetalBuffer src = bufferOf(source);
         MetalBuffer dst = bufferOf(target);
-        if (src == null || dst == null || !src.isMapped() || !dst.isMapped()) {
+        if (src == null || dst == null) {
             return;
         }
         long length = Math.min(source.length(), target.length());
         if (length <= 0) {
+            return;
+        }
+        // A GPU blit on the device queue, not a CPU memcpy. The engine frees and immediately reuses
+        // a mesh region in its staging->uber-buffer upload, and on Vulkan the copy is a
+        // vkCmdCopyBuffer recorded into the frame, so the queue serialises the overwrite behind the
+        // previous frame's reads of that region. A CPU copy writes shared memory the instant it is
+        // called, so the GPU can still be reading the old mesh: a section renders with the next
+        // section's vertices, which is the transient, motion-correlated patch in BUG-023.
+        long sourceOffset = src.baseOffset() + source.offset();
+        long targetOffset = dst.baseOffset() + target.offset();
+        if (src.handle().address() != 0 && dst.handle().address() != 0) {
+            int result = MetalNative.copyBufferToBuffer(this.device.queueHandle(),
+                    src.handle(), sourceOffset, dst.handle(), targetOffset, length);
+            if (result == 0) {
+                return;
+            }
+            MetalDevice.reportResourceFailure("copyToBuffer returned " + result
+                    + " length " + length);
+        }
+        // Fall back to the CPU path only when the native blit is unavailable (e.g. a stale dylib).
+        if (!src.isMapped() || !dst.isMapped()) {
             return;
         }
         MemorySegment.copy(src.dataSlice(source.offset(), length), 0L,

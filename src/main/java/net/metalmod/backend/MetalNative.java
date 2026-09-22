@@ -28,8 +28,9 @@ public final class MetalNative {
     private static MethodHandle mhLayerCreateForNsWindow, mhLayerRelease, mhLayerConfigure,
             mhLayerAcquire, mhLayerPresentClear, mhLayerPresentTexture, mhLayerSetPresentQueue;
     private static MethodHandle mhTextureCreateFull, mhTextureCreateView, mhTextureReplaceRegion,
-            mhTextureReadRegion, mhTextureRelease, mhCopyTextureToTexture;
-    private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease;
+            mhTextureReadRegion, mhTextureRelease, mhCopyTextureToTexture, mhCopyBufferToBuffer;
+    private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease,
+            mhWriteBufferBytes;
     private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures, mhClearTexturesRegion;
     private static MethodHandle mhFenceCreate, mhFenceWait, mhFenceRelease;
     private static MethodHandle mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
@@ -105,6 +106,10 @@ public final class MetalNative {
                 FunctionDescriptor.of(A, A, L, I, I, I, I, I));
         mhCopyTextureToTexture = linker.downcallHandle(symbol(lookup, "mmm_copy_texture_to_texture"),
                 FunctionDescriptor.of(I, A, A, I, I, I, I, A, I, I, I, I, I, I, I));
+        mhCopyBufferToBuffer = linker.downcallHandle(symbol(lookup, "mmm_copy_buffer_to_buffer"),
+                FunctionDescriptor.of(I, A, A, L, A, L, L));
+        mhWriteBufferBytes = linker.downcallHandle(symbol(lookup, "mmm_write_buffer_bytes"),
+                FunctionDescriptor.of(I, A, A, L, A, L));
         mhTextureReplaceRegion = linker.downcallHandle(symbol(lookup, "mmm_texture_replace_region"),
                 FunctionDescriptor.of(I, A, I, I, I, I, I, I, A, L));
         mhTextureReadRegion = linker.downcallHandle(symbol(lookup, "mmm_texture_read_region"),
@@ -240,6 +245,30 @@ public final class MetalNative {
             int targetLevel, int targetX, int targetY, int width, int height, int depth) {
         return i(mhCopyTextureToTexture, queue, source, sourceSlice, sourceLevel, sourceX, sourceY,
                 target, targetSlice, targetLevel, targetX, targetY, width, height, depth);
+    }
+
+    /**
+     * Copy a byte range between two buffers with a blit encoder, committed on the device queue.
+     *
+     * <p>Used by {@code CommandEncoder.copyToBuffer}. The engine frees and immediately reuses a mesh
+     * region in its staging-to-uber-buffer upload, and the copy has to be ordered behind the previous
+     * frame reads of that region; a CPU memcpy is not.
+     */
+    public static int copyBufferToBuffer(MemorySegment queue, MemorySegment source, long sourceOffset,
+            MemorySegment target, long targetOffset, long length) {
+        return i(mhCopyBufferToBuffer, queue, source, sourceOffset, target, targetOffset, length);
+    }
+
+    /**
+     * Write CPU bytes into a buffer with a blit encoder, committed on the device queue.
+     *
+     * <p>Used by {@code CommandEncoder.writeToBuffer}. The engine rewrites its per-frame uniform
+     * buffers (Globals, lighting, projection) with no fence, so the write has to be ordered behind the
+     * previous frame reads of the same buffer; a CPU memcpy is not.
+     */
+    public static int writeBufferBytes(MemorySegment queue, MemorySegment target, long targetOffset,
+            MemorySegment bytes, long length) {
+        return i(mhWriteBufferBytes, queue, target, targetOffset, bytes, length);
     }
 
     public static int textureReplaceRegion(MemorySegment tex, int mip, int slice, int x, int y, int w, int h, ByteBuffer data, long rowBytes) {

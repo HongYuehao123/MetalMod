@@ -314,16 +314,19 @@ Also for Phase 5:
   because `core/screenquad` has no projection matrix to carry Minecraft's Y convention and only
   `/atlas/` targets were being flipped. `setPipeline` now flips for any `screenquad` pass, which also
   puts the whole post-processing chain into Vulkan's orientation. See BUG-022.
-- **BUG-023 is open and its cause is NOT the texture copy** - that was fixed with a blit, installed
-  and re-run, and the artefact is unchanged. The recording shows large block-aligned patches in the
-  water whose brightness flips between frames in the same region, which is a per-section per-frame
-  colour error: the per-draw `ChunkSection` uniform and the dynamic-uniform ring buffer / fence
-  (BUG-004 and BUG-011 territory), not water. Water is where it is visible, not where it is caused.
-- **Open from the second run, with the reports narrowed.** See BUG-023 and BUG-024.
-  - **Water:** the glaze is *local to the water*, and flying through a water edge leaves the edge
-    displaced from the surface for about a second. A single frame cannot show that, so it is a
-    staleness or pass-ordering symptom rather than a UV or a blending one. `WATER_MASK`'s `WRITE_NONE`
-    was the obvious suspect and is now eliminated by measurement.
+- **BUG-023 is fixed: `writeToBuffer` and `copyToBuffer` were synchronous CPU memcpys.**
+  `GlobalSettingsUniform.update` rewrites the `Globals` block (`CameraBlockPos`/`CameraOffset`) every
+  frame through `CommandEncoder.writeToBuffer`, and the mesh path went through the same call. Vulkan
+  records both as queued `vkCmdCopyBuffer`s, so the write waits for the previous frame; the CPU copy
+  did not, so while moving the GPU read the next frame's camera mid-frame and one displayed frame was
+  split into two offsets - a dark seam whose boundary is a section border, worst on a flat water
+  plane. Both now blit on the device queue (`mmm_write_buffer_bytes`, `mmm_copy_buffer_to_buffer`).
+  Verified by `metalmod_smoke` and `tools/render_check`. See BUG-023; in-game confirmation pending.
+- **Open from the second run, with the reports narrowed.** See BUG-024.
+  - **Water:** fixed as part of BUG-023. The glaze and the lagging edge were a uniform/mesh upload
+    ordering fault, not a texture or a shader. The `post/transparency` six-layer path is inactive with
+    Improved Transparency off, which is the default here; `WATER_MASK`'s `WRITE_NONE` was eliminated
+    by measurement.
   - **Inventory items: fixed** (BUG-024). The GUI item atlas is labelled `"UI items atlas"` and the
     flip test was `contains("/atlas/")`, so the icons were composited unflipped and sampled upside
     down, with sprites in the wrong slot - which is also why some never appeared. The rule now covers

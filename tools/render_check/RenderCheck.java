@@ -192,6 +192,7 @@ public final class RenderCheck {
             // series of these - and the engine asks for sub-rectangles of it. A wrong row stride or
             // a dropped region would show up as the coarse, blocky blur BUG-001 mentions.
             textureCopyCheck(device);
+            bufferCopyCheck(device);
 
             // The last mechanism BUG-001 implicates that is reachable offscreen: atlas compositing.
             // TextureAtlas composites sprites with ortho2D(0, w, 0, h), which puts atlas row 0 at
@@ -1024,6 +1025,81 @@ public final class RenderCheck {
 
         source.close();
         target.close();
+    }
+
+    /**
+     * Verify buffer-to-buffer copies, whole and by offset.
+     *
+     * <p>Chunk meshes leave the staging ring buffer through CommandEncoder.copyToBuffer, and the
+     * engine frees and immediately reuses a mesh region. The copy therefore has to run on the
+     * queue, so an overwrite is ordered behind the previous frame reads of that region; a CPU
+     * memcpy is not, which is the transient wrong-section artefact (BUG-023). A GPU copy is not
+     * visible to the CPU until the queue drains, so this synchronises before reading - the same
+     * trap the texture-copy helper was once caught by.
+     */
+    private static void bufferCopyCheck(MetalDevice device) {
+        final int LENGTH = 256;
+        byte[] pattern = new byte[LENGTH];
+        for (int i = 0; i < LENGTH; i++) {
+            pattern[i] = (byte) (i * 7 + 3);
+        }
+        GpuBuffer source = device.createBuffer(() -> "buffer copy source",
+                GpuBuffer.USAGE_COPY_SRC | GpuBuffer.USAGE_MAP_WRITE, LENGTH);
+        GpuBuffer target = device.createBuffer(() -> "buffer copy target",
+                GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_MAP_WRITE, LENGTH);
+        ((MetalBuffer) source).data().asByteBuffer().put(pattern);
+        ((MetalBuffer) target).data().asByteBuffer().put(new byte[LENGTH]);
+
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        encoder.copyToBuffer(source.slice(), target.slice());
+        MetalNative.queueSynchronize(device.queueHandle());
+        byte[] whole = new byte[LENGTH];
+        ((MetalBuffer) target).data().asByteBuffer().get(whole);
+        check("copyToBuffer copies the whole buffer byte for byte",
+                java.util.Arrays.equals(pattern, whole), describeBytes(pattern, whole));
+
+        // source[64..192) -> target[0..128), source[0..32) -> target[224..256).
+        ((MetalBuffer) target).data().asByteBuffer().put(new byte[LENGTH]);
+        CommandEncoderBackend encoder2 = device.createCommandEncoder();
+        encoder2.copyToBuffer(source.slice(64, 128), target.slice(0, 128));
+        encoder2.copyToBuffer(source.slice(0, 32), target.slice(224, 32));
+        MetalNative.queueSynchronize(device.queueHandle());
+        byte[] got = new byte[LENGTH];
+        ((MetalBuffer) target).data().asByteBuffer().get(got);
+        byte[] expected = new byte[LENGTH];
+        for (int i = 0; i < 128; i++) expected[i] = pattern[64 + i];
+        for (int i = 0; i < 32; i++) expected[224 + i] = pattern[i];
+        check("copyToBuffer honours offsets and leaves the gap untouched",
+                java.util.Arrays.equals(expected, got), describeBytes(expected, got));
+
+        // writeToBuffer: CPU bytes into a buffer, also ordered on the queue. This is the path the
+        // engine uses for the per-frame Globals/CameraBlockPos uniform, so a synchronous CPU write
+        // let one frame read the next frame camera position while moving (BUG-023).
+        ((MetalBuffer) target).data().asByteBuffer().put(new byte[LENGTH]);
+        ByteBuffer cpu = ByteBuffer.allocateDirect(LENGTH).order(ByteOrder.nativeOrder());
+        cpu.put(pattern).flip();
+        CommandEncoderBackend encoder3 = device.createCommandEncoder();
+        encoder3.writeToBuffer(target.slice(), cpu);
+        MetalNative.queueSynchronize(device.queueHandle());
+        byte[] written = new byte[LENGTH];
+        ((MetalBuffer) target).data().asByteBuffer().get(written);
+        check("writeToBuffer writes the whole buffer byte for byte",
+                java.util.Arrays.equals(pattern, written), describeBytes(pattern, written));
+
+        source.close();
+        target.close();
+    }
+
+    /** First differing byte offset, or an empty string when the arrays match. */
+    private static String describeBytes(byte[] expected, byte[] got) {
+        int limit = Math.min(expected.length, got.length);
+        for (int i = 0; i < limit; i++) {
+            if (expected[i] != got[i]) {
+                return "first mismatch at byte " + i + ": expected " + (expected[i] & 0xFF)
+                        + ", got " + (got[i] & 0xFF);
+            }
+        }
+        return expected.length == got.length ? "" : "length " + got.length;
     }
 
     private static void upload(GpuTexture texture, byte[] bytes, int size) {

@@ -1077,6 +1077,78 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
     return 0;
 }
 
+// A buffer-to-buffer blit, for the same reason as the texture copy above: the engine frees and
+// immediately reuses mesh regions in its staging->uber-buffer upload, and only a copy that is
+// ordered on the queue keeps that write behind the previous frame reads of the same region. A CPU
+// memcpy (what MetalMod used to do here) lands the new vertices while the GPU is still drawing the
+// old mesh, which shows up as a transient wrong/black section while the camera moves.
+int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
+                              void* target, int64_t targetOffset, int64_t length) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    id<MTLBuffer> src = (__bridge id<MTLBuffer>)source;
+    id<MTLBuffer> dst = (__bridge id<MTLBuffer>)target;
+    if (metalQueue == nil || src == nil || dst == nil) return -1;
+    if (length <= 0) return 0;
+    if (sourceOffset < 0 || targetOffset < 0) return -2;
+    if ((uint64_t)sourceOffset + (uint64_t)length > src.length) return -3;
+    if ((uint64_t)targetOffset + (uint64_t)length > dst.length) return -4;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod buffer copy";
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        if (blit == nil) return -5;
+        [blit copyFromBuffer:src
+                sourceOffset:(NSUInteger)sourceOffset
+                    toBuffer:dst
+           destinationOffset:(NSUInteger)targetOffset
+                        size:(NSUInteger)length];
+        [blit endEncoding];
+        [commandBuffer commit];
+    }
+    return 0;
+}
+
+// Write CPU bytes into a GPU buffer, ordered on the queue.
+//
+// The engine updates its per-frame uniform buffers (Globals - which carries CameraBlockPos and
+// CameraOffset - lighting, projection, weather) with CommandEncoder.writeToBuffer and no fence. On
+// Vulkan that copies the bytes into a transient staging buffer and records a vkCmdCopyBuffer into
+// the frame, so the destination is only rewritten after everything committed before it has run. A
+// CPU memcpy writes the destination immediately, while the previous frame may still be drawing from
+// it: with the camera moving, part of one frame reads the next frame camera position, the terrain
+// shifts, and the seam opens up as a dark patch - most visible on a large flat water plane and at
+// section borders. The temporary staging buffer is retained by the command buffer until it
+// completes, so releasing it here is safe.
+int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
+                           const void* bytes, int64_t length) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    id<MTLBuffer> dst = (__bridge id<MTLBuffer>)target;
+    if (metalQueue == nil || dst == nil || bytes == NULL) return -1;
+    if (length <= 0) return 0;
+    if (targetOffset < 0) return -2;
+    if ((uint64_t)targetOffset + (uint64_t)length > dst.length) return -3;
+
+    @autoreleasepool {
+        id<MTLBuffer> staging = [metalQueue.device newBufferWithBytes:bytes
+                                                             length:(NSUInteger)length
+                                                            options:MTLResourceStorageModeShared];
+        if (staging == nil) return -4;
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod buffer write";
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        if (blit == nil) return -5;
+        [blit copyFromBuffer:staging
+                sourceOffset:0
+                    toBuffer:dst
+           destinationOffset:(NSUInteger)targetOffset
+                        size:(NSUInteger)length];
+        [blit endEncoding];
+        [commandBuffer commit];
+    }
+    return 0;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Surface
 // ---------------------------------------------------------------------------------------------

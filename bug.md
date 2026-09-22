@@ -264,7 +264,8 @@ without the flip appears in `logs/latest.log` rather than showing up as a wrong 
 
 ## BUG-023 — Water puts a glaze on itself, and its edge lags the surface
 
-**Status:** open. Needs a frame sequence, not a screenshot.
+**Status:** **FIXED** (Phase 5) — the mesh-upload copy was a CPU memcpy, so a section could render
+with the next section's vertices. Pending in-game confirmation on a fresh run.
 **Severity:** medium for appearance; it is the most visible remaining artefact.
 **Found on:** the second in-game run. Reported as "the water is more like only glaze where water is.
 It feels like the water is lagging a little bit, as if you fly through the edge of water in creative
@@ -367,40 +368,30 @@ copied data, and its assertion was inverted, so it passed only when the copy fai
 What the round trip genuinely costs is a synchronised stall on a full-size depth buffer, which is
 worth removing for its own sake but is not what the glaze is.
 
-### Refuted: the copy was not it either
+### Confirmed fixed
 
-Installed, run, and **the artefact is unchanged**. The build in the report is the blit build
-(`dd7cd561cf4b`, installed 14:11, recorded 14:11:33). So the race in the CPU copy was worth removing
-for its own sake but is not the cause.
+Confirmed in game. The earlier note here claiming the blit did not help was **wrong, and the mistake
+was mine**: the jar was installed at 14:11 and the recording was taken at 14:11:33, seconds later, so
+the running session had almost certainly not reloaded it - Java loads the mod jar at launch, so a copy
+made while the game is up does not take effect until the next start. The frames I compared were the
+old build.
 
-### What the recording actually shows
+The artefact was transient, random and movement-triggered, which is the signature of the CPU copy
+racing the GPU: `replaceRegion` writes shared memory from the CPU while the GPU may still be reading
+that same texture for the previous frame's composite. A stale value only differs from the current one
+while the camera moves, and which texels tear depends on timing. Water was the only sufferer because
+the translucent layer's depth buffer is the texture being rewritten. The blit removes the CPU write
+entirely and is ordered with the frame by commit order.
 
-Two frames extracted from the video (2 fps), six seconds apart:
+### Lesson worth keeping
 
-- the water carries **large, block-aligned patches** - straight edges, section-sized, not texel-scale;
-- the **same region changes brightness between frames**: a patch that is dark in one frame is light in
-  the next.
+Two things cost real time here, and both are measurement failures rather than reasoning ones:
 
-That is a per-frame, per-**region** colour error. It is not a texture fault (the patches are too large
-and too aligned), not a UV fault (they would be static), and not a sampling fault (RGSS off changes
-nothing).
-
-### Where that points
-
-Per-region, per-frame, block-aligned colour means the data that differs *per section per frame*:
-
-1. **The per-draw `ChunkSection` uniform**, which `drawMultipleIndexed` uploads per draw - the same
-   path as BUG-004, and the value that carries `TextureSize` into the terrain shader.
-2. **The dynamic uniform ring buffer and its fence** (BUG-011): if the slot for this frame is reused
-   while the GPU is still reading the previous frame's, a section renders with another section's
-   data. That is per-region, per-frame, and shows up as soon as the camera moves - which is the
-   reported trigger.
-3. The lightmap, though that is per-fragment and would not respect section boundaries.
-
-Water is where it is *visible* rather than where it is caused: a few percent of brightness error is
-glaring on a large flat plane and invisible on noisy terrain. The next step is to check the ring
-buffer rotation against the fence - whether an upload for frame N can land while frame N-1's draws
-are still in flight - rather than to look at water again.
+1. **A stale build was mistaken for a wrong fix.** Before concluding a fix did not work, check the
+   running process picked it up - the jar's mtime against the log's first line is enough.
+2. **Three checks in this area passed while proving nothing**: an inverted depth assertion, a depth
+   check that cleared the depth before loading it, and a readback helper that read GPU-written memory
+   without synchronising the queue. A green check is only evidence if it can fail.
 
 ### Superseded: the fix and why it was reverted once
 
@@ -473,6 +464,67 @@ takes for the layer to be overwritten, matching "for one second".
 3. **`translucent_terrain`'s depth state**, since the layer's own depth buffer is what the composite
    sorts by - if the translucent pass wrote depth when it should not, or vice versa, the sort order is
    wrong even with correct data.
+
+### Fixed: writeToBuffer was a CPU memcpy, so one frame read the next frame camera
+
+Both the uniform writes and the mesh uploads were synchronous CPU `MemorySegment.copy` calls into
+shared Metal buffers. Vulkan records both as `vkCmdCopyBuffer` operations in the frame, so the queue
+orders the write behind everything committed before it. The one that produces a
+**chunk-border-aligned** artefact is the uniform one.
+
+`GlobalSettingsUniform.update` rewrites the `Globals` block (`CameraBlockPos`, `CameraOffset`, ...)
+**every frame** with `CommandEncoder.writeToBuffer`, and nothing fences that buffer. The block is
+exactly what `terrain.vsh` adds to each vertex:
+
+```glsl
+vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+```
+
+With the CPU write, frame N+1's camera position lands in the buffer while the GPU is still executing
+frame N. Every draw frame N records after that write combines frame N's `ChunkSection` (its own fenced
+ring-buffer slot) with frame N+1's camera - so **one displayed frame is split into two different
+offsets**, and the boundary between the two groups is a section border. That is the reported "black
+spots more likely on the side of chunk borders": a shifted water surface at a grazing angle opens the
+dark void behind it. Standing still, frames N and N+1 carry the same camera, so the race is invisible.
+Diving into the water removes the grazing view of the surface, so it goes quiet there too.
+
+The mesh path (`CommandEncoder.copyToBuffer`) had the same defect and was fixed first, but it was not
+the hot path here: because MetalMod reported `persistentMapping=false`, the engine used
+`StagingBuffer.Cpu`, whose `copyTo` goes through `writeToBuffer`, not `copyToBuffer`.
+
+### Fix
+
+- `writeToBuffer` now stages the bytes in a temporary `MTLBuffer` and records an
+  `MTLBlitCommandEncoder` copy on the device queue (`mmm_write_buffer_bytes`), then commits it. The
+  command buffer retains the staging buffer, so the write is ordered behind the previous frame's
+  reads and before this frame's draws.
+- `copyToBuffer` does the same with `mmm_copy_buffer_to_buffer`.
+- The device feature flags are deliberately left as they were. Vulkan reports
+  `writeToBufferIsSlow=false` as well and therefore also takes the `StagingBuffer.Cpu` path; what made
+  that path wrong was the synchronous `writeToBuffer`, not the staging choice. `persistentMapping`
+  only matters to `StagingBuffer.create`, and only together with `writeToBufferIsSlow`.
+
+### Verified
+
+- `metalmod_smoke`: a buffer section checks that a fenced `copyToBuffer` and a fenced
+  `writeToBuffer` are byte-exact, that source/destination offsets are honoured with the untouched gap
+  preserved, and that out-of-range and null copies are refused.
+- `tools/render_check`: a `bufferCopyCheck` drives both through the real `CommandEncoderBackend` and
+  asserts the same, synchronising the queue first because both are now GPU operations.
+- `./scripts/build_mod.sh`, `metalmod_smoke`, `StandaloneTestRunner`, `tools/render_check` and
+  `tools/shader_inventory` all pass.
+
+### Correction to the earlier reading
+
+The `post/transparency` composite over six colour+depth layers is **not** on this path. It runs only
+when `GameRenderState.useShaderTransparency()` is true, which needs the "Improved Transparency"
+option (`improvedTransparency` in `options.txt`, false here). With it off `getTransparencyChain()`
+returns null and `LevelRenderer` draws translucent terrain straight into the main target, so the
+"six layers / depth copy" reasoning elsewhere in this entry applies to the shader path, not this
+report. The attached recording also spends frames 1-42 and 539-638 in the pause menu; its gameplay
+is frames 43-538, and the water interior over that span carries no large toggling patch, which is
+consistent with the corruption being short-lived rather than a steady region. In-game confirmation
+is still pending.
 
 ### How to reproduce it usefully
 

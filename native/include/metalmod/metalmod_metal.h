@@ -148,6 +148,31 @@ MMM_API int mmm_copy_texture_to_texture(void* queue,
                                        int32_t targetX, int32_t targetY,
                                        int32_t width, int32_t height, int32_t depth);
 
+/// Copy a byte range between two buffers with a blit encoder.
+///
+/// The engine streams chunk meshes through a staging ring buffer into a persistent mesh buffer
+/// with CommandEncoder.copyToBuffer. On Vulkan that records a vkCmdCopyBuffer into the frame, so
+/// the write to the destination is ordered by the queue *after* everything committed before it -
+/// that is what makes it safe for the engine to free and immediately reuse a mesh region. A CPU
+/// memcpy runs the moment the engine calls it, while the GPU may still be reading that same region
+/// for the previous frame, so a section can render with the next section vertices (transient,
+/// random, motion-correlated corruption). The blit restores the ordering.
+MMM_API int mmm_copy_buffer_to_buffer(void* queue,
+                                      void* source, int64_t sourceOffset,
+                                      void* target, int64_t targetOffset,
+                                      int64_t length);
+
+/// Write CPU bytes into a buffer with a blit encoder, on the device queue.
+///
+/// CommandEncoder.writeToBuffer is how the engine rewrites its per-frame uniform buffers (Globals
+/// carries CameraBlockPos/CameraOffset, plus lighting, projection and weather). Vulkan stages the
+/// bytes and records a vkCmdCopyBuffer into the frame, so the destination is rewritten only after
+/// the previous frame has finished reading it; a CPU memcpy overwrites it immediately and lets one
+/// frame read the next frame camera position. The temporary staging buffer is retained by the
+/// command buffer until it completes.
+MMM_API int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
+                                   const void* bytes, int64_t length);
+
 /// Clear only the given rectangle, leaving everything outside it untouched.
 ///
 /// A Metal render pass clears a whole attachment - the load action ignores the scissor - so a
