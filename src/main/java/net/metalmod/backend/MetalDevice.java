@@ -168,6 +168,30 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + ", so it will not be bound correctly");
     }
 
+    // The reflection map says where a resource was asked to land; the MSL says where SPIRV-Cross
+    // actually put it. Those disagreeing means we bind one slot while the shader reads another, and
+    // it is invisible in both directions - the name is present, so nothing looks unbound. This is
+    // how BUG-012 survived its first fix: with duplicate SPIR-V bindings SPIRV-Cross applied one
+    // block's binding to another, and only the MSL showed it.
+    private static final java.util.Set<String> reportedSlotMismatches = new java.util.HashSet<>();
+    private static int slotMismatchCount;
+
+    static synchronized void reportSlotMismatch(String shader, String stage, String kind,
+                                                String name, int reflected, int msl) {
+        if (reportedSlotMismatches.size() >= 64
+                || !reportedSlotMismatches.add(shader + "|" + kind + "|" + name)) {
+            return;
+        }
+        slotMismatchCount++;
+        System.err.println("[MetalMod] " + kind + " slot mismatch in " + shader + " (" + stage
+                + "): reflection says '" + name + "' is at " + reflected + " but the generated MSL"
+                + " puts it at " + msl + ", so it would be bound to the wrong slot");
+    }
+
+    public static synchronized int slotMismatchCount() {
+        return slotMismatchCount;
+    }
+
     public static synchronized int bindingKindMismatchCount() {
         return bindingKindMismatchCount;
     }

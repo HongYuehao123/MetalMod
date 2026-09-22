@@ -162,9 +162,38 @@ clouds   buffers = {CloudInfo=16, Projection=17, DynamicTransforms=18, Fog=19}
 
 and by compiling all 87 vanilla pipelines: **zero collisions** reported.
 
+### The first fix was incomplete, and the MSL proved it
+
+Assigning slots from a counter fixed what `MetalShaderCompiler` *recorded*, but not the underlying
+problem. SPIRV-Cross keys `spvc_compiler_msl_add_resource_binding` on `(descriptor set, binding)`, and
+with `Globals` and `Fog` both on binding 0 it could not tell them apart — it applied one block's
+binding to the other. So the MSL disagreed with the map, which is worse than the original collision
+because it looks fixed:
+
+```
+terrain   map: {ChunkSection=16, Globals=17, Projection=18, Fog=19}
+          MSL:  ChunkSection[16], Projection[18], Globals[19]      <- Globals bound at 17, read at 19
+entity    map: {Projection=16, DynamicTransforms=17, Lighting=18, Fog=19}
+          MSL:  Projection[16], DynamicTransforms[17], Lighting[19] <- Lighting bound at 18, read at 19
+```
+
+The real fix is `normalizeBindings`: rewrite every SPIR-V `Binding` decoration to a unique number
+before SPIRV-Cross sees the module, so each resource is identifiable. The numbers are arbitrary,
+because MetalMod binds by name. With that, the map and the MSL agree exactly:
+
+```
+terrain  buffers = {ChunkSection=16, Globals=17, Projection=18, Fog=19}
+         MSL     ChunkSection[16], Globals[17], Projection[18]
+entity   buffers = {Lighting=18, Projection=16, DynamicTransforms=17}
+         MSL     Projection[16], DynamicTransforms[17], Lighting[18]
+```
+
 ### Guard
 
-`checkUniqueSlots` runs after each stage is collected and reports any two resources sharing a slot
+`verifyMslSlots` parses the generated MSL for `[[buffer(N)]]` / `[[texture(N)]]` and checks each
+against the reflection map, reporting any disagreement — this is the check that would have caught the
+incomplete first fix immediately, and it is silent across all 87 pipelines. `checkUniqueSlots` runs
+after each stage is collected and reports any two resources sharing a slot
 (`MetalDevice.reportSlotCollision`), so a regression is named in the log instead of silently
 corrupting uniforms. It reports nothing for the 87 vanilla pipelines.
 

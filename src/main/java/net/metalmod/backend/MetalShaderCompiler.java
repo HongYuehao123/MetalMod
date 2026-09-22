@@ -66,7 +66,7 @@ public final class MetalShaderCompiler implements AutoCloseable {
     private int cacheMisses;
 
     public CompiledShader compile(String name, String source, ShaderType type) {
-        return translate(toSpirv(name, source, type), type);
+        return translate(name, toSpirv(name, source, type), type);
     }
 
     /**
@@ -100,8 +100,8 @@ public final class MetalShaderCompiler implements AutoCloseable {
         int[] vertexWords = toSpirv(vertexName, vertexSource, ShaderType.VERTEX);
         int[] fragmentWords = toSpirv(fragmentName, fragmentSource, ShaderType.FRAGMENT);
         alignVaryings(vertexWords, fragmentWords);
-        return new CompiledPair(translate(vertexWords, ShaderType.VERTEX),
-                translate(fragmentWords, ShaderType.FRAGMENT));
+        return new CompiledPair(translate(vertexName, vertexWords, ShaderType.VERTEX),
+                translate(fragmentName, fragmentWords, ShaderType.FRAGMENT));
     }
 
     /** One-line cache accounting, so the saving is observable rather than assumed. */
@@ -246,7 +246,8 @@ public final class MetalShaderCompiler implements AutoCloseable {
         return out.toString();
     }
 
-    private CompiledShader translate(int[] words, ShaderType type) {
+    private CompiledShader translate(String name, int[] words, ShaderType type) {
+        normalizeBindings(words);
         Map<String, Integer> buffers = new HashMap<>();
         Map<String, Integer> textures = new HashMap<>();
         Map<String, Integer> samplers = new HashMap<>();
@@ -290,14 +291,15 @@ public final class MetalShaderCompiler implements AutoCloseable {
                 collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, stage, textures, samplers, slots);
                 collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, stage, null, samplers, slots);
                 collectInputs(compiler, resources, stack, inputs);
-                String stageName = type == ShaderType.VERTEX ? "vertex" : "fragment";
-                checkUniqueSlots(stageName, "uniform buffer", buffers);
-                checkUniqueSlots(stageName, "texture", textures);
-                checkUniqueSlots(stageName, "sampler", samplers);
 
                 PointerBuffer result = stack.mallocPointer(1);
                 check(Spvc.spvc_compiler_compile(compiler, result) == 0, "compile_msl", ctx);
                 String msl = MemoryUtil.memUTF8(result.get(0));
+                String stageName = type == ShaderType.VERTEX ? "vertex" : "fragment";
+                checkUniqueSlots(stageName, "uniform buffer", buffers);
+                checkUniqueSlots(stageName, "texture", textures);
+                checkUniqueSlots(stageName, "sampler", samplers);
+                verifyMslSlots(name, stageName, msl, buffers, textures);
                 return new CompiledShader(msl, buffers, buffers, textures, samplers, inputs);
             } finally {
                 Spvc.spvc_context_destroy(ctx);
@@ -402,6 +404,80 @@ public final class MetalShaderCompiler implements AutoCloseable {
                 if (secondary != null) secondary.put(name, mslSampler);
             }
             Spvc.spvc_compiler_msl_add_resource_binding(compiler, resourceBinding);
+        }
+    }
+
+    /**
+     * Give every resource a unique SPIR-V {@code Binding} decoration.
+     *
+     * <p>glslang emits duplicates: every shader importing {@code fog.glsl} gets its {@code Fog} block
+     * at binding 0 alongside another block at binding 0 as well. That is invalid SPIR-V, and
+     * SPIRV-Cross keys {@code spvc_compiler_msl_add_resource_binding} on {@code (set, binding)} — so
+     * with two resources on the same key it applies one of the bindings to the wrong block and the
+     * MSL ends up disagreeing with the slot we recorded. Renumbering every Binding decoration makes
+     * each resource identifiable, which is all the explicit MSL binding needs. MetalMod binds by
+     * name, so the numbers themselves are arbitrary.
+     */
+    private static void normalizeBindings(int[] words) {
+        java.util.List<Integer> targets = new java.util.ArrayList<>();
+        for (int i = 5; i < words.length; ) {
+            int wordCount = words[i] >>> 16;
+            if (wordCount == 0) {
+                break;
+            }
+            if ((words[i] & 0xFFFF) == OP_DECORATE && words[i + 2] == DECORATION_BINDING) {
+                targets.add(words[i + 1]);
+            }
+            i += wordCount;
+        }
+        if (targets.isEmpty()) {
+            return;
+        }
+        targets.sort(Integer::compareTo);
+        Map<Integer, Integer> renumbered = new HashMap<>();
+        int next = 0;
+        for (int target : targets) {
+            renumbered.put(target, next++);
+        }
+        for (int i = 5; i < words.length; ) {
+            int wordCount = words[i] >>> 16;
+            if (wordCount == 0) {
+                break;
+            }
+            if ((words[i] & 0xFFFF) == OP_DECORATE && words[i + 2] == DECORATION_BINDING) {
+                words[i + 3] = renumbered.get(words[i + 1]);
+            }
+            i += wordCount;
+        }
+    }
+
+    // "constant Name& _12 [[buffer(3)]]" and "texture2d<float> Name [[texture(1)]]".
+    private static final java.util.regex.Pattern MSL_BUFFER = java.util.regex.Pattern.compile(
+            "constant\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*&\\s*\\w+\\s*\\[\\[buffer\\((\\d+)\\)\\]\\]");
+    private static final java.util.regex.Pattern MSL_TEXTURE = java.util.regex.Pattern.compile(
+            "texture2d(?:_array|_ms)?\\s*<[^>]+>\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\[\\[texture\\((\\d+)\\)\\]\\]");
+
+    /**
+     * Check that what the reflection recorded matches where SPIRV-Cross actually put each resource in
+     * the MSL. A disagreement is a silent wrong-slot bind, so it is reported rather than assumed.
+     */
+    private static void verifyMslSlots(String shader, String stage, String msl,
+                                       Map<String, Integer> buffers, Map<String, Integer> textures) {
+        checkMsl(shader, stage, "uniform buffer", MSL_BUFFER, msl, buffers);
+        checkMsl(shader, stage, "texture", MSL_TEXTURE, msl, textures);
+    }
+
+    private static void checkMsl(String shader, String stage, String kind,
+                                 java.util.regex.Pattern pattern, String msl,
+                                 Map<String, Integer> expected) {
+        java.util.regex.Matcher matcher = pattern.matcher(msl);
+        while (matcher.find()) {
+            String name = matcher.group(1);
+            int slot = Integer.parseInt(matcher.group(2));
+            Integer wanted = expected.get(name);
+            if (wanted != null && wanted != slot) {
+                MetalDevice.reportSlotMismatch(shader, stage, kind, name, wanted, slot);
+            }
         }
     }
 
