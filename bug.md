@@ -514,6 +514,20 @@ model-view matrix at all.
 `VulkanRenderPass` only forwards it to the same consumer — so no push-constant reflection was needed
 for vanilla. It is still needed for Sodium, which uses `layout(push_constant)` under `VULKAN`.
 
+### The whole chain, checked rather than inferred
+
+The fix only works if every link lines up, so each was verified:
+
+| link | evidence |
+|---|---|
+| the engine supplies the payload | `ChunkSectionsToRender` passes `GpuBufferSlice[] chunkSectionInfos` |
+| the consumer names it | `LevelRenderer.lambda$prepareChunkRenders$1` calls `uploader.upload("ChunkSection", sections[index])` |
+| the backend invokes the consumer | `MetalRenderPassBackendTest` (7 assertions) |
+| the name resolves against reflection | `chunksection.glsl` declares `layout(std140) uniform ChunkSection { … }`, and blocks are keyed by type name (BUG-005) |
+
+So the upload arrives as `"ChunkSection"` and `applyBindings` finds the reflected `ChunkSection` block.
+Had the consumer used the GLSL instance name instead, the fix would have bound nothing.
+
 
 ### Symptoms
 
