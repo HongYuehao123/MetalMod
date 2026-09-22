@@ -208,7 +208,7 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ## BUG-024 — Inventory item icons are upside down, and some never appear
 
-**Status:** open. Needs a screenshot with the inventory open showing which items fail.
+**Status:** **FIXED** (Phase 5) — pending a look at the inventory on a fresh run.
 **Severity:** medium - the screen works, the icons are wrong.
 **Found on:** the second in-game run. Reported as "everything might not show up, and for those showed
 up, it is upside down."
@@ -228,12 +228,37 @@ own, so the UI has paths the world does not.
 "Some never appear" is consistent with the same cause: a sprite composited into the wrong row reads
 back as the wrong sprite, and a sprite that lands outside its slot reads as transparent.
 
-### Next step
+### Cause
 
-Log the colour-target label at `createRenderPass` for every pass and look at which labels the flip
-misses among the ones that write an atlas, an item or a GUI target. That is a one-line diagnostic and
-it settles the question directly, the way the lightmap was settled: assert the orientation the
-*engine* samples at, not the orientation the shader happens to write.
+The GUI item atlas is created as a texture labelled **`"UI items atlas"`**, and the flip test was
+`label.contains("/atlas/")`. It therefore did not match, the item icons were composited into it
+unflipped, and the inventory sampled them upside down - with sprites landing in the wrong slot, which
+is why some never appeared at all. The block and particle atlases are named
+`minecraft:textures/atlas/<name>.png` and were covered, which is why only the UI item atlas was
+affected.
+
+### Fix
+
+`needsYFlip` now recognises both families instead of one substring. The reasoning behind the rule is
+written down with it: Minecraft composites these targets with a projection that assumes a Y-down NDC
+and samples them with `v = row / height`, so every such pass must flip, and the target label is the
+only signal available because the matrix arrives later as the `Projection` uniform.
+
+### Making the next one visible instead of silent
+
+A missed label is a silent, wrong-looking frame - which is how this one survived a fix that was
+already in place for its two siblings. Every distinct colour-target label the engine renders into is
+now logged once, with whether it was flipped:
+
+```
+[MetalMod] render target 'minecraft:textures/atlas/render-check.png' yFlip=true
+[MetalMod] render target 'UI items atlas' yFlip=true
+[MetalMod] render target 'Lightmap' yFlip=true
+...
+```
+
+So the set of targets is read off a run rather than reasoned about, and a target being rendered into
+without the flip appears in `logs/latest.log` rather than showing up as a wrong picture later.
 
 ---
 

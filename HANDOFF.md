@@ -319,11 +319,11 @@ Also for Phase 5:
     displaced from the surface for about a second. A single frame cannot show that, so it is a
     staleness or pass-ordering symptom rather than a UV or a blending one. `WATER_MASK`'s `WRITE_NONE`
     was the obvious suspect and is now eliminated by measurement.
-  - **Inventory items:** some never appear and the ones that do are upside down, which is a Y flip in
-    the same family as BUG-022 and the atlas flip. `/atlas/` targets are flipped, so the question is
-    which target the *item* path uses - MC has a separate GUI item atlas and a `UiLightmap` of its own.
-  - Both are one diagnostic away: log the colour-target label at `createRenderPass` and see which
-    labels the flip misses. That is how BUG-022 was settled.
+  - **Inventory items: fixed** (BUG-024). The GUI item atlas is labelled `"UI items atlas"` and the
+    flip test was `contains("/atlas/")`, so the icons were composited unflipped and sampled upside
+    down, with sprites in the wrong slot - which is also why some never appeared. The rule now covers
+    both families, and every distinct colour-target label is logged once with its flip state, so the
+    next missed target is visible in the log rather than silent.
 - **The first in-game run immediately found a crash the offline suites could not.** Entering a world
   aborted Metal on `MTLTextureDescriptor has width (181818) greater than the maximum allowed size of
   16384`. The texel-buffer emulation built its texture `texels x 1`, and SPIRV-Cross bakes a 4096

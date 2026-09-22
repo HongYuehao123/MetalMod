@@ -153,7 +153,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
             MemorySegment encoder = MetalNative.renderPassBegin(cb, count, colorTextures, loadClear,
                     clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
-            boolean atlasTarget = targetLabel != null && targetLabel.contains("/atlas/");
+            boolean atlasTarget = needsYFlip(targetLabel);
+            noteRenderTarget(targetLabel, atlasTarget);
             if (encoder.address() != 0 && atlasTarget) {
                 // TextureAtlas.uploadInitialContents() composites every sprite into the atlas with a
                 // render pass per mip level, using a projection built by
@@ -166,12 +167,48 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 MetalNative.renderPassSetViewport(encoder, 0.0, (double) height, (double) width, -(double) height);
             }
             this.viewportFlipped = atlasTarget;
+
             this.currentEncoder = encoder;
             if (encoder.address() == 0) {
                 System.err.println("[MetalMod] render pass begin failed");
             }
             return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height));
         }
+    }
+
+    /**
+     * Whether passes rendering into this target need the Y-flipped viewport.
+     *
+     * <p>Minecraft composites sprites and the lightmap into offscreen textures with a projection that
+     * assumes a Y-down NDC - {@code TextureAtlasSprite.uploadSpriteUbo} builds
+     * {@code new Matrix4f().ortho2D(0, w, 0, h)}, which maps data row 0 to NDC y = -1 - and then
+     * samples those textures with {@code v = row / height}, where {@code v = 0} is the first data
+     * row. Metal's NDC y = -1 is the *last* framebuffer row, so every one of those passes must flip
+     * or the texture is stored mirrored. That produced two shipped bugs: the block atlas sampling a
+     * neighbouring sprite, and the lightmap rendering the world at night under a day sky (BUG-022).
+     *
+     * <p>The label is the only signal available at this point, because the matrix that needs the flip
+     * arrives later as the {@code Projection} uniform and the pipelines involved are ordinary texture
+     * pipelines. A missed label is therefore a silent, wrong-looking frame - which is exactly how the
+     * GUI item atlas, labelled {@code "UI items atlas"} and rendering inventory item icons, came out
+     * upside down while the block atlases were fine. Every distinct label is logged once by
+     * {@link #noteRenderTarget}, so the set is read off a run rather than reasoned about.
+     */
+    private static boolean needsYFlip(String label) {
+        return label != null && (label.contains("/atlas/") || label.contains("UI items atlas"));
+    }
+
+    // One line per distinct render target, so a target that is rendered into without the flip can be
+    // seen rather than guessed at. A "?" label means the pass had no colour texture to name.
+    private static final java.util.Set<String> notedRenderTargets = new java.util.HashSet<>();
+
+    private static void noteRenderTarget(String label, boolean flipped) {
+        synchronized (notedRenderTargets) {
+            if (!notedRenderTargets.add(label)) {
+                return;
+            }
+        }
+        System.out.println("[MetalMod] render target '" + label + "' yFlip=" + flipped);
     }
 
     /**
