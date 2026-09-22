@@ -279,8 +279,8 @@ modern versions, so it should follow, but its terrain path is the performance-cr
 dedicated testing. Iris is the shaderpack loader and is a Phase 7 dependency.
 
 **Progress (in flight).** Phase 5 began with the draw-path defects rather than the visual ones,
-because they are what make a visual symptom fixable. Twenty bugs were found and fixed
-(BUG-004 … BUG-020; see `bug.md`). Most were in the *values* rather than the plumbing: per-draw chunk
+because they are what make a visual symptom fixable. Twenty-one bugs were found and fixed
+(BUG-004 … BUG-021; see `bug.md`). Most were in the *values* rather than the plumbing: per-draw chunk
 uniforms never uploaded, uniform blocks keyed by instance name, five wrong `MTLBlendFactor` values,
 swapped sampler address modes, a hardcoded mip filter, arena sub-buffers binding the parent's offset
 0, sub-rectangle clears wiping a whole attachment, a no-op `GpuFence`, duplicate SPIR-V bindings that
@@ -319,6 +319,23 @@ on the CPU, along with the five factors BUG-006 corrected that vanilla never use
 shaderpacks will. The CPU model rounds its inputs to 8 bits first, so the expectation matches the
 attachment exactly rather than within a tolerance that could hide an off-by-one; breaking any single
 factor mapping now fails precisely the cases that use it.
+
+**In-game confirmation (first successful run).** The build installed after BUG-020 loaded a world and
+held it for minutes. The 30-second telemetry reported every health counter at zero -
+
+```
+textures=4460 views=9369 buffers=4139 samplers=33
+failures=0 pipelineFailures=0 unboundBindings=0 missingVertexAttributes=0
+slotCollisions=0 bindingKindMismatches=0 indexedFans=0
+shader pairs: compiled=56 reused=44 cached=56
+```
+
+- and a screenshot shows terrain with textures and lighting, a graded sky with fancy clouds, water,
+  the HUD, hotbar items, legible debug text and the debug coordinate axes, at 62.9 fps at 5120x2664
+  with RGSS filtering on. That is the first evidence that the Phase 5 work holds up outside the
+  harness. It also immediately produced two things the harness could not: BUG-020 (the world-load
+  abort) and BUG-021 (F3 reporting the upscaler as "Pipeline", so a working session displayed
+  "Pipeline: inactive").
 
 Verification moved from "it compiles" to "it renders the right pixel", which is what caught that
 three of those fixes were incomplete. Five offline gates now cover the phase:
@@ -417,7 +434,7 @@ native Metal backend, since MoltenVK cannot express it at all.
 
 **Phase 5 — vanilla render parity, in progress.** Phases 0–4 are done, and Phase 4's exit criterion
 is met: all 87 vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`. Phase 5's
-twenty fixes (BUG-004 … BUG-020) are in and all four offline suites are green — see the
+twenty-one fixes (BUG-004 … BUG-021) are in and all four offline suites are green — see the
 progress note under Phase 5 above.
 
 The next step is **an in-game run on a current build**, not more static analysis. BUG-001, BUG-002
@@ -425,8 +442,8 @@ and BUG-003 are runtime observations from a build predating most of these fixes,
 hypothesis for each is that it is already fixed: the harness now reproduces every mechanism they
 implicate — uniform-block slots, atlas samplers, region clears, the screen-space line expansion, the
 entity vertex format — and each renders correctly. What the run has to settle is which of them
-survive, and it also confirms the twenty fixes. The first run already earned its keep: it found a
-crash the offline suites could not reach (BUG-020).
+survive, and it also confirms the twenty-one fixes. The first run earned its keep immediately: it found a crash the
+offline suites could not reach (BUG-020) and a misleading status line (BUG-021).
 
 Install the current jar and re-check:
 

@@ -303,6 +303,12 @@ Also for Phase 5:
   from `LightmapInfo` - six floats followed by four `vec3`s, which is exactly where hand-built std140
   padding goes wrong. All three channels are asserted against channel-distinct light colours, because
   the first version compared only red and passed even with four bytes of padding removed.
+- **A world now loads and renders on Metal, and the telemetry is clean.** First successful run: every
+  counter zero (`failures`, `pipelineFailures`, `unboundBindings`, `missingVertexAttributes`,
+  `slotCollisions`, `bindingKindMismatches`, `indexedFans`), 4460 textures and 4139 buffers created,
+  and a screenshot showing terrain, sky with fancy clouds, water, HUD, items, legible text and the
+  debug axes at 62.9 fps at 5120x2664. Terrain is going through `sampleRGSS` in that session
+  (`Filtering: RGSS`), so the RGSS branch added in round 20 is live rather than theoretical.
 - **The first in-game run immediately found a crash the offline suites could not.** Entering a world
   aborted Metal on `MTLTextureDescriptor has width (181818) greater than the maximum allowed size of
   16384`. The texel-buffer emulation built its texture `texels x 1`, and SPIRV-Cross bakes a 4096

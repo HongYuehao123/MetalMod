@@ -39,9 +39,26 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         VulkanFrameManager mgr = VulkanFrameManager.getInstance();
         DebugScreenRegistration.recordDisplayCall();
 
-        displayer.addLine("§6[MetalMod]§r Pipeline: " + (mgr.isPipelineActive()
+        // The first line has to answer "is Metal drawing this frame?". It used to report the
+        // *MetalFX frame pipeline* under the bare label "Pipeline", so a session rendering happily on
+        // Metal still showed `Pipeline: inactive (Vulkan interop not registered)` - the upscaler is
+        // inactive by design, but nothing said so, and the line read as if the backend were off.
+        // The engine's own DeviceInfo is the authoritative answer: it names the backend it selected.
+        String backend = "none";
+        com.mojang.blaze3d.systems.GpuDevice device =
+                com.mojang.blaze3d.systems.RenderSystem.tryGetDevice();
+        if (device != null && device.getDeviceInfo() != null) {
+            backend = device.getDeviceInfo().backendName();
+        }
+        boolean metalActive = "Metal".equals(backend);
+        displayer.addLine("§6[MetalMod]§r Backend: " + (metalActive
+                ? "§aMetal§r (active)"
+                : "§7" + backend + "§r (Metal not in use)"));
+
+        // Named for what it is, and separate from the answer above.
+        displayer.addLine("§6[MetalMod]§r MetalFX: " + (mgr.isPipelineActive()
                 ? "§aactive§r"
-                : "§cinactive§r (" + mgr.getPipelineStatusText() + ")"));
+                : "§7inactive§r (" + mgr.getPipelineStatusText() + ")"));
 
         // Report the request separately from the outcome. Nothing is scaled today, and saying
         // "MetalFX: Spatial" without that qualifier would imply an effect that is not happening.

@@ -206,6 +206,48 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-021 — F3 said the backend was inactive while Metal was drawing every frame
+
+**Status:** **FIXED** (Phase 5) — diagnostic only, no rendering effect.
+**Severity:** low for play, high for anyone checking whether the backend is on.
+**Found on:** the first successful in-game run, while reading the F3 overlay.
+
+### Symptom
+
+A session rendering correctly on Metal - terrain, sky, clouds, HUD, 62.9 fps, all health counters
+zero - showed this as the first MetalMod line in F3:
+
+```
+[MetalMod] Pipeline: inactive (inactive (Vulkan interop not registered))
+```
+
+### Cause
+
+`MetalModDebugEntry` reported `VulkanFrameManager.isPipelineActive()` under the bare label
+`Pipeline`. That is the **MetalFX frame pipeline** - the upscaler - which is inactive by design in this
+build because MetalMod does not own presentation. Nothing on the line said so, so the most prominent
+status indicator in the game read as if the render backend were off, on a session where it was
+demonstrably on.
+
+The Metal backend's own state was only ever in the log (`Metal backend ENABLED`,
+`presenting real frames on Metal`), which is not where anyone looks.
+
+### Fix
+
+The first line now answers the question it appears to answer, from the engine's own record rather than
+from the mod's request flag:
+
+```
+[MetalMod] Backend: Metal (active)
+[MetalMod] MetalFX: inactive (Vulkan interop not registered)
+```
+
+`RenderSystem.tryGetDevice().getDeviceInfo().backendName()` is what the engine selected, and MC's own
+`Using graphics backend Metal` line is printed from the same field. The upscaler keeps its own line,
+named for what it is.
+
+---
+
 ## BUG-020 — Entering a world aborted: texel buffers were one row wide
 
 **Status:** **FIXED** (Phase 5) — pending confirmation on a fresh run.
