@@ -256,7 +256,13 @@ public final class MetalNative {
      */
     public static int copyBufferToBuffer(MemorySegment queue, MemorySegment source, long sourceOffset,
             MemorySegment target, long targetOffset, long length) {
-        return i(mhCopyBufferToBuffer, queue, source, sourceOffset, target, targetOffset, length);
+        ffiCalls++;
+        try {
+            return (int) mhCopyBufferToBuffer.invokeExact(queue, source, sourceOffset, target,
+                    targetOffset, length);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
 
     /**
@@ -268,7 +274,12 @@ public final class MetalNative {
      */
     public static int writeBufferBytes(MemorySegment queue, MemorySegment target, long targetOffset,
             MemorySegment bytes, long length) {
-        return i(mhWriteBufferBytes, queue, target, targetOffset, bytes, length);
+        ffiCalls++;
+        try {
+            return (int) mhWriteBufferBytes.invokeExact(queue, target, targetOffset, bytes, length);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
 
     public static int textureReplaceRegion(MemorySegment tex, int mip, int slice, int x, int y, int w, int h, ByteBuffer data, long rowBytes) {
@@ -290,8 +301,12 @@ public final class MetalNative {
     private static MethodHandle mhQueueSynchronize;
     public static MemorySegment fenceCreate(MemorySegment queue) { return addr(mhFenceCreate, queue); }
     public static boolean fenceWait(MemorySegment fence, long timeoutNanos) {
-        try { return (boolean) mhFenceWait.invokeWithArguments(fence, timeoutNanos); }
-        catch (Throwable t) { return true; }
+        ffiCalls++;
+        try {
+            return (boolean) mhFenceWait.invokeExact(fence, timeoutNanos);
+        } catch (Throwable t) {
+            return true;
+        }
     }
     public static void fenceRelease(MemorySegment fence) { v(mhFenceRelease, fence); }
     public static void queueSynchronize(MemorySegment queue) { v(mhQueueSynchronize, queue); }
@@ -307,20 +322,63 @@ public final class MetalNative {
     }
     public static void samplerRelease(MemorySegment s) { v(mhSamplerRelease, s); }
     public static int clearTextures(MemorySegment queue, MemorySegment color, boolean hasColor, float r, float g, float b, float a, MemorySegment depth, boolean hasDepth, double depthValue) {
-        return i(mhClearTextures, queue, hasColor ? color : MemorySegment.NULL, hasColor, r, g, b, a,
-                hasDepth ? depth : MemorySegment.NULL, hasDepth, depthValue);
+        ffiCalls++;
+        // Typed locals, for the reason given on renderPassBegin.
+        MemorySegment colorArgument = hasColor ? color : MemorySegment.NULL;
+        MemorySegment depthArgument = hasDepth ? depth : MemorySegment.NULL;
+        try {
+            return (int) mhClearTextures.invokeExact(queue, colorArgument, hasColor, r, g, b, a,
+                    depthArgument, hasDepth, depthValue);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
     public static int clearTexturesRegion(MemorySegment queue, MemorySegment color, boolean hasColor, float r, float g, float b, float a, MemorySegment depth, boolean hasDepth, double depthValue, int x, int y, int width, int height) {
-        return i(mhClearTexturesRegion, queue, hasColor ? color : MemorySegment.NULL, hasColor, r, g, b, a,
-                hasDepth ? depth : MemorySegment.NULL, hasDepth, depthValue, x, y, width, height);
+        ffiCalls++;
+        MemorySegment colorArgument = hasColor ? color : MemorySegment.NULL;
+        MemorySegment depthArgument = hasDepth ? depth : MemorySegment.NULL;
+        try {
+            return (int) mhClearTexturesRegion.invokeExact(queue, colorArgument, hasColor, r, g, b, a,
+                    depthArgument, hasDepth, depthValue, x, y, width, height);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
 
     // Command buffers ----------------------------------------------------------------------------
 
-    public static MemorySegment commandBufferCreate(MemorySegment queue) { return addr(mhCommandBufferCreate, queue); }
-    public static void commandBufferCommit(MemorySegment cb) { v(mhCommandBufferCommit, cb); }
-    public static void commandBufferWait(MemorySegment cb) { v(mhCommandBufferWait, cb); }
-    public static void commandBufferRelease(MemorySegment cb) { v(mhCommandBufferRelease, cb); }
+    public static MemorySegment commandBufferCreate(MemorySegment queue) {
+        ffiCalls++;
+        try {
+            return (MemorySegment) mhCommandBufferCreate.invokeExact(queue);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+    public static void commandBufferCommit(MemorySegment cb) {
+        ffiCalls++;
+        try {
+            mhCommandBufferCommit.invokeExact(cb);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+    public static void commandBufferWait(MemorySegment cb) {
+        ffiCalls++;
+        try {
+            mhCommandBufferWait.invokeExact(cb);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+    public static void commandBufferRelease(MemorySegment cb) {
+        ffiCalls++;
+        try {
+            mhCommandBufferRelease.invokeExact(cb);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
 
     // Shader libraries and pipelines -------------------------------------------------------------
 
@@ -368,39 +426,179 @@ public final class MetalNative {
     }
 
     // Render pass --------------------------------------------------------------------------------
+    //
+    // Everything below uses invokeExact rather than the varargs helpers above. Every draw goes
+    // through several of these, and invokeWithArguments boxes each primitive into an Object[] and
+    // runs the generic argument-conversion path, so at 6-18k draws a frame that was tens of
+    // thousands of boxed calls. invokeExact needs the static argument types at the call site to
+    // match the native descriptor exactly, which is why each body is written out rather than
+    // sharing a helper.
+    //
+    // ffiCalls counts them so the F3 line can show whether this path is actually load-bearing,
+    // instead of that being assumed.
+
+    /** Native calls issued since startup. The renderer samples the delta once per frame. */
+    public static long ffiCalls;
+
+    private static RuntimeException ffiFailure(Throwable t) {
+        return new RuntimeException(t);
+    }
 
     public static MemorySegment renderPassBegin(MemorySegment cb, int colorCount, MemorySegment colorTextures,
             MemorySegment colorLoadClear, MemorySegment clearColors, MemorySegment depthTexture,
             boolean depthLoadClear, double depthValue, int width, int height) {
-        return addr(mhRenderPassBegin, cb, colorCount, colorTextures, colorLoadClear, clearColors,
-                depthTexture == null ? MemorySegment.NULL : depthTexture, depthLoadClear ? 1 : 0,
-                depthValue, width, height);
+        ffiCalls++;
+        // Bound to a local first: invokeExact uses the *static* type of each argument, and a
+        // reference conditional is a poly expression, so writing the null check inline here compiles
+        // to an (Object,...) descriptor and throws WrongMethodTypeException on every call.
+        MemorySegment depth = depthTexture == null ? MemorySegment.NULL : depthTexture;
+        try {
+            return (MemorySegment) mhRenderPassBegin.invokeExact(cb, colorCount, colorTextures,
+                    colorLoadClear, clearColors, depth, depthLoadClear ? 1 : 0, depthValue, width, height);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
-    public static void renderPassEnd(MemorySegment enc) { v(mhRenderPassEnd, enc); }
-    public static void renderPassSetPipeline(MemorySegment enc, MemorySegment pipeline) { v(mhRenderPassSetPipeline, enc, pipeline); }
-    public static void renderPassSetVertexBuffer(MemorySegment enc, MemorySegment buffer, long offset, int index) { v(mhRenderPassSetVertexBuffer, enc, buffer, offset, index); }
-    public static void renderPassSetFragmentBuffer(MemorySegment enc, MemorySegment buffer, long offset, int index) { v(mhRenderPassSetFragmentBuffer, enc, buffer, offset, index); }
-    public static void renderPassSetVertexTexture(MemorySegment enc, MemorySegment texture, int index) { v(mhRenderPassSetVertexTexture, enc, texture, index); }
-    public static void renderPassSetFragmentTexture(MemorySegment enc, MemorySegment texture, int index) { v(mhRenderPassSetFragmentTexture, enc, texture, index); }
-    public static void renderPassSetVertexSampler(MemorySegment enc, MemorySegment sampler, int index) { v(mhRenderPassSetVertexSampler, enc, sampler, index); }
-    public static void renderPassSetFragmentSampler(MemorySegment enc, MemorySegment sampler, int index) { v(mhRenderPassSetFragmentSampler, enc, sampler, index); }
-    public static void renderPassSetScissor(MemorySegment enc, int x, int y, int w, int h) { v(mhRenderPassSetScissor, enc, x, y, w, h); }
-    public static void renderPassSetViewport(MemorySegment enc, double x, double y, double w, double h) { v(mhRenderPassSetViewport, enc, x, y, w, h); }
-    public static void renderPassPushDebugGroup(MemorySegment enc, MemorySegment label) { v(mhRenderPassPushDebugGroup, enc, label); }
-    public static void renderPassPopDebugGroup(MemorySegment enc) { v(mhRenderPassPopDebugGroup, enc); }
+
+    public static void renderPassEnd(MemorySegment enc) {
+        ffiCalls++;
+        try {
+            mhRenderPassEnd.invokeExact(enc);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetPipeline(MemorySegment enc, MemorySegment pipeline) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetPipeline.invokeExact(enc, pipeline);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetVertexBuffer(MemorySegment enc, MemorySegment buffer, long offset, int index) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetVertexBuffer.invokeExact(enc, buffer, offset, index);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetFragmentBuffer(MemorySegment enc, MemorySegment buffer, long offset, int index) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetFragmentBuffer.invokeExact(enc, buffer, offset, index);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetVertexTexture(MemorySegment enc, MemorySegment texture, int index) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetVertexTexture.invokeExact(enc, texture, index);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetFragmentTexture(MemorySegment enc, MemorySegment texture, int index) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetFragmentTexture.invokeExact(enc, texture, index);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetVertexSampler(MemorySegment enc, MemorySegment sampler, int index) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetVertexSampler.invokeExact(enc, sampler, index);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetFragmentSampler(MemorySegment enc, MemorySegment sampler, int index) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetFragmentSampler.invokeExact(enc, sampler, index);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetScissor(MemorySegment enc, int x, int y, int w, int h) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetScissor.invokeExact(enc, x, y, w, h);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassSetViewport(MemorySegment enc, double x, double y, double w, double h) {
+        ffiCalls++;
+        try {
+            mhRenderPassSetViewport.invokeExact(enc, x, y, w, h);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassPushDebugGroup(MemorySegment enc, MemorySegment label) {
+        ffiCalls++;
+        try {
+            mhRenderPassPushDebugGroup.invokeExact(enc, label);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void renderPassPopDebugGroup(MemorySegment enc) {
+        ffiCalls++;
+        try {
+            mhRenderPassPopDebugGroup.invokeExact(enc);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
     public static void renderPassDraw(MemorySegment enc, int topology, int vertexStart, int vertexCount, int instanceCount, int firstInstance) {
-        v(mhRenderPassDraw, enc, topology, vertexStart, vertexCount, instanceCount, firstInstance);
+        ffiCalls++;
+        try {
+            mhRenderPassDraw.invokeExact(enc, topology, vertexStart, vertexCount, instanceCount, firstInstance);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
+
     /**
      * Draw a triangle fan. Metal has no fan primitive, so the native side expands one into an
      * indexed triangle list from a cached index pattern; {@code vertexStart} becomes Metal's
      * {@code baseVertex} rather than an offset into the vertex buffer.
      */
     public static void renderPassDrawFan(MemorySegment enc, int vertexStart, int vertexCount, int instanceCount, int firstInstance) {
-        v(mhRenderPassDrawFan, enc, vertexStart, vertexCount, instanceCount, firstInstance);
+        ffiCalls++;
+        try {
+            mhRenderPassDrawFan.invokeExact(enc, vertexStart, vertexCount, instanceCount, firstInstance);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
+
     public static void renderPassDrawIndexed(MemorySegment enc, int topology, MemorySegment indexBuffer, long offset,
             int indexType, int indexCount, int instanceCount, int firstIndex, int baseVertex, int firstInstance) {
-        v(mhRenderPassDrawIndexed, enc, topology, indexBuffer, offset, indexType, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+        ffiCalls++;
+        try {
+            mhRenderPassDrawIndexed.invokeExact(enc, topology, indexBuffer, offset, indexType, indexCount,
+                    instanceCount, firstIndex, baseVertex, firstInstance);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
     }
 }

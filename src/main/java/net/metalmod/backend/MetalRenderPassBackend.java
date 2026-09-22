@@ -39,15 +39,13 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final Map<String, GpuTextureView> textures = new HashMap<>();
     private final Map<String, GpuSampler> samplers = new HashMap<>();
 
-    // What this encoder already has bound, by name, so a draw that binds the same objects as the
-    // previous one issues no FFI calls at all. Identity comparison is deliberate and is exactly the
-    // right test: the engine reuses one GpuBufferSlice object for a uniform that did not change
-    // (Globals, Projection, Fog and the lightmap hold for a whole terrain pass) and makes a fresh
-    // one for a uniform that did (ChunkSection, once per section). Cleared whenever the pipeline
-    // changes, because a name resolves to different slots under a different pipeline.
-    private final Map<String, GpuBufferSlice> boundUniforms = new HashMap<>();
-    private final Map<String, GpuTextureView> boundTextures = new HashMap<>();
-    private final Map<String, GpuSampler> boundSamplers = new HashMap<>();
+    // Names whose binding changed since the last draw. Only these are handed to Metal. Iterating
+    // everything that was ever bound - which is what the backend used to do - costs a map walk per
+    // draw for no work: a terrain pass sets one uniform per section and leaves the other dozen
+    // bindings alone. Both sets are emptied by applyBindings and refilled from scratch whenever the
+    // pipeline changes, because a name resolves to different slots under a different pipeline.
+    private final java.util.Set<String> dirtyUniforms = new java.util.HashSet<>();
+    private final java.util.Set<String> dirtyTextures = new java.util.HashSet<>();
 
     private String pipelineName = "none";
     private MetalRenderPipeline pipeline;
@@ -102,10 +100,9 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         this.lastEnginePipeline = pipeline;
         MetalRenderPipeline resolved = this.owner.device().pipelineFor(pipeline);
         this.pipeline = resolved;
-        // Slots differ per pipeline, so the "already bound" shadow is void.
-        this.boundUniforms.clear();
-        this.boundTextures.clear();
-        this.boundSamplers.clear();
+        // Slots differ per pipeline, so everything already set has to be handed to Metal again.
+        this.dirtyUniforms.addAll(this.uniforms.keySet());
+        this.dirtyTextures.addAll(this.textures.keySet());
         if (resolved == null) {
             this.pipelineName = pipeline.getLocation().toString();
             return;
@@ -152,50 +149,53 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (reportMissing && MetalDevice.censusEnabled()) {
             reportMissingBindings();
         }
-        for (Map.Entry<String, GpuBufferSlice> entry : this.uniforms.entrySet()) {
-            String name = entry.getKey();
-            GpuBufferSlice slice = entry.getValue();
-            if (this.boundUniforms.get(name) == slice) {
-                continue;
+        // Only what changed since the previous draw is handed to Metal; the encoder keeps the rest.
+        // A terrain pass re-binds its per-section block and nothing else.
+        if (!this.dirtyUniforms.isEmpty()) {
+            for (String name : this.dirtyUniforms) {
+                GpuBufferSlice slice = this.uniforms.get(name);
+                if (slice == null) {
+                    continue;
+                }
+                int vb = this.pipeline.vertexBuffer(name);
+                int fb = this.pipeline.fragmentBuffer(name);
+                if (vb < 0 && fb < 0) {
+                    continue;
+                }
+                MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
+                if (handle.address() == 0) {
+                    continue;
+                }
+                long offset = absoluteOffset(slice);
+                if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, offset, vb);
+                if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, offset, fb);
             }
-            int vb = this.pipeline.vertexBuffer(name);
-            int fb = this.pipeline.fragmentBuffer(name);
-            if (vb < 0 && fb < 0) {
-                continue;
-            }
-            MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
-            if (handle.address() == 0) {
-                continue;
-            }
-            long offset = absoluteOffset(slice);
-            if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, offset, vb);
-            if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, offset, fb);
-            this.boundUniforms.put(name, slice);
+            this.dirtyUniforms.clear();
         }
-        for (Map.Entry<String, GpuTextureView> entry : this.textures.entrySet()) {
-            String name = entry.getKey();
-            GpuTextureView view = entry.getValue();
-            GpuSampler sampler = this.samplers.get(name);
-            if (this.boundTextures.get(name) == view && this.boundSamplers.get(name) == sampler) {
-                continue;
-            }
-            int vt = this.pipeline.vertexTexture(name);
-            int ft = this.pipeline.fragmentTexture(name);
-            if (vt < 0 && ft < 0) {
-                continue;
-            }
-            MemorySegment texture = MetalCommandEncoderBackend.handleOf(view);
-            if (vt >= 0) MetalNative.renderPassSetVertexTexture(this.encoder, texture, vt);
-            if (ft >= 0) MetalNative.renderPassSetFragmentTexture(this.encoder, texture, ft);
+        if (!this.dirtyTextures.isEmpty()) {
+            for (String name : this.dirtyTextures) {
+                GpuTextureView view = this.textures.get(name);
+                if (view == null) {
+                    continue;
+                }
+                int vt = this.pipeline.vertexTexture(name);
+                int ft = this.pipeline.fragmentTexture(name);
+                if (vt < 0 && ft < 0) {
+                    continue;
+                }
+                MemorySegment texture = MetalCommandEncoderBackend.handleOf(view);
+                if (vt >= 0) MetalNative.renderPassSetVertexTexture(this.encoder, texture, vt);
+                if (ft >= 0) MetalNative.renderPassSetFragmentTexture(this.encoder, texture, ft);
 
-            MemorySegment samplerHandle = sampler instanceof MetalSampler metal
-                    ? metal.handle() : MemorySegment.NULL;
-            int vs = this.pipeline.vertexSampler(name);
-            int fs = this.pipeline.fragmentSampler(name);
-            if (vs >= 0) MetalNative.renderPassSetVertexSampler(this.encoder, samplerHandle, vs);
-            if (fs >= 0) MetalNative.renderPassSetFragmentSampler(this.encoder, samplerHandle, fs);
-            this.boundTextures.put(name, view);
-            this.boundSamplers.put(name, sampler);
+                GpuSampler sampler = this.samplers.get(name);
+                MemorySegment samplerHandle = sampler instanceof MetalSampler metal
+                        ? metal.handle() : MemorySegment.NULL;
+                int vs = this.pipeline.vertexSampler(name);
+                int fs = this.pipeline.fragmentSampler(name);
+                if (vs >= 0) MetalNative.renderPassSetVertexSampler(this.encoder, samplerHandle, vs);
+                if (fs >= 0) MetalNative.renderPassSetFragmentSampler(this.encoder, samplerHandle, fs);
+            }
+            this.dirtyTextures.clear();
         }
     }
 
@@ -236,6 +236,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (sampler != null) {
             this.samplers.put(name, sampler);
         }
+        this.dirtyTextures.add(name);
     }
 
     @Override
@@ -257,10 +258,12 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
                     slice.length(), texel.format(), Math.max(1, texel.format().blockSize()));
             if (texture != null) {
                 this.textures.put(name, new MetalTextureView(texture, 0, texture.getMipLevels()));
+                this.dirtyTextures.add(name);
                 return;
             }
         }
         this.uniforms.put(name, slice);
+        this.dirtyUniforms.add(name);
     }
 
     @Override

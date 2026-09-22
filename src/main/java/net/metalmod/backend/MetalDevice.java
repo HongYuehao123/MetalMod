@@ -136,11 +136,14 @@ public final class MetalDevice implements GpuDeviceBackend {
     private static double frameMsSumInWindow;
     private static double acquireWaitMsSumInWindow;
     private static long commandBuffersSumInWindow;
+    private static long ffiSumInWindow;
+    private static long lastFfiSample;
 
     private static volatile int lastFrameDraws;
     private static volatile float lastFrameMs;
     private static volatile float lastAcquireWaitMs;
     private static volatile long lastCommandBuffers;
+    private static volatile long lastFfiCalls;
     private static long lastFrameNanos;
 
     /** Count one encoded draw. Called from the render pass backend, on the render thread. */
@@ -175,6 +178,9 @@ public final class MetalDevice implements GpuDeviceBackend {
         drawsThisFrame = 0;
         commandBuffersSumInWindow += commandBuffersThisFrame;
         commandBuffersThisFrame = 0;
+        long ffiNow = MetalNative.ffiCalls;
+        ffiSumInWindow += ffiNow - lastFfiSample;
+        lastFfiSample = ffiNow;
         framesInWindow++;
         noteCensusFrame();
 
@@ -182,10 +188,12 @@ public final class MetalDevice implements GpuDeviceBackend {
             lastFrameMs = (float) (frameMsSumInWindow / framesInWindow);
             lastAcquireWaitMs = (float) (acquireWaitMsSumInWindow / framesInWindow);
             lastCommandBuffers = commandBuffersSumInWindow / framesInWindow;
+            lastFfiCalls = ffiSumInWindow / framesInWindow;
             framesInWindow = 0;
             frameMsSumInWindow = 0.0;
             acquireWaitMsSumInWindow = 0.0;
             commandBuffersSumInWindow = 0L;
+            ffiSumInWindow = 0L;
         }
     }
 
@@ -210,6 +218,15 @@ public final class MetalDevice implements GpuDeviceBackend {
     /** Draw calls encoded in the frame just presented; this is the number that grows underground. */
     public static int lastFrameDraws() {
         return lastFrameDraws;
+    }
+
+    /**
+     * Average native (Panama) calls per frame. Every draw makes several, so this is the number that
+     * says whether the FFI path is load-bearing - it is the one the invokeExact wrappers in
+     * {@link MetalNative} exist to keep cheap.
+     */
+    public static long lastFfiCalls() {
+        return lastFfiCalls;
     }
 
     // A shader that samples a texture the engine never bound reads garbage - usually black, which
