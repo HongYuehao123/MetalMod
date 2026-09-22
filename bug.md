@@ -367,7 +367,33 @@ copied data, and its assertion was inverted, so it passed only when the copy fai
 What the round trip genuinely costs is a synchronised stall on a full-size depth buffer, which is
 worth removing for its own sake but is not what the glaze is.
 
-### The blit is written but not yet usable
+### Fix (finally) - and why it was reverted once
+
+`copyTextureToTexture` is now `mmm_copy_texture_to_texture`, a `MTLBlitCommandEncoder` copy committed
+on the device queue. It replaced a CPU round trip, and the round trip's defect is a **race**, not a
+missing copy: `replaceRegion` writes shared memory from the CPU, while the GPU may still be reading
+that same texture for the previous frame's composite.
+
+That fits the artefact exactly, which the user described as *transient, random, and only while
+moving*: a stale value differs from the current one only while the camera moves, and which texels
+tear depends on timing. It also explains why water is the only sufferer - the translucent layer's
+depth buffer is what is being rewritten.
+
+This fix was written once before and **reverted on a bad measurement**. The render check's `readback`
+helper read the texture immediately without synchronising the queue, so it only ever saw data the CPU
+had written itself; against a GPU blit it reported zeros every time. The helper now synchronises, and
+both colour copy cases pass through the blit:
+
+```
+PASS  copyTextureToTexture copies the whole texture byte for byte
+PASS  a 2x2 copy at (1,1) changes exactly that rectangle
+PASS  a copied depth buffer ... 0.5 against a copied 0.75 leaves the clear -> R0
+```
+
+A helper that reads GPU-written memory without synchronising is the same failure mode as the vacuous
+depth check in the section above: it passes, and it says nothing.
+
+### Superseded: the blit is written but not yet usable
 
 `mmm_copy_texture_to_texture` exists, is declared and is bound, and `copyTextureToTexture` is
 deliberately still on the CPU path with a comment saying why. Wiring the blit in makes both colour

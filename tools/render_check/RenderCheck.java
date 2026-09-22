@@ -981,7 +981,7 @@ public final class RenderCheck {
         CommandEncoderBackend encoder = device.createCommandEncoder();
         encoder.copyTextureToTexture(source, target, 0, 0, 0, 0, SIZE, SIZE, 0);
         check("copyTextureToTexture copies the whole texture byte for byte",
-                java.util.Arrays.equals(pattern, readback(target, SIZE)), "");
+                java.util.Arrays.equals(pattern, readback(device, target, SIZE)), "");
 
         // Now a 2x2 rectangle at (1,1): only those texels may change in the target.
         byte[] replacement = new byte[SIZE * SIZE * 4];
@@ -1018,7 +1018,7 @@ public final class RenderCheck {
                 expected[at + 3] = (byte) 255;
             }
         }
-        byte[] got = readback(target, SIZE);
+        byte[] got = readback(device, target, SIZE);
         boolean onlyRect = java.util.Arrays.equals(expected, got);
         check("a 2x2 copy at (1,1) changes exactly that rectangle", onlyRect, describe(got, SIZE));
 
@@ -1036,7 +1036,16 @@ public final class RenderCheck {
         }
     }
 
-    private static byte[] readback(GpuTexture texture, int size) {
+    /**
+     * Read a texture back to the CPU.
+     *
+     * <p>The queue is synchronised first, and that is not optional: a texture written by a GPU blit
+     * has no data on the CPU side until the GPU has run. Without this the helper only ever validated
+     * paths where the CPU wrote the bytes itself, and reported zeros for anything a blit produced -
+     * which is how the texel copy came to be reverted once on a bad measurement.
+     */
+    private static byte[] readback(MetalDevice device, GpuTexture texture, int size) {
+        MetalNative.queueSynchronize(device.queueHandle());
         byte[] bytes = new byte[size * size * 4];
         try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
             java.lang.foreign.MemorySegment segment = arena.allocate(bytes.length);

@@ -441,21 +441,18 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         //
         // Slice before level, matching mmm_copy_texture_to_texture: passing them the other way round
         // copies the wrong mip and an out-of-range slice for any texture with more than one level.
-        // NOT YET USED - mmm_copy_texture_to_texture exists and is bound, but switching to it makes
-        // the colour copy tests read back zeros, so the blit is wrong somewhere and the CPU path
-        // below is kept until that is found. The blit is the right answer (see BUG-023): it handles
-        // depth, joins the frame's queue order, and does not stall on a readback. Delete this path
-        // once the blit passes tools/render_check's two colour copy cases.
-        MetalNative.queueSynchronize(this.device.queueHandle());
-        long rowBytes = (long) width * src.bytesPerPixel();
-        long size = rowBytes * height;
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment temp = arena.allocate(size);
-            if (MetalNative.textureReadRegion(src.handle(), sourceMipLevel, depthOrLayers, x, y, width,
-                    height, temp, size, rowBytes) == 0) {
-                MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, depthOrLayers, x, y,
-                        width, height, temp, rowBytes);
-            }
+        // A blit, not a CPU round trip. This call initialises each translucency layer's depth buffer
+        // from the main depth buffer, and the round trip it replaced wrote shared memory from the
+        // CPU - which races the GPU still reading the previous frame's contents of that texture.
+        // A stale value differs from the current one only while the camera moves, which is exactly
+        // when the artefact appeared.
+        int result = MetalNative.copyTextureToTexture(this.device.queueHandle(), src.handle(),
+                depthOrLayers, sourceMipLevel, x, y, dst.handle(), depthOrLayers, targetMipLevel,
+                x, y, width, height, 1);
+        if (result != 0) {
+            MetalDevice.reportResourceFailure("copyTextureToTexture returned " + result
+                    + " mip " + sourceMipLevel + "->" + targetMipLevel
+                    + " region " + width + "x" + height + " slice " + depthOrLayers);
         }
     }
 
