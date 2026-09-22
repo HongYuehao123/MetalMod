@@ -147,6 +147,29 @@ public final class MetalDevice implements GpuDeviceBackend {
         }
     }
 
+    // Two shader resources resolving to one Metal slot means whichever is bound last wins and the
+    // other reads its data. glslang emits duplicate SPIR-V bindings (every shader importing
+    // fog.glsl gets Fog at binding 0 alongside another block at binding 0), so slots are assigned
+    // from a counter instead. This guard makes a regression of that visible rather than silent.
+    private static final java.util.Set<String> reportedSlotCollisions = new java.util.HashSet<>();
+    private static int slotCollisionCount;
+
+    static synchronized void reportSlotCollision(String stage, String kind,
+                                                 String first, String second, int slot) {
+        if (reportedSlotCollisions.size() >= 32
+                || !reportedSlotCollisions.add(stage + "|" + kind + "|" + slot)) {
+            return;
+        }
+        slotCollisionCount++;
+        System.err.println("[MetalMod] " + kind + " slot collision in the " + stage
+                + " stage: '" + first + "' and '" + second + "' both use Metal slot " + slot
+                + ", so one will overwrite the other");
+    }
+
+    public static synchronized int slotCollisionCount() {
+        return slotCollisionCount;
+    }
+
     public static synchronized int unmappedAttributeCount() {
         return unmappedAttributeCount;
     }

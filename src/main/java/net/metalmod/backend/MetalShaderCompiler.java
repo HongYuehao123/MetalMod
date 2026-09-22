@@ -280,10 +280,20 @@ public final class MetalShaderCompiler implements AutoCloseable {
                 long resources = resourcesPtr.get(0);
 
                 int stage = type == ShaderType.VERTEX ? 0 : 4;  // spv::ExecutionModel
-                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, stage, buffers, null);
-                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, stage, textures, samplers);
-                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, stage, null, samplers);
+                // The vertex stage reserves 0..15 for vertex-attribute slots; the fragment stage has
+                // no attributes, so its uniform buffers may start at 0.
+                Slots slots = new Slots();
+                if (stage != 0) {
+                    slots.buffer = 0;
+                }
+                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, stage, buffers, null, slots);
+                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, stage, textures, samplers, slots);
+                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, stage, null, samplers, slots);
                 collectInputs(compiler, resources, stack, inputs);
+                String stageName = type == ShaderType.VERTEX ? "vertex" : "fragment";
+                checkUniqueSlots(stageName, "uniform buffer", buffers);
+                checkUniqueSlots(stageName, "texture", textures);
+                checkUniqueSlots(stageName, "sampler", samplers);
 
                 PointerBuffer result = stack.mallocPointer(1);
                 check(Spvc.spvc_compiler_compile(compiler, result) == 0, "compile_msl", ctx);
@@ -302,16 +312,31 @@ public final class MetalShaderCompiler implements AutoCloseable {
     private static final int VERTEX_BUFFER_INDEX_OFFSET = 16;
 
     /**
+     * The next free MSL slot per resource kind for one stage. Counters rather than the SPIR-V
+     * binding, because glslang emits duplicate bindings (see {@link #collect}).
+     */
+    private static final class Slots {
+        int buffer = VERTEX_BUFFER_INDEX_OFFSET;
+        int texture;
+        int sampler;
+    }
+
+    /**
      * Fill the primary map (uniform buffers / textures) and optionally the secondary (samplers), and
      * force the MSL binding for each resource.
      *
-     * <p>Two SPIRV-Cross details matter here. A uniform block's *variable* name is often empty (the
-     * name lives on the block type), so the type name is used as a fallback. And
-     * spvc_compiler_msl_get_automatic_resource_binding reports -1 before compilation, so the binding
-     * is taken from the SPIR-V descriptor set/binding decorations and pushed explicitly instead.
+     * <p>Three SPIRV-Cross details matter here. A uniform block's *variable* name is often empty (the
+     * name lives on the block type), so the type name is used. The descriptor set/binding
+     * decorations identify *which* SPIR-V resource a binding applies to, so they are still read from
+     * the module. But the <b>MSL slot</b> must not come from them, because glslang emits duplicate
+     * bindings: every shader that imports {@code fog.glsl} gets {@code Fog} at binding 0 alongside
+     * another block at binding 0 as well. Mapping binding to slot therefore put two blocks in one
+     * Metal buffer index, and binding one overwrote the other. MetalMod binds by name, so the slots
+     * only have to be unique per stage — a counter gives that.
      */
     private static void collect(long compiler, long resources, MemoryStack stack, int type, int stage,
-                                Map<String, Integer> primary, Map<String, Integer> secondary) {
+                                Map<String, Integer> primary, Map<String, Integer> secondary,
+                                Slots slots) {
         PointerBuffer listPtr = stack.mallocPointer(1);
         PointerBuffer countPtr = stack.mallocPointer(1);
         if (Spvc.spvc_resources_get_resource_list_for_type(resources, type, listPtr, countPtr) != 0) {
@@ -360,22 +385,34 @@ public final class MetalShaderCompiler implements AutoCloseable {
                 // Metal shares one buffer index space per stage between the vertex-attribute layouts
                 // (MTLVertexDescriptor slots, which Minecraft numbers from 0) and the "constant"
                 // buffers SPIRV-Cross emits for uniform blocks. Vulkan keeps those two namespaces
-                // apart, so SPIRV-Cross maps both from 0 - and binding DynamicTransforms at index 0
-                // overwrote the VertexFormat data at slot 0. Every vertex then read UBO bytes as its
-                // position and nothing rasterised. Keep the low indices for attributes and shift
-                // vertex-stage uniform buffers above them.
-                int mslBuffer = stage == 0 ? binding + VERTEX_BUFFER_INDEX_OFFSET : binding;
+                // apart, so keep the low indices for attributes and start vertex-stage uniform
+                // buffers above them.
+                int mslBuffer = slots.buffer++;
                 resourceBinding.msl_buffer(mslBuffer);
                 if (primary != null) primary.put(name, mslBuffer);
             } else if (type == Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE) {
-                resourceBinding.msl_texture(binding).msl_sampler(binding);
-                if (primary != null) primary.put(name, binding);
-                if (secondary != null) secondary.put(name, binding);
+                int mslTexture = slots.texture++;
+                int mslSampler = slots.sampler++;
+                resourceBinding.msl_texture(mslTexture).msl_sampler(mslSampler);
+                if (primary != null) primary.put(name, mslTexture);
+                if (secondary != null) secondary.put(name, mslSampler);
             } else if (type == Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS) {
-                resourceBinding.msl_sampler(binding);
-                if (secondary != null) secondary.put(name, binding);
+                int mslSampler = slots.sampler++;
+                resourceBinding.msl_sampler(mslSampler);
+                if (secondary != null) secondary.put(name, mslSampler);
             }
             Spvc.spvc_compiler_msl_add_resource_binding(compiler, resourceBinding);
+        }
+    }
+
+    /** Report any two resources sharing one Metal slot; see MetalDevice.reportSlotCollision. */
+    private static void checkUniqueSlots(String stage, String kind, Map<String, Integer> slots) {
+        Map<Integer, String> seen = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : slots.entrySet()) {
+            String previous = seen.put(entry.getValue(), entry.getKey());
+            if (previous != null) {
+                MetalDevice.reportSlotCollision(stage, kind, previous, entry.getKey(), entry.getValue());
+            }
         }
     }
 

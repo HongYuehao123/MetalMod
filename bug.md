@@ -105,6 +105,115 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-012 — Two uniform blocks shared one Metal slot, so one overwrote the other
+
+**Status:** **FIXED** (Phase 5). Was live for vanilla, in nearly every shader.
+**Severity:** critical — the shader read another block's data.
+**Found by:** dumping the SPIR-V descriptor bindings instead of assuming they were unique.
+
+### Cause
+
+`MetalShaderCompiler.collect` derived each resource's Metal slot from its SPIR-V
+`binding` decoration:
+
+```java
+int mslBuffer = stage == 0 ? binding + VERTEX_BUFFER_INDEX_OFFSET : binding;
+```
+
+**glslang emits duplicate bindings.** Every shader that imports `fog.glsl` gets its `Fog` block at
+binding 0, alongside another block also at binding 0:
+
+```
+core/terrain.vsh     Globals binding=0, Fog binding=0   -> both msl_buffer 16
+core/entity.vsh      Lighting binding=0, Fog binding=0  -> both msl_buffer 16
+core/rendertype_clouds.vsh  DynamicTransforms binding=0, Fog binding=0 -> both 16
+```
+
+Two blocks in one Metal buffer index means the second bind overwrites the first, and the shader reads
+the wrong uniform data. `Fog` is imported by almost every vanilla shader, so this was not an edge
+case. Sampled images happened to get unique bindings, which is why only buffers were affected.
+
+For terrain this is severe: `terrain.vsh` computes
+
+```glsl
+vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+```
+
+from `Globals`, which shared slot 16 with `Fog`. Terrain would be positioned using fog data, so the
+geometry lands in the wrong place — a direct, mechanical explanation for the broken world in
+BUG-003, and one that a "missing binding" diagnosis would never have found because nothing was
+missing: both were bound, to the same place.
+
+### Fix
+
+MetalMod binds by name, so the Metal slots only have to be **unique per stage** — they do not have to
+match Vulkan's numbering. `collect` now assigns slots from a per-stage counter (`Slots`): uniform
+buffers from 16 in the vertex stage (0..15 stay reserved for vertex attributes) and from 0 in the
+fragment stage, with independent texture and sampler counters. The descriptor set/binding
+decorations are still read, because they identify *which* SPIR-V resource a binding applies to.
+
+Verified for the three worst shaders:
+
+```
+terrain  buffers = {ChunkSection=16, Globals=17, Projection=18, Fog=19}
+entity   buffers = {Projection=16, DynamicTransforms=17, Lighting=18, Fog=19}
+clouds   buffers = {CloudInfo=16, Projection=17, DynamicTransforms=18, Fog=19}
+```
+
+and by compiling all 87 vanilla pipelines: **zero collisions** reported.
+
+### Guard
+
+`checkUniqueSlots` runs after each stage is collected and reports any two resources sharing a slot
+(`MetalDevice.reportSlotCollision`), so a regression is named in the log instead of silently
+corrupting uniforms. It reports nothing for the 87 vanilla pipelines.
+
+---
+
+## BUG-013 — Texel buffers have no binding path (vanilla clouds)
+
+**Status:** open, unfixed. Affects vanilla cloud rendering; also needed for Sodium.
+**Severity:** clouds render wrong; blocks a Sodium prerequisite.
+**Found by:** chasing the `CloudFaces` half of BUG-005.
+
+### Cause
+
+`rendertype_clouds.vsh` declares a **buffer texture**:
+
+```glsl
+uniform isamplerBuffer CloudFaces;
+... texelFetch(CloudFaces, index).r ...
+```
+
+and `BindGroupLayouts` declares it as `UniformType.TEXEL_BUFFER` with `GpuFormat.R8_SINT`. But the
+engine binds it through **`RenderPass.setUniform("CloudFaces", GpuBuffer)`** — a *buffer*, not a
+texture (`CloudRenderer` passes its `MappableRingBuffer.currentBuffer()`).
+
+MetalMod reflects it as a sampled image, so it lands in the texture/sampler maps:
+
+```
+textures = {CloudFaces=0}   samplers = {CloudFaces=0}
+```
+
+and `setUniform` records it under `uniforms`, where `applyBindings` looks it up with
+`pipeline.vertexBuffer("CloudFaces")` — which is -1, because it is in the texture map. So nothing is
+bound and the shader texel-fetches undefined data. That is exactly what the Phase 4 diagnostic
+reported in-game (`unbound texture 'CloudFaces'`), and it is *not* fixed by BUG-005's name change:
+the name was already right, the binding path does not exist.
+
+### Fix shape
+
+Reflect texel buffers as their own kind and bind them as Metal `texture_buffer<T>`, which means an
+`MTLTexture` of type `MTLTextureTypeTextureBuffer` created over the buffer
+(`newTextureWithDescriptor:buffer:offset:bytesPerRow:`), cached per buffer and format. MetalMod's
+`mtlTextureType` never returns `TEXTURE_TYPE_TEXTURE_BUFFER` (9) and `MetalTexture` has no buffer
+constructor, so this is new plumbing on both sides.
+
+Worth doing beyond clouds: Sodium's `u_SectionTimeInfo` is also an `isamplerBuffer`, so the same
+path is a prerequisite there.
+
+---
+
 ## BUG-011 — GpuFence was a no-op, so ring-buffer slots were reused while in flight
 
 **Status:** **FIXED** (Phase 5). Was live for vanilla, on every streaming ring buffer.
