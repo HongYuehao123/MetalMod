@@ -283,17 +283,57 @@ Two things follow from that description, and they point away from the guesses al
 `WATER_MASK` declaring `WRITE_NONE` was the obvious candidate for a water pass painting the scene, and
 a render check now proves the mask is honoured - so that is eliminated, not assumed.
 
+### What translucency actually is in 26.2 (established)
+
+Water is not blended into the main target at all. `assets/minecraft/post_effect/transparency.json`
+renders translucent geometry into **six colour+depth target pairs** and then composites them in one
+pass:
+
+- pass 1: `core/screenquad` + `post/transparency` -> target `final`, with **twelve** inputs
+- pass 2: `core/screenquad` + `post/blit` -> `minecraft:main`
+
+`post/transparency.fsh` declares six colour samplers and six **depth** samplers
+(`MainSampler`/`MainDepthSampler`, `Translucent`, `ItemEntity`, `Particles`, `Weather`, `Clouds`),
+insertion-sorts the layers by their depth, and blends them front to back:
+
+```glsl
+vec3 blend(vec3 dst, vec4 src) { return (dst * (1.0 - src.a)) + src.rgb; }
+```
+
+So the water's appearance is the product of one depth-sorted composite over twelve sampled textures.
+Anything that makes that composite read stale, unsorted or mis-bound data shows up as *a translucent
+film where the water is, at the wrong depth* - which is exactly the report.
+
+Both passes use `core/screenquad`, so they are now covered by the BUG-022 viewport flip; the two flips
+cancel for the final image, so that fix is neutral here rather than the cause.
+
+### Ruled out already
+
+- **`WATER_MASK`'s `WRITE_NONE`** - measured honoured (see the write-mask check).
+- **Depth textures being unsampleable.** Metal needs `MTLTextureUsageShaderRead` to sample a depth
+  texture, and `MetalFormat.mtlTextureUsage` grants `ShaderRead | PixelFormatView` unconditionally, with
+  a comment explaining that the presentation blit needs it. So the six depth samplers can be read.
+
 ### Where to look next
 
-1. **Pass ordering and staleness.** The lightmap and the water mask are each produced by their own
-   pass and sampled by the terrain pass. `mmm_queue_synchronize` orders *command buffers on a queue*
-   by committing an empty one and waiting; it does not order work within a frame. If a texture written
-   by a later pass is sampled by an earlier one, the sample is a frame stale - which is exactly what a
-   lagging water edge looks like.
-2. **`translucent_terrain`'s depth state.** Water and ice are the main translucent surfaces; the
-   census lists eleven pipelines with `GREATER_THAN_OR_EQUAL` and depth writes off, and only the
-   opaque ones are covered by a render check.
-3. **The water overlay pass**, which is a separate screen effect drawn when the camera is in water.
+The leading hypothesis is now **staleness of the six translucent layers**, not geometry or UVs: a
+layer that still holds the previous frame's contents composites as a ghost, which reads as a film
+where the water is and an edge sitting away from the current surface - and it would last as long as it
+takes for the layer to be overwritten, matching "for one second".
+
+1. **Are those targets cleared each frame, and by whom?** MC can clear through the frame graph's load
+   action *or* through a separate `clearColorTexture` call. MetalMod's `clearColorTexture` runs
+   `mmm_clear_textures`, which creates and commits **its own command buffer immediately** rather than
+   joining the frame's. If a clear lands in a different command buffer from the pass that renders into
+   that target, the ordering is no longer what the engine assumes. Check which of the two MC uses for
+   the six translucent targets.
+2. **Instrument it before changing anything.** Extend the per-target census line in
+   `MetalCommandEncoderBackend` to report whether the colour and depth attachments carried a clear
+   (`render target 'X' yFlip=.. clear=.. depthClear=..`). One run then says whether the layers are
+   loaded rather than cleared, which decides between a clearing bug and a compositing one.
+3. **`translucent_terrain`'s depth state**, since the layer's own depth buffer is what the composite
+   sorts by - if the translucent pass wrote depth when it should not, or vice versa, the sort order is
+   wrong even with correct data.
 
 ### How to reproduce it usefully
 
