@@ -31,6 +31,7 @@ public final class MetalNative {
             mhTextureReadRegion, mhTextureRelease;
     private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease;
     private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures, mhClearTexturesRegion;
+    private static MethodHandle mhFenceCreate, mhFenceWait, mhFenceRelease;
     private static MethodHandle mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
             mhCommandBufferRelease;
     private static MethodHandle mhLibraryCreate, mhLibraryRelease, mhRenderPipelineCreate,
@@ -118,6 +119,9 @@ public final class MetalNative {
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D));
         mhClearTexturesRegion = linker.downcallHandle(symbol(lookup, "mmm_clear_textures_region"),
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D, I, I, I, I));
+        mhFenceCreate = linker.downcallHandle(symbol(lookup, "mmm_fence_create"), FunctionDescriptor.of(A, A));
+        mhFenceWait = linker.downcallHandle(symbol(lookup, "mmm_fence_wait"), FunctionDescriptor.of(B, A, L));
+        mhFenceRelease = linker.downcallHandle(symbol(lookup, "mmm_fence_release"), FunctionDescriptor.ofVoid(A));
 
         mhQueueSynchronize = linker.downcallHandle(symbol(lookup, "mmm_queue_synchronize"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
@@ -240,6 +244,12 @@ public final class MetalNative {
         return i(mhTextureReadRegion, tex, mip, slice, x, y, w, h, out, cap, rowBytes);
     }
     private static MethodHandle mhQueueSynchronize;
+    public static MemorySegment fenceCreate(MemorySegment queue) { return addr(mhFenceCreate, queue); }
+    public static boolean fenceWait(MemorySegment fence, long timeoutNanos) {
+        try { return (boolean) mhFenceWait.invokeWithArguments(fence, timeoutNanos); }
+        catch (Throwable t) { return true; }
+    }
+    public static void fenceRelease(MemorySegment fence) { v(mhFenceRelease, fence); }
     public static void queueSynchronize(MemorySegment queue) { v(mhQueueSynchronize, queue); }
     public static MemorySegment bufferCreate(MemorySegment dev, long length) { return addr(mhBufferCreate, dev, Math.max(1L, length)); }
     public static MemorySegment bufferContents(MemorySegment buf, long length) {

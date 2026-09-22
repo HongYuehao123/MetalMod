@@ -382,7 +382,9 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public GpuFence createFence() {
-        return new MetalFence();
+        // Signals when everything committed before this point has completed, which is what the
+        // engine's ring buffers wait on before recycling a slot.
+        return new MetalFence(MetalNative.fenceCreate(this.device.queueHandle()));
     }
 
     @Override

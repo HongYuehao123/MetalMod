@@ -299,6 +299,57 @@ void mmm_queue_synchronize(void* queue) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Fences
+//
+// Minecraft uses a fence to decide when a ring-buffer slot is safe to overwrite, and waits for it
+// with an unbounded timeout (MappableRingBuffer.rotate calls awaitCompletion(Long.MAX_VALUE)). Metal
+// only *commits* work, so a fence that returns immediately let the CPU overwrite data the GPU was
+// still reading.
+//
+// A fence is an MTLSharedEvent plus a signal command buffer enqueued at creation time: command
+// buffers on one queue run in commit order, so when that signal fires, everything committed before
+// the fence was created has completed.
+// ---------------------------------------------------------------------------------------------
+
+void* mmm_fence_create(void* queue) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    if (metalQueue == nil) return NULL;
+    @autoreleasepool {
+        id<MTLSharedEvent> event = [metalQueue.device newSharedEvent];
+        if (event == nil) return NULL;
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod fence signal";
+        [commandBuffer encodeSignalEvent:event value:1];
+        [commandBuffer commit];
+        return (__bridge_retained void*)event;
+    }
+}
+
+/// Wait for the fence. timeoutNanos <= 0 means do not wait; a very large value waits indefinitely.
+bool mmm_fence_wait(void* fence, int64_t timeoutNanos) {
+    id<MTLSharedEvent> event = (__bridge id<MTLSharedEvent>)fence;
+    if (event == nil) return true;
+    if (event.signaledValue >= 1) return true;
+    uint64_t timeoutMs;
+    if (timeoutNanos <= 0) {
+        timeoutMs = 0;
+    } else if (timeoutNanos / 1000000LL > (int64_t)UINT32_MAX) {
+        timeoutMs = UINT64_MAX;   // effectively wait forever
+    } else {
+        timeoutMs = (uint64_t)(timeoutNanos / 1000000LL);
+    }
+    return [event waitUntilSignaledValue:1 timeoutMS:timeoutMs];
+}
+
+void mmm_fence_release(void* fence) {
+    if (fence == NULL) return;
+    @autoreleasepool {
+        id<MTLSharedEvent> released = (__bridge_transfer id<MTLSharedEvent>)fence;
+        (void)released;
+    }
+}
+
 void* mmm_buffer_create(void* device, int64_t length) {
     id<MTLDevice> dev = mmm_device(device);
     if (dev == nil || length < 0) return NULL;

@@ -486,6 +486,56 @@ static void test_region_clear(void) {
     mmm_device_release(device);
 }
 
+// MappableRingBuffer.rotate awaits a fence with an unbounded timeout before reusing a ring slot, so
+// a fence that returns immediately lets the CPU overwrite data the GPU is still reading. Prove the
+// fence really does order against GPU work: issue a clear, fence it, and only then read it back.
+static void test_fence(void) {
+    printf("\n== fence (must order against GPU work) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int W = 8, H = 8;
+    void* texture = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, 1u | 4u);
+
+    // Leave the texture zeroed, then clear it to blue on the GPU without waiting.
+    unsigned char zero[8 * 8 * 4] = { 0 };
+    mmm_texture_replace_region(texture, 0, 0, 0, 0, W, H, zero, W * 4);
+    check("clear issued", mmm_clear_textures(queue, texture, true, 0, 0, 255, 1,
+                                             NULL, false, 0.0) == 0, "");
+
+    void* fence = mmm_fence_create(queue);
+    check("fence created", fence != NULL, "");
+    bool signalled = mmm_fence_wait(fence, 5000000000LL);   // 5s, plenty
+    check("fence signals once the queued work completes", signalled, "");
+
+    unsigned char pixels[8 * 8 * 4];
+    int rc = mmm_texture_read_region(texture, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+    check("fence readback", rc == 0, "");
+    if (rc == 0) {
+        printf("     after fence: R%d G%d B%d\n", pixels[0], pixels[1], pixels[2]);
+        check("the clear is visible after waiting on the fence", pixels[2] > 200, "");
+    }
+
+    // An already-signalled fence must be immediate, and must stay that way.
+    check("a signalled fence returns immediately", mmm_fence_wait(fence, 0), "");
+    mmm_fence_release(fence);
+
+    // The engine creates and awaits these repeatedly; make sure that neither hangs nor leaks.
+    int completed = 0;
+    for (int i = 0; i < 64; i++) {
+        void* repeated = mmm_fence_create(queue);
+        if (repeated == NULL) break;
+        if (mmm_fence_wait(repeated, 1000000000LL)) completed++;
+        mmm_fence_release(repeated);
+    }
+    check("64 create/await cycles all completed", completed == 64, "");
+
+    mmm_texture_release(texture);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 // Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
 static void test_draw(void) {
     printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
@@ -573,6 +623,7 @@ int main(void) {
         test_mip_filter();
         test_sampler_address_modes();
         test_region_clear();
+        test_fence();
         test_draw();
         test_surface();
     }

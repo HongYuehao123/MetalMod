@@ -105,6 +105,66 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-011 — GpuFence was a no-op, so ring-buffer slots were reused while in flight
+
+**Status:** **FIXED** (Phase 5). Was live for vanilla, on every streaming ring buffer.
+**Severity:** high — intermittent corruption of streamed data, not a clean failure.
+**Found by:** checking what the engine actually does with `GpuFence`.
+
+### Cause
+
+`MetalFence.awaitCompletion` returned `true` immediately:
+
+```java
+/** Phase 1 fence: submission is synchronous from the CPU's point of view, so completion is
+    immediate. */
+public boolean awaitCompletion(long timeoutNanos) { return !this.closed; }
+```
+
+The premise is wrong. MetalMod **commits** command buffers; it does not wait for them (only
+`copyTextureToBuffer` synchronises, and only for its own readback). So "submission is synchronous"
+was never true.
+
+### Impact
+
+Live for vanilla. `MappableRingBuffer.rotate` awaits the slot's fence **with an unbounded timeout**
+before recycling it:
+
+```java
+GpuFence fence = this.fences[this.current];
+if (fence != null) { fence.awaitCompletion(Long.MAX_VALUE); fence.close(); ... }
+```
+
+so it is explicitly relying on the fence to block until the GPU is done with that slot. Returning
+`true` at once let the CPU overwrite data the GPU was still reading — write-after-read, which shows
+up as intermittently corrupted streamed geometry rather than an error. `StagedVertexBuffer$GpuBufferPool`
+and `RenderSystem`'s async tasks use the same contract.
+
+### Fix
+
+`MetalFence` now wraps an `MTLSharedEvent`. `mmm_fence_create` creates the event *and* enqueues a
+command buffer that signals it — command buffers on one queue run in commit order, so when that
+signal fires, everything committed before the fence was created has completed. `awaitCompletion`
+maps to `waitUntilSignaledValue:timeoutMS:`, with a non-positive timeout polling once and a very
+large one waiting indefinitely, which is what `Long.MAX_VALUE` needs.
+
+Because the engine already waits unbounded, this costs nothing relative to what the engine intended;
+it just makes the wait real.
+
+### Verified, not assumed
+
+`metalmod_smoke` issues a GPU clear without waiting, creates a fence, waits on it, and only then
+reads the texture back:
+
+```
+after fence: R0 G0 B255
+```
+
+so the fence genuinely orders against queued GPU work. It also checks that an already-signalled fence
+returns immediately and that 64 create/await cycles complete (the engine does this every frame).
+
+---
+
 ## BUG-010 — Sub-rectangle clears wiped the whole attachment
 
 **Status:** **FIXED** (Phase 5). Was live for vanilla, on the GUI item atlas.

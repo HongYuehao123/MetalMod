@@ -100,6 +100,16 @@ MMM_API int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t sli
 /// texture readback, which otherwise races the GPU that is still writing that texture.
 MMM_API void mmm_queue_synchronize(void* queue);
 
+// ---------------------------------------------------------------------------------------------
+// Fences
+// ---------------------------------------------------------------------------------------------
+
+/// Create a fence on the queue. Work committed before this call is complete once the fence signals.
+MMM_API void* mmm_fence_create(void* queue);
+/// Wait for the fence. timeoutNanos <= 0 polls once; a very large value waits indefinitely.
+MMM_API bool mmm_fence_wait(void* fence, int64_t timeoutNanos);
+MMM_API void mmm_fence_release(void* fence);
+
 MMM_API void*   mmm_buffer_create(void* device, int64_t length);
 MMM_API void*   mmm_buffer_contents(void* buffer);
 MMM_API int64_t mmm_buffer_length(void* buffer);
