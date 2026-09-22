@@ -23,6 +23,13 @@ import java.util.OptionalDouble;
 /** Phase 3 command encoder: owns a Metal command buffer, records render passes into it, submits. */
 public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
+    private static final java.util.concurrent.atomic.AtomicInteger RENDER_PASS_COUNT =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger WRITE_LOG =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger COPY_LOG =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     private final MetalDevice device;
     private MemorySegment commandBuffer = MemorySegment.NULL;
     private MemorySegment currentEncoder = MemorySegment.NULL;
@@ -144,6 +151,11 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 height = descriptor.renderArea.height();
             }
 
+            int passIndex = RENDER_PASS_COUNT.incrementAndGet();
+            if (passIndex <= 40 || passIndex % 300 == 0) {
+                System.out.println("[MetalMod] render pass #" + passIndex + " colors=" + count
+                        + " depth=" + (depthTexture.address() != 0) + " " + width + "x" + height);
+            }
             MemorySegment encoder = MetalNative.renderPassBegin(cb, count, colorTextures, loadClear,
                     clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
             this.currentEncoder = encoder;
@@ -231,34 +243,81 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public void writeToTexture(GpuTexture texture, ByteBuffer data, int mipLevel,
-                               int x, int y, int width, int height, int depthOrLayers) {
+                               int depthOrLayers, int x, int y, int width, int height) {
         MetalTexture metal = textureOf(texture);
         if (metal == null || data == null) {
             return;
         }
-        MetalNative.textureReplaceRegion(metal.handle(), mipLevel, depthOrLayers, x, y, width, height,
-                data.duplicate(), (long) width * metal.bytesPerPixel());
+        // The interface order is (mipLevel, depthOrLayers, x, y, width, height): reading it as
+        // (mip, x, y, width, height, layers) made the region and its bytes-per-row garbage, which
+        // is what produced "slice OOB" and "bytes_per_row >= used_bytes_per_row".
+        int layers = Math.max(1, texture.getDepthOrLayers());
+        int slice = layers > 1 ? Math.max(0, Math.min(depthOrLayers, layers - 1)) : 0;
+        int mipWidth = Math.max(1, texture.getWidth(mipLevel));
+        int mipHeight = Math.max(1, texture.getHeight(mipLevel));
+        int safeX = Math.max(0, Math.min(x, mipWidth - 1));
+        int safeY = Math.max(0, Math.min(y, mipHeight - 1));
+        int safeWidth = Math.max(1, Math.min(width, mipWidth - safeX));
+        int safeHeight = Math.max(1, Math.min(height, mipHeight - safeY));
+        if (WRITE_LOG.incrementAndGet() <= 12) {
+            System.out.println("[MetalMod] writeTex mip=" + mipLevel + " slice=" + slice
+                    + " xy=" + safeX + "," + safeY + " wh=" + safeWidth + "x" + safeHeight
+                    + " rowBytes=" + (long) safeWidth * metal.bytesPerPixel()
+                    + " texMip=" + mipWidth + "x" + mipHeight + " fmt=" + texture.getFormat()
+                    + " layers=" + layers + " bpp=" + metal.bytesPerPixel());
+        }
+        MetalNative.textureReplaceRegion(metal.handle(), mipLevel, slice, safeX, safeY,
+                safeWidth, safeHeight, data.duplicate(), (long) safeWidth * metal.bytesPerPixel());
     }
 
     @Override
-    public void copyBufferToTexture(GpuBufferSlice source, int sourceOffset, int sourceRowLength,
-                                    int sourceHeight, int sourceMipLevel, GpuTexture target,
+    public void copyBufferToTexture(GpuBufferSlice source, int sourceX, int sourceY,
+                                    int sourceRowLength, int sourceHeight, GpuTexture target,
                                     int targetX, int targetY, int targetWidth, int targetHeight,
-                                    int targetDepthOrLayers, int targetMipLevel) {
+                                    int targetMipLevel, int targetDepthOrLayers) {
         MetalBuffer src = bufferOf(source);
         MetalTexture dst = textureOf(target);
         if (src == null || dst == null || !src.isMapped()) {
             return;
         }
         int bytesPerPixel = dst.bytesPerPixel();
-        long rowBytes = (long) sourceRowLength * bytesPerPixel;
-        long offsetBytes = source.offset() + (long) sourceOffset * bytesPerPixel;
-        long needed = rowBytes * Math.max(1, targetHeight);
+        // sourceRowLength is the source row stride in texels (0 means tightly packed), and
+        // (sourceX, sourceY) is the sub-region origin inside that source image. The last two
+        // parameters are (mipLevel, depthOrLayers) - the reverse of what the Phase 2 code assumed,
+        // which is what sent mip uploads to level 0 with base dimensions.
+        int rowLength = sourceRowLength > 0 ? sourceRowLength : Math.max(1, targetWidth);
+        long rowBytes = (long) rowLength * bytesPerPixel;
+        long offsetBytes = source.offset()
+                + ((long) Math.max(0, sourceY) * rowLength + Math.max(0, sourceX)) * bytesPerPixel;
+        int mipWidth = Math.max(1, target.getWidth(targetMipLevel));
+        int mipHeight = Math.max(1, target.getHeight(targetMipLevel));
+        int safeX = Math.max(0, Math.min(targetX, mipWidth - 1));
+        int safeY = Math.max(0, Math.min(targetY, mipHeight - 1));
+        int safeWidth = Math.max(1, Math.min(targetWidth, mipWidth - safeX));
+        int safeHeight = Math.max(1, Math.min(targetHeight, mipHeight - safeY));
+        long needed = rowBytes * safeHeight;
         if (offsetBytes < 0 || offsetBytes + needed > src.data().byteSize()) {
-            return;
+            // The staging buffer is tighter than the declared row length; fall back to the region
+            // width so a short final mip does not abort the whole upload.
+            rowLength = Math.max(1, safeWidth);
+            rowBytes = (long) rowLength * bytesPerPixel;
+            offsetBytes = source.offset()
+                    + ((long) Math.max(0, sourceY) * rowLength + Math.max(0, sourceX)) * bytesPerPixel;
+            needed = rowBytes * safeHeight;
+            if (offsetBytes < 0 || offsetBytes + needed > src.data().byteSize()) {
+                return;
+            }
         }
-        MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, targetDepthOrLayers,
-                targetX, targetY, targetWidth, targetHeight, src.dataSlice(offsetBytes, needed), rowBytes);
+        int layers = Math.max(1, target.getDepthOrLayers());
+        int slice = layers > 1 ? Math.max(0, Math.min(targetDepthOrLayers, layers - 1)) : 0;
+        if (COPY_LOG.incrementAndGet() <= 8) {
+            System.out.println("[MetalMod] copyBufTex mip=" + targetMipLevel + " slice=" + slice
+                    + " src=" + sourceX + "," + sourceY + " rowLen=" + rowLength
+                    + " dst=" + targetX + "," + targetY + " " + safeWidth + "x" + safeHeight
+                    + " rowBytes=" + rowBytes + " fmt=" + target.getFormat());
+        }
+        MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, slice, safeX, safeY,
+                safeWidth, safeHeight, src.dataSlice(offsetBytes, needed), rowBytes);
     }
 
     @Override

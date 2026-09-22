@@ -741,6 +741,7 @@ int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture) {
     @autoreleasepool {
         id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
         if (drawable == nil) {
+            NSLog(@"[MetalMod] CAMetalLayer nextDrawable returned nil (outstanding drawables not presented)");
             *outDrawable = NULL;
             *outTexture = NULL;
             return -2;
@@ -794,6 +795,11 @@ void mmm_command_buffer_commit(void* commandBuffer) {
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
     if (buffer == nil) return;
     @autoreleasepool {
+        [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.status == MTLCommandBufferStatusError) {
+                NSLog(@"[MetalMod] render command buffer error: %@", completed.error);
+            }
+        }];
         [buffer commit];
     }
 }
@@ -912,6 +918,11 @@ static bool mmm_ensure_blit_pipeline(id<MTLDevice> device) {
     }
 }
 
+void mmm_layer_set_present_queue(void* queue) {
+    // The device owns the queue; this static strong reference just mirrors it for the present path.
+    g_PresentQueue = (__bridge id<MTLCommandQueue>)queue;
+}
+
 int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) {
     CAMetalLayer* metalLayer = mmm_layer(layer);
     id<CAMetalDrawable> metalDrawable = (__bridge id<CAMetalDrawable>)drawable;
@@ -942,6 +953,11 @@ int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) 
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
 
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.status == MTLCommandBufferStatusError) {
+                NSLog(@"[MetalMod] present blit command buffer error: %@", completed.error);
+            }
+        }];
         [commandBuffer presentDrawable:metalDrawable];
         [commandBuffer commit];
 

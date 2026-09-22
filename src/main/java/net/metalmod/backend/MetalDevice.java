@@ -104,6 +104,9 @@ public final class MetalDevice implements GpuDeviceBackend {
             MetalNative.deviceRelease(device);
             return null;
         }
+        // The present blit must use the same queue as the render passes so the GPU sees them in
+        // commit order; two queues can race and wedge.
+        MetalNative.layerSetPresentQueue(queue);
 
         String[] strings = MetalNative.deviceInfo(device);
         long maxTexture = MetalNative.deviceMaxTextureSize(device);

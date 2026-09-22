@@ -26,7 +26,7 @@ public final class MetalNative {
             mhDeviceMaxTextureSize, mhDeviceMaxBufferSize, mhDeviceRecommendedWorkingSet;
     private static MethodHandle mhQueueCreate, mhQueueRelease;
     private static MethodHandle mhLayerCreateForNsWindow, mhLayerRelease, mhLayerConfigure,
-            mhLayerAcquire, mhLayerPresentClear, mhLayerPresentTexture;
+            mhLayerAcquire, mhLayerPresentClear, mhLayerPresentTexture, mhLayerSetPresentQueue;
     private static MethodHandle mhTextureCreateFull, mhTextureCreateView, mhTextureReplaceRegion,
             mhTextureReadRegion, mhTextureRelease;
     private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease;
@@ -95,6 +95,7 @@ public final class MetalNative {
         mhLayerAcquire = linker.downcallHandle(symbol(lookup, "mmm_layer_acquire"), FunctionDescriptor.of(I, A, A, A));
         mhLayerPresentClear = linker.downcallHandle(symbol(lookup, "mmm_layer_present_clear"), FunctionDescriptor.of(I, A, A, F, F, F, F));
         mhLayerPresentTexture = linker.downcallHandle(symbol(lookup, "mmm_layer_present_texture"), FunctionDescriptor.of(I, A, A, A));
+        mhLayerSetPresentQueue = linker.downcallHandle(symbol(lookup, "mmm_layer_set_present_queue"), FunctionDescriptor.ofVoid(A));
 
         mhTextureCreateFull = linker.downcallHandle(symbol(lookup, "mmm_texture_create_full"),
                 FunctionDescriptor.of(A, A, L, I, I, I, I, I, B, I));
@@ -197,6 +198,9 @@ public final class MetalNative {
     }
     public static int layerPresentTexture(MemorySegment layer, MemorySegment drawable, MemorySegment source) {
         return i(mhLayerPresentTexture, layer, drawable, source == null ? MemorySegment.NULL : source);
+    }
+    public static void layerSetPresentQueue(MemorySegment queue) {
+        v(mhLayerSetPresentQueue, queue);
     }
 
     // Textures / buffers / samplers --------------------------------------------------------------

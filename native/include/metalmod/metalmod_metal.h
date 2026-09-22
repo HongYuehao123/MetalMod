@@ -222,6 +222,12 @@ MMM_API int mmm_layer_present_clear(void* layer, void* drawable,
 /// them ordered. Pass a NULL source to clear instead.
 MMM_API int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture);
 
+/// Use the renderer's own command queue for the present blit. Command buffers on one queue execute
+/// in commit order, so this is what prevents the blit from sampling the render target while the
+/// render pass that writes it is still in flight (two queues have no ordering and can deadlock the
+/// GPU). Call once with the device queue.
+MMM_API void mmm_layer_set_present_queue(void* queue);
+
 // ---------------------------------------------------------------------------------------------
 // Command buffers and render passes
 // ---------------------------------------------------------------------------------------------

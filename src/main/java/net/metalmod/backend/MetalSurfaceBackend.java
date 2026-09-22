@@ -69,6 +69,9 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     @Override
     public void acquireNextTexture() throws SurfaceException {
+        if (this.acquiredFrames < 40) {
+            System.out.println("[MetalMod] acquire drawable #" + (this.acquiredFrames + 1));
+        }
         final MemorySegment[] result;
         try {
             result = MetalNative.layerAcquire(this.layer);
@@ -84,6 +87,9 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             this.firstAcquireLogged = true;
             System.out.println("[MetalMod] Metal surface first drawable acquired ("
                     + this.width + "x" + this.height + ").");
+        } else if (this.acquiredFrames % 60 == 0) {
+            System.out.println("[MetalMod] acquired " + this.acquiredFrames
+                    + " drawables / presented " + this.presentedFrames);
         }
     }
 
@@ -117,7 +123,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             System.err.println("[MetalMod] CAMetalLayer present failed with status " + rc);
         } else {
             this.presentedFrames++;
-            if (this.presentedFrames == 1 || this.presentedFrames % 60 == 0) {
+            if (this.presentedFrames <= 40 || this.presentedFrames % 300 == 0) {
                 System.out.println("[MetalMod] presented " + this.presentedFrames
                         + " frame(s) on Metal | surface " + this.width + "x" + this.height
                         + " | clear RGBA(" + color[0] + ", " + color[1] + ", " + color[2]
