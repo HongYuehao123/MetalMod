@@ -105,6 +105,63 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-009 — Transient-arena slices bind the wrong GPU offset (latent for vanilla)
+
+**Status:** open, unfixed. Latent for vanilla; would break any streaming vertex/uniform use.
+**Severity:** latent today, high if hit — a shader would read the start of the 64 MB arena instead of
+its own data.
+**Found by:** auditing the arena's offset handling against `GpuBuffer`/`GpuBufferSlice` semantics.
+
+### Cause
+
+`MetalTransientMemory` hands out sub-buffers of one 64 MB `MTLBuffer`. A sub-buffer shares its
+parent's **handle** and holds a `data` segment that is already offset into the parent:
+
+```java
+public static MetalBuffer sub(int usage, long size, MetalBuffer parent, long offset) {
+    MemorySegment slice = parent.data.asSlice(offset, size);
+    return new MetalBuffer(usage, size, parent.handle, slice, false, parent);   // parent handle
+}
+```
+
+Minecraft's `GpuBuffer.slice(offset, length)` returns `new GpuBufferSlice(this, offset, length)`, so
+`sub.slice(0, size)` yields **offset 0** — while the handle is the whole parent arena.
+
+That is consistent for the CPU paths, because they read through the sub-buffer's already-offset
+`data` segment (`dataSlice`, `map`, `copyBufferToTexture`, `writeToBuffer`). It is wrong for the GPU
+binding paths, which combine the handle with the slice offset:
+
+```java
+MemorySegment handle = handleOf(slice.buffer());          // the parent arena
+MetalNative.renderPassSetVertexBuffer(encoder, handle, slice.offset(), index);   // ... at 0
+```
+
+So every transient allocation binds the arena at byte 0. Any draw or uniform read through one would
+sample another allocation's data.
+
+### Why it is latent
+
+`TransientMemory` is used by exactly two vanilla classes — `SpriteContents$AnimatedTexture` and
+`CubeMapTexture` — and both only *upload* through it, which goes down the CPU path that is correct.
+Terrain and GUI vertex data come from dedicated `GpuBuffer`s. So nothing in vanilla binds a transient
+buffer on the GPU, which is why this has never shown up. It is a trap for anything that does stream
+vertices or uniforms through it (Sodium and Iris both do).
+
+### Suggested fix
+
+Make the offset absolute and keep one source of truth. Either:
+
+- override `MetalBuffer.slice(long, long)` to add the sub-buffer's base offset, and have the CPU
+  paths use `dataSlice(offset - baseOffset, …)`; or
+- give a sub-buffer its own `MTLBuffer`-relative base and subtract it wherever `slice.offset()` is
+  currently fed to `dataSlice`.
+
+Whichever is chosen wants a test asserting the invariant *"a slice's (handle, offset) pair addresses
+the same bytes as the buffer's `data` segment"* — allocating twice from the arena and checking the
+second slice's offset is non-zero would have caught this immediately.
+
+---
+
 ## BUG-008 — Mip filtering is disabled by a leftover test hack
 
 **Status:** open, unfixed. Needs an in-game A/B before changing.
