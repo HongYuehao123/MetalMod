@@ -219,7 +219,18 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     public void clearColorAndDepthTextures(GpuTexture colorTexture, Vector4fc color,
                                            GpuTexture depthTexture, double depth,
                                            int x, int y, int width, int height) {
-        clearColorAndDepthTextures(colorTexture, color, depthTexture, depth);
+        // A rectangle, not the whole attachment: Metal's load-action clear would wipe everything
+        // outside it. GuiItemAtlas clears one slot at a time into the GUI item atlas, so clearing
+        // the whole texture there erased every slot already rendered. Vulkan uses VkClearRect here.
+        recordClear(color);
+        MetalTexture colorMetal = textureOf(colorTexture);
+        MetalTexture depthMetal = textureOf(depthTexture);
+        MetalNative.clearTexturesRegion(this.device.queueHandle(),
+                colorMetal == null ? MemorySegment.NULL : colorMetal.handle(), colorMetal != null,
+                color == null ? 0f : color.x(), color == null ? 0f : color.y(),
+                color == null ? 0f : color.z(), color == null ? 0f : color.w(),
+                depthMetal == null ? MemorySegment.NULL : depthMetal.handle(), depthMetal != null,
+                depth, x, y, width, height);
     }
 
     @Override

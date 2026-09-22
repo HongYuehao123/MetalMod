@@ -124,6 +124,17 @@ MMM_API int mmm_clear_textures(void* queue,
                                void* colorTexture, bool hasColor, float r, float g, float b, float a,
                                void* depthTexture, bool hasDepth, double depthValue);
 
+/// Clear only the given rectangle, leaving everything outside it untouched.
+///
+/// A Metal render pass clears a whole attachment - the load action ignores the scissor - so a
+/// sub-rectangle clear is done with a scissored full-screen triangle. Vulkan's VkClearRect does this
+/// natively, so without it the backends disagree. Same attachment rules as mmm_clear_textures.
+MMM_API int mmm_clear_textures_region(void* queue,
+                                      void* colorTexture, bool hasColor,
+                                      float r, float g, float b, float a,
+                                      void* depthTexture, bool hasDepth, double depthValue,
+                                      int32_t x, int32_t y, int32_t width, int32_t height);
+
 // ---------------------------------------------------------------------------------------------
 // Shader libraries, pipelines and drawing (Phase 3)
 // ---------------------------------------------------------------------------------------------

@@ -105,6 +105,69 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-010 — Sub-rectangle clears wiped the whole attachment
+
+**Status:** **FIXED** (Phase 5). Was live for vanilla, on the GUI item atlas.
+**Severity:** high for GUIs — every item slot already rendered was erased.
+**Found by:** comparing the clear paths against the Vulkan backend's implementation.
+
+### Cause
+
+`MetalCommandEncoderBackend.clearColorAndDepthTextures(..., x, y, width, height)` ignored the
+rectangle and cleared the whole attachment:
+
+```java
+public void clearColorAndDepthTextures(GpuTexture colorTexture, Vector4fc color,
+                                       GpuTexture depthTexture, double depth,
+                                       int x, int y, int width, int height) {
+    clearColorAndDepthTextures(colorTexture, color, depthTexture, depth);   // rect dropped
+}
+```
+
+A Metal render pass clears a whole attachment — the load action ignores the scissor, so the
+rectangle cannot simply be forwarded. Vulkan has `VkClearRect`, and `VulkanCommandEncoder` builds a
+render pass with a `RenderArea(x, y, width, height)` and issues `vkCmdClearAttachments` with that
+rect, so the two backends disagreed.
+
+### Impact
+
+Live for vanilla, not latent. `GuiItemAtlas` clears one **slot-sized** rectangle at a time into the
+GUI item atlas:
+
+```java
+clearColorAndDepthTextures(texture, CLEAR_COLOR, depthTexture, 0.0,
+        slotX, textureSize - slotY, slotTextureSize, slotTextureSize);
+```
+
+Clearing the whole atlas there erased every slot already rendered, so items drawn into the GUI item
+atlas would lose their earlier entries. `PictureInPictureRenderer`, `GameRenderer` and
+`LevelRenderer` also use the rectangle form. A contributor to the GUI problems in BUG-001.
+
+### Fix
+
+`mmm_clear_textures_region` clears the rectangle with a **scissored full-screen triangle**: the pass
+loads rather than clears, the scissor is the rectangle, and a small MSL pipeline writes the clear
+colour — plus the clear depth via `[[depth(any)]]` with an always-pass/always-write depth state, so
+the depth rectangle is honoured too. Pipelines are cached per (colour format, depth format).
+
+The no-rectangle variants keep using the load-action clear, which is the fast path and is correct
+when the rectangle is the whole attachment.
+
+### Verified, not assumed
+
+`metalmod_smoke` clears a 32x32 colour+depth target to red at depth 1.0, then clears an 8x8 rectangle
+at (8,8) to blue at depth 0.25 and reads both back:
+
+```
+inside rect  = R0 G0 B255   outside rect = R255 G0 B0
+depth inside = 0.250        outside = 1.000
+```
+
+So the rectangle is cleared and everything outside it survives — including the depth, which would
+have been the easy half to get wrong.
+
+---
+
 ## BUG-009 — Transient-arena slices bound the wrong GPU offset
 
 **Status:** **FIXED** (Phase 5). Was latent for vanilla; would have broken any streaming use.

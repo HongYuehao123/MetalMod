@@ -30,7 +30,7 @@ public final class MetalNative {
     private static MethodHandle mhTextureCreateFull, mhTextureCreateView, mhTextureReplaceRegion,
             mhTextureReadRegion, mhTextureRelease;
     private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease;
-    private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures;
+    private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures, mhClearTexturesRegion;
     private static MethodHandle mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
             mhCommandBufferRelease;
     private static MethodHandle mhLibraryCreate, mhLibraryRelease, mhRenderPipelineCreate,
@@ -116,6 +116,8 @@ public final class MetalNative {
         mhSamplerRelease = linker.downcallHandle(symbol(lookup, "mmm_sampler_release"), FunctionDescriptor.ofVoid(A));
         mhClearTextures = linker.downcallHandle(symbol(lookup, "mmm_clear_textures"),
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D));
+        mhClearTexturesRegion = linker.downcallHandle(symbol(lookup, "mmm_clear_textures_region"),
+                FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D, I, I, I, I));
 
         mhQueueSynchronize = linker.downcallHandle(symbol(lookup, "mmm_queue_synchronize"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
@@ -253,6 +255,10 @@ public final class MetalNative {
     public static int clearTextures(MemorySegment queue, MemorySegment color, boolean hasColor, float r, float g, float b, float a, MemorySegment depth, boolean hasDepth, double depthValue) {
         return i(mhClearTextures, queue, hasColor ? color : MemorySegment.NULL, hasColor, r, g, b, a,
                 hasDepth ? depth : MemorySegment.NULL, hasDepth, depthValue);
+    }
+    public static int clearTexturesRegion(MemorySegment queue, MemorySegment color, boolean hasColor, float r, float g, float b, float a, MemorySegment depth, boolean hasDepth, double depthValue, int x, int y, int width, int height) {
+        return i(mhClearTexturesRegion, queue, hasColor ? color : MemorySegment.NULL, hasColor, r, g, b, a,
+                hasDepth ? depth : MemorySegment.NULL, hasDepth, depthValue, x, y, width, height);
     }
 
     // Command buffers ----------------------------------------------------------------------------

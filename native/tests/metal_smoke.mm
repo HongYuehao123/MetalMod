@@ -432,6 +432,60 @@ static void test_sampler_address_modes(void) {
     mmm_device_release(device);
 }
 
+// GuiItemAtlas clears a slot-sized rectangle into the GUI item atlas. A Metal load-action clear wipes
+// the whole attachment, so that had to be a scissored draw instead; this proves the rectangle is
+// honoured and everything outside it survives - and that the depth value is stamped inside it.
+static void test_region_clear(void) {
+    printf("\n== region clear (only the rectangle may change) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int W = 32, H = 32;
+    void* color = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, 1u | 4u | 2u);
+    void* depth = mmm_texture_create_full(device, 252 /*Depth32Float*/, W, H, 1, 1, 2, true, 1u | 4u);
+    check("region-clear targets created", color != NULL && depth != NULL, "");
+
+    // Whole-texture clear to red/green, then a 8x8 rectangle at (8,8) cleared to blue at depth 0.25.
+    check("whole clear",
+          mmm_clear_textures(queue, color, true, 255, 0, 0, 1, depth, true, 1.0) == 0, "");
+    check("region clear",
+          mmm_clear_textures_region(queue, color, true, 0, 0, 255, 1,
+                                    depth, true, 0.25, 8, 8, 8, 8) == 0, "");
+    mmm_queue_synchronize(queue);
+
+    unsigned char pixels[32 * 32 * 4];
+    int rc = mmm_texture_read_region(color, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+    check("region-clear readback", rc == 0, "");
+    if (rc == 0) {
+        unsigned char* inside = pixels + (12 * W + 12) * 4;
+        unsigned char* outside = pixels + (2 * W + 2) * 4;
+        printf("     inside rect  = R%d G%d B%d   outside rect = R%d G%d B%d\n",
+               inside[0], inside[1], inside[2], outside[0], outside[1], outside[2]);
+        check("inside the rect is the region colour (blue)",
+              inside[2] > 200 && inside[0] < 40, "");
+        check("outside the rect kept the earlier clear (red)",
+              outside[0] > 200 && outside[2] < 40, "");
+    }
+
+    // Depth: the rect was stamped with 0.25, everywhere else still holds the earlier 1.0.
+    float depthPixels[32 * 32];
+    int drc = mmm_texture_read_region(depth, 0, 0, 0, 0, W, H, depthPixels, sizeof(depthPixels), W * 4);
+    check("depth readback", drc == 0, "");
+    if (drc == 0) {
+        float insideDepth = depthPixels[12 * W + 12];
+        float outsideDepth = depthPixels[2 * W + 2];
+        printf("     depth inside = %.3f   outside = %.3f\n", insideDepth, outsideDepth);
+        check("depth inside the rect is 0.25", fabsf(insideDepth - 0.25f) < 0.001f, "");
+        check("depth outside the rect is still 1.0", fabsf(outsideDepth - 1.0f) < 0.001f, "");
+    }
+
+    mmm_texture_release(depth);
+    mmm_texture_release(color);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 // Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
 static void test_draw(void) {
     printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
@@ -518,6 +572,7 @@ int main(void) {
         test_resources();
         test_mip_filter();
         test_sampler_address_modes();
+        test_region_clear();
         test_draw();
         test_surface();
     }

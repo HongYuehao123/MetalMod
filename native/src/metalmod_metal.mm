@@ -745,6 +745,162 @@ int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
 }
 
 // ---------------------------------------------------------------------------------------------
+// Region clear
+//
+// A Metal render pass clears a whole attachment: the load action ignores the scissor. The engine
+// sometimes asks to clear only a sub-rectangle - GuiItemAtlas clears one slot at a time into the GUI
+// item atlas - and clearing the whole attachment there wipes every slot already rendered. Vulkan
+// handles this natively with VkClearRect, so the two backends disagreed. Clear the rectangle with a
+// scissored full-screen triangle instead, which honours both the rect and the depth value.
+// ---------------------------------------------------------------------------------------------
+
+#define MMM_MAX_CLEAR_PIPELINES 8
+
+typedef struct {
+    int64_t colorFormat;
+    int64_t depthFormat;   // 0 when the pipeline has no depth attachment
+    void* pipeline;
+    void* depthState;
+} MMMClearPipeline;
+
+static MMMClearPipeline g_ClearPipelines[MMM_MAX_CLEAR_PIPELINES];
+static int g_ClearPipelineCount = 0;
+
+static MMMClearPipeline* mmm_clear_pipeline(id<MTLDevice> device, int64_t colorFormat, int64_t depthFormat) {
+    for (int i = 0; i < g_ClearPipelineCount; i++) {
+        if (g_ClearPipelines[i].colorFormat == colorFormat
+                && g_ClearPipelines[i].depthFormat == depthFormat) {
+            return &g_ClearPipelines[i];
+        }
+    }
+    if (g_ClearPipelineCount >= MMM_MAX_CLEAR_PIPELINES) return NULL;
+
+    static const char* kColorOnly =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct VOut { float4 pos [[position]]; };\n"
+        "vertex VOut clear_v(uint vid [[vertex_id]]) {\n"
+        "    float2 p = float2((float)((vid << 1) & 2), (float)(vid & 2));\n"
+        "    VOut o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;\n"
+        "}\n"
+        "fragment float4 clear_f(constant float4& color [[buffer(0)]]) { return color; }\n";
+    static const char* kWithDepth =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct VOut { float4 pos [[position]]; };\n"
+        "struct FOut { float4 color [[color(0)]]; float depth [[depth(any)]]; };\n"
+        "vertex VOut clear_v(uint vid [[vertex_id]]) {\n"
+        "    float2 p = float2((float)((vid << 1) & 2), (float)(vid & 2));\n"
+        "    VOut o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); return o;\n"
+        "}\n"
+        "fragment FOut clear_f(constant float4& color [[buffer(0)]],\n"
+        "                      constant float& depth [[buffer(1)]]) {\n"
+        "    FOut o; o.color = color; o.depth = depth; return o;\n"
+        "}\n";
+
+    @autoreleasepool {
+        NSError* error = nil;
+        NSString* text = [NSString stringWithUTF8String:(depthFormat != 0 ? kWithDepth : kColorOnly)];
+        id<MTLLibrary> library = [device newLibraryWithSource:text options:nil error:&error];
+        if (library == nil) {
+            NSLog(@"[MetalMod] region-clear MSL failed: %@", error.localizedDescription);
+            return NULL;
+        }
+        id<MTLFunction> vertexFn = [library newFunctionWithName:@"clear_v"];
+        id<MTLFunction> fragmentFn = [library newFunctionWithName:@"clear_f"];
+        if (vertexFn == nil || fragmentFn == nil) return NULL;
+
+        MTLRenderPipelineDescriptor* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        descriptor.vertexFunction = vertexFn;
+        descriptor.fragmentFunction = fragmentFn;
+        descriptor.rasterSampleCount = 1;
+        descriptor.colorAttachments[0].pixelFormat = (MTLPixelFormat)colorFormat;
+        if (depthFormat != 0) {
+            descriptor.depthAttachmentPixelFormat = (MTLPixelFormat)depthFormat;
+        }
+        id<MTLRenderPipelineState> pipeline =
+            [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        if (pipeline == nil) {
+            NSLog(@"[MetalMod] region-clear pipeline failed: %@", error.localizedDescription);
+            return NULL;
+        }
+
+        id<MTLDepthStencilState> depthState = nil;
+        if (depthFormat != 0) {
+            // Always passes and always writes, so every scissored fragment stamps the clear depth.
+            MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+            dsd.depthCompareFunction = MTLCompareFunctionAlways;
+            dsd.depthWriteEnabled = YES;
+            depthState = [device newDepthStencilStateWithDescriptor:dsd];
+        }
+
+        MMMClearPipeline* entry = &g_ClearPipelines[g_ClearPipelineCount++];
+        entry->colorFormat = colorFormat;
+        entry->depthFormat = depthFormat;
+        entry->pipeline = (__bridge_retained void*)pipeline;
+        entry->depthState = depthState != nil ? (__bridge_retained void*)depthState : NULL;
+        return entry;
+    }
+}
+
+int mmm_clear_textures_region(void* queue, void* colorTexture, bool hasColor,
+                              float r, float g, float b, float a,
+                              void* depthTexture, bool hasDepth, double depthValue,
+                              int32_t x, int32_t y, int32_t width, int32_t height) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    id<MTLTexture> color = mmm_texture(colorTexture);
+    id<MTLTexture> depth = mmm_texture(depthTexture);
+    if (metalQueue == nil) return -1;
+    if (!hasColor && !hasDepth) return 0;
+    if (width <= 0 || height <= 0) return 0;
+
+    @autoreleasepool {
+        id<MTLDevice> device = metalQueue.device;
+        int64_t colorFormat = (hasColor && color != nil) ? (int64_t)color.pixelFormat : 0;
+        int64_t depthFormat = (hasDepth && depth != nil) ? (int64_t)depth.pixelFormat : 0;
+        MMMClearPipeline* clear = mmm_clear_pipeline(device, colorFormat, depthFormat);
+        if (clear == NULL) return -2;
+
+        // Load rather than clear: everything outside the scissor must survive.
+        MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (hasColor && color != nil) {
+            descriptor.colorAttachments[0].texture = color;
+            descriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        }
+        if (hasDepth && depth != nil) {
+            descriptor.depthAttachment.texture = depth;
+            descriptor.depthAttachment.loadAction = MTLLoadActionLoad;
+            descriptor.depthAttachment.storeAction = MTLStoreActionStore;
+        }
+
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod region clear";
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        if (encoder == nil) return -3;
+        [encoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)clear->pipeline];
+        if (clear->depthState != NULL) {
+            [encoder setDepthStencilState:(__bridge id<MTLDepthStencilState>)clear->depthState];
+        }
+        NSUInteger sx = (NSUInteger)MAX(0, x);
+        NSUInteger sy = (NSUInteger)MAX(0, y);
+        NSUInteger sw = (NSUInteger)MAX(0, width);
+        NSUInteger sh = (NSUInteger)MAX(0, height);
+        [encoder setScissorRect:(MTLScissorRect){sx, sy, sw, sh}];
+        float colorValues[4] = {r, g, b, a};
+        [encoder setFragmentBytes:colorValues length:sizeof(colorValues) atIndex:0];
+        if (clear->depthFormat != 0) {
+            float depthFloat = (float)depthValue;
+            [encoder setFragmentBytes:&depthFloat length:sizeof(float) atIndex:1];
+        }
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+        [commandBuffer commit];
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Surface
 // ---------------------------------------------------------------------------------------------
 
