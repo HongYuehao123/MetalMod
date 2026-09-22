@@ -155,6 +155,20 @@ terrain are fixed:
   texel, and the natural fix — an `MTLTextureTypeTextureBuffer` — *aborts* Metal for `R8_SINT`. The
   working path is the one SPIRV-Cross already emits (`texture2d<int>` + `spvTexelBufferCoord`), so
   the bytes are presented as a 2D texture, cached per backing buffer.
+- **The multi-draw fix from the previous round was incomplete.** Correcting the draw-count limit was
+  necessary but not sufficient: `RenderPass.multiDrawIndexed`/`multiDraw` gate on the
+  *feature flags* too, so those methods still threw. `multiDrawDirectInterleaved` and
+  `multiDrawDirectSeparate` are now reported `true`, because `MetalRenderPassBackend` really does
+  implement all four of those methods (it loops over the draw list issuing one indexed draw each).
+  `multiDrawIndirect` and `drawIndirect` stay `false`, because those two are genuine no-ops and
+  reporting them true would make the engine take a path that silently draws nothing.
+  `tools/render_check` now drives Minecraft's own `RenderPass.multiDrawIndexed` and checks that both
+  entries of a two-quad call are drawn - a call that threw before the flags were corrected.
+- **The present-mode set was checked and is sufficient.** `GpuSurface.configure` throws for a mode the
+  backend does not advertise, and `getSupportedVsyncMode` throws if none of its preferences are
+  available. With {FIFO, IMMEDIATE} advertised it resolves to FIFO with vsync on and IMMEDIATE with
+  vsync off, so neither throws. `FIFO_RELAXED` and `MAILBOX` fall back to those, correctly: Metal's
+  `CAMetalLayer` only offers `displaySyncEnabled`, so it cannot express adaptive or mailbox pacing.
 - **Two capability reports were wrong, both in the same way.** `DeviceLimits.maxMultiDrawDirectInterleavedDrawCount`
   was 0, which reads like "no batching" but actually means `RenderPass.multiDrawIndexed` throws an
   `IllegalArgumentException` for *any* non-empty call. Vanilla never calls it, so it went unnoticed,

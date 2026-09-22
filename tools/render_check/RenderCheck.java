@@ -19,6 +19,7 @@ import net.metalmod.backend.MetalNative;
 import net.metalmod.backend.MetalRenderPipeline;
 import net.metalmod.backend.MetalTexture;
 import org.joml.Vector4f;
+import org.joml.Vector4fc;
 
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -144,6 +145,12 @@ public final class RenderCheck {
             // for targets whose label contains "/atlas/". Verify that flip actually happens, and that
             // the winding flip keeps a cull-enabled pipeline drawing through it.
             atlasFlipCheck(device, pipeline);
+
+            // RenderPass gates multiDrawIndexed on the multiDrawDirectInterleaved feature *and* the
+            // draw-count limit, throwing for either. Both were reported inaccurately, so this drives
+            // Minecraft's own RenderPass wrapper - not just our backend - to prove the path is now
+            // usable and that it actually draws every entry.
+            multiDrawCheck(device, pipeline);
         } finally {
             device.close();
         }
@@ -611,6 +618,91 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Draw two quads in one {@code multiDrawIndexed} call through Minecraft's {@code RenderPass}.
+     *
+     * <p>This is the path the feature flags gate. Before they were reported honestly, the wrapper
+     * threw before reaching the backend at all, so this could not be called; now it must draw both
+     * entries - left half and right half - from one index buffer.
+     */
+    private static void multiDrawCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture target = device.createTexture("multidraw", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuBuffer vertices = device.createBuffer(() -> "two quads",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, twoQuadVertices());
+        GpuBuffer indices = device.createBuffer(() -> "two quad indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, twoQuadIndices());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.0f, 0.0f, 1.0f, 1.0f}));   // blue
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        Optional<Vector4fc> clear = Optional.of((Vector4fc) new Vector4f(0.0f, 0.0f, 0.0f, 1.0f));
+        java.util.List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> attachments =
+                new java.util.ArrayList<>();
+        attachments.add(new RenderPassDescriptor.Attachment<>(view, clear));
+
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "multidraw")
+                .withColorAttachment(view, clear)
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        RenderPassBackend backend = encoder.createRenderPass(descriptor);
+        // Minecraft's own wrapper, so its feature and limit guards are exercised too.
+        RenderPass pass = new RenderPass(backend, device, attachments, () -> {
+        }, new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.multiDrawIndexed(java.nio.IntBuffer.wrap(new int[]{0, 6}), 6, 1, 0);
+        pass.close();
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int left = pixels.get((HEIGHT / 2 * WIDTH + WIDTH / 4) * 4 + 2) & 0xFF;
+        int right = pixels.get((HEIGHT / 2 * WIDTH + 3 * WIDTH / 4) * 4 + 2) & 0xFF;
+        check("multiDrawIndexed drew both entries (left B" + left + ", right B" + right + ")",
+                left > 200 && right > 200, "");
+
+        readback.close();
+        transforms.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        view.close();
+        target.close();
+    }
+
+    /** Two GUI-layout quads side by side: 8 vertices covering the left and right halves. */
+    private static ByteBuffer twoQuadVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(8 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {
+                {-1, -1}, {0, -1}, {0, 1}, {-1, 1},     // left half
+                {0, -1}, {1, -1}, {1, 1}, {0, 1},       // right half
+        };
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(0.0f);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    private static ByteBuffer twoQuadIndices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(12 * 4).order(ByteOrder.nativeOrder());
+        for (int index : new int[]{0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7}) {
+            buffer.putInt(index);
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /** GUI-layout vertices covering only NDC y in [-1, 0]: the "top half" in a Y-down convention. */

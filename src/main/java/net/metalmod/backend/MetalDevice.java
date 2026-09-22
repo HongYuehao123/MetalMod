@@ -272,10 +272,14 @@ public final class MetalDevice implements GpuDeviceBackend {
         // paths it may take. Each value is a claim about what this backend actually implements:
         //
         //   shaderDrawParameters         no vanilla consumer; MetalMod neither provides nor needs it.
-        //   multiDrawDirectInterleaved   } not implemented - MetalRenderPassBackend's indirect draws
-        //   multiDrawDirectSeparate      } are no-ops, so these must stay false or the engine would
-        //   multiDrawIndirect            } take a path that silently draws nothing.
-        //   drawIndirect                 }
+        //   multiDrawDirectInterleaved   } implemented: MetalRenderPassBackend loops over the draw
+        //   multiDrawDirectSeparate      } list and issues one indexed draw per entry. RenderPass
+        //                                gates multiDrawIndexed/multiDraw on these flags *as well as*
+        //                                the draw-count limit, so reporting them false left those
+        //                                methods throwing even after the limit was corrected.
+        //   multiDrawIndirect            } NOT implemented - the two indirect draws below are no-ops,
+        //   drawIndirect                 } so these must stay false or the engine would take a path
+        //                                that silently draws nothing.
         //   nonZeroFirstInstance         TRUE: both native draws forward firstInstance as
         //                                baseInstance, and metalmod_smoke proves [[instance_id]]
         //                                includes it (instance colour 3 comes back for
@@ -286,8 +290,8 @@ public final class MetalDevice implements GpuDeviceBackend {
         //                                StagingBuffer picks its CPU path.
         DeviceFeatures features = new DeviceFeatures(
                 /* shaderDrawParameters */ false,
-                /* multiDrawDirectInterleaved */ false,
-                /* multiDrawDirectSeparate */ false,
+                /* multiDrawDirectInterleaved */ true,
+                /* multiDrawDirectSeparate */ true,
                 /* multiDrawIndirect */ false,
                 /* drawIndirect */ false,
                 /* nonZeroFirstInstance */ true,
