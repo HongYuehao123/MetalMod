@@ -1,0 +1,299 @@
+# MetalMod Roadmap
+
+> **Status:** rewritten after discovering that Minecraft 26.2 ships a pluggable graphics backend.
+> This document supersedes the "bolt MetalFX onto MoltenVK" architecture that the code currently
+> implements. Read §2 before anything else — it changes what this project is.
+
+---
+
+## 1. The goal
+
+Three objectives, in increasing order of ambition:
+
+1. **Run shaderpacks** — existing GLSL packs, and whatever Vulkan-era format appears.
+2. **A native Metal renderer backend for Minecraft** — the VulkanMod analogue, and the reason the
+   project is called MetalMod.
+3. **Native ray tracing on Apple Silicon.**
+
+All three require Metal code and MetalFX. All three are gated on the same prerequisite, which is
+goal 2: once MetalMod *is* the renderer, the other two become ordinary features of it rather than
+cross-API hacks.
+
+---
+
+## 2. The discovery that shapes everything
+
+**Minecraft 26.2 abstracts the graphics API behind a pluggable backend.** Verified against the real
+client jar (`javap -cp <client>.jar -p <class>`):
+
+```java
+public interface GpuBackend {                       // com.mojang.blaze3d.systems
+    String getName();
+    void setWindowHints();
+    void handleWindowCreationErrors(GLFWErrorCapture$Error) throws BackendCreationException;
+    GpuDevice createDevice(long window, ShaderSource, GpuDebugOptions, Runnable)
+            throws BackendCreationException;
+}
+```
+
+`GpuDevice` is a concrete, API-agnostic class that wraps a `GpuDeviceBackend` — the driver
+implementation point. Sub-backends cover the rest:
+
+| Package | Role |
+|---|---|
+| `com.mojang.blaze3d.opengl` | **existing** OpenGL backend (`GlDevice`, `GlCommandEncoder`, …) |
+| `com.mojang.blaze3d.vulkan` | **existing** Vulkan backend (`VulkanDevice`, `VulkanCommandEncoder`, `VulkanGpuSurface`, `VulkanTransientMemory`, `VulkanQueue`, …) — 69 classes, 386 KB of bytecode |
+| `com.mojang.blaze3d.framegraph` | `FrameGraphBuilder`, `FramePass` |
+| `com.mojang.blaze3d.systems` | `GpuDeviceBackend`, `CommandEncoderBackend`, `RenderPassBackend`, `GpuSurfaceBackend`, query pools, device limits/features |
+
+**Backend selection** is `net.minecraft.client.PreferredGraphicsApi` — an enum
+(`DEFAULT`, `OPENGL`, `VULKAN`) whose `getBackendsToTry()` returns a `GpuBackend[]`. One mixin on
+that method can put a Metal backend first.
+
+**Shaders are already cross-backend.** The Vulkan path is:
+
+```
+ShaderSource.get(id, type)        // GLSL text, from resources or a shaderpack
+  -> GlslPreprocessor             // #moj_import, version handling, define injection
+  -> lwjgl-shaderc 3.4.1          // GLSL -> SPIR-V
+  -> IntermediaryShaderModule     // SPIR-V + reflection (uniform buffers, samplers, in/out)
+  -> VulkanShaderModule
+```
+
+Reflection uses **SPIRV-Cross** (`org.lwjgl.util.spvc` — already an LWJGL binding present on this
+machine), and SPIRV-Cross can emit **MSL**. So the front half of the shader pipeline is reusable
+verbatim; a Metal backend replaces only the final step.
+
+### What this means
+
+A Metal backend is **~134 interface members** across twelve types, with a complete worked reference
+implementation to read (the Vulkan backend, which is architecturally the closest analogue because it
+is also explicit and command-buffer based).
+
+This is *not* the VulkanMod problem. VulkanMod had to reimplement the renderer because Minecraft had
+no backend abstraction then. Mojang has since done that work. MetalMod's job is to be a driver.
+
+---
+
+## 3. Why the current architecture is a dead end
+
+The existing code keeps Minecraft on MoltenVK and reaches in with `VK_EXT_metal_objects` to run
+MetalFX on MoltenVK's textures, then fights MoltenVK for the `CAMetalLayer`. That was proven
+unworkable here:
+
+- **Presentation.** MoltenVK presents *after* the hook runs, so any frame MetalMod produces is
+  overwritten. Verified: the pipeline reports `MetalMod does not own presentation` forever.
+- **Synchronisation.** Two `MTLCommandQueue`s on one device have no implicit ordering, so the Metal
+  pass and MoltenVK's pass need explicit `MTLSharedEvent` cross-queue sync.
+- **Interop.** Minecraft's images are not created with `VkExportMetalObjectCreateInfoEXT`, so
+  `vkExportMetalObjectsEXT` cannot return their textures without a Vulkan layer that rewrites
+  `vkCreateImage`.
+- **Ceiling.** MoltenVK cannot expose MetalFX or ray tracing at all.
+
+Once MetalMod **is** the backend, every one of these disappears by construction: MetalMod owns the
+device, the swapchain, the command queues and presentation. MetalFX becomes an ordinary pass over
+our own textures, and ray tracing becomes possible at all.
+
+---
+
+## 4. What happens to the existing code
+
+### Keep, reworked
+
+| Component | Fate |
+|---|---|
+| `scripts/build_classpath.py`, `build_mod.sh` | **Keep.** Already migrated to compiling against the real client jar instead of API stubs (see §8). |
+| `net.metalmod.Diagnostics` | Keep. Hook-application reporting paid for itself repeatedly. |
+| `net.metalmod.debug.MetalModDebugEntry` | Keep. F3 status is the project's best observability channel. |
+| `MetalConfig`, config screen | Keep, extended for backend selection. |
+| Native build plumbing (CMake, Metal linkage) | Keep; evolves into the backend's native bridge. |
+| `UnifiedMemoryManager` (telemetry only) | Keep for F3 metrics. |
+
+### Retire
+
+| Component | Why |
+|---|---|
+| `VulkanFrameManager` | Superseded: no VkImage plumbing needed once we own the device. |
+| `MetalBridge` Vulkan interop (`metalmod_register_vulkan_device`, `metalmod_process_frame`) | Superseded by backend-owned textures. |
+| `metalmod_pacer.mm`, `metalmod_compositor.mm`, spatial/temporal/interpolator wrappers | MetalFX returns in Phase 7, against our own textures, with no interop or pacing hacks. |
+| `RenderTargetMixin` | Already removed — scaling the main render target breaks the GUI (`Scissor ... out of bounds for render area`) and froze input. |
+| `JitterHelper` | Returns in Phase 7 with temporal upscaling. |
+| `MetalMemoryAllocator` | **Removed.** LWJGL 3.4 requires native function pointers (`getMalloc`, `getAlignedFree`, …) for its fast allocation path; a Java pool cannot supply them honestly, and mixing libc- and pool-allocated pointers behind one `free()` risks corruption. It was also a measured pessimisation. |
+
+---
+
+## 5. Phases
+
+Effort is relative sizing, not a schedule: **S** ≈ days, **M** ≈ weeks, **L** ≈ months, **XL** ≈
+multiple months. Estimates assume one experienced developer.
+
+### Phase 0 — Build foundation ✅ **DONE**
+
+Compile against the **real client jar** rather than generated API stubs.
+
+- Why it mattered: three separate multi-hour failures came from stubs disagreeing with reality
+  (intermediary `class_XXXX` targets; `@Retention(CLASS)` hiding `@Inject`/`@Accessor` from Mixin;
+  `RenderTarget.resize(int,int,boolean)`, `Window.getFramebufferWidth()`,
+  `Minecraft.getMainRenderTarget()` and `resizeDisplay()` not existing).
+- Result: `javac` now verifies every Minecraft API call. The migration immediately surfaced four
+  genuine mismatches, including the LWJGL allocator contract above.
+- Deleted `scripts/generate_stubs.py` and the stub build path.
+
+**Still missing:** a launch/debug loop (`runClient`). Compilation is verified; running still means
+copying a jar into the instance. Loom would give a proper dev loop — desirable but no longer a
+correctness prerequisite.
+
+### Phase 1 — First light: device, surface, clear  · **M**
+
+Prove that Minecraft can run on a Metal device at all.
+
+- `MetalBackend implements GpuBackend` — window hints, `createDevice`.
+- `MetalDeviceBackend implements GpuDeviceBackend` — device/queue creation via `MTLCreateSystemDefaultDevice`, `DeviceInfo`, limits, features.
+- `MetalSurfaceBackend implements GpuSurfaceBackend` — own the `CAMetalLayer`, acquire/present drawables, present modes.
+- Minimal `CommandEncoderBackend` + `RenderPassBackend` — enough to clear the surface to a colour.
+- Mixin `PreferredGraphicsApi.getBackendsToTry()` to prepend Metal.
+- Native side: Objective-C++ bridge (Panama FFI, matching the existing `MetalBridge` style).
+
+**Done when:** Minecraft boots and presents a cleared window on Metal, with the vanilla renderer
+disabled. Expect a black/grey screen and a working window — that is success at this stage.
+
+**Risks:** window/layer ownership with GLFW; present-mode negotiation; device-loss handling.
+
+### Phase 2 — Resource layer  · **M**
+
+- `MetalGpuTexture`, `MetalGpuTextureView`, `MetalGpuBuffer`, `MetalGpuSampler`, `MetalFence`.
+- `GpuFormat` → `MTLPixelFormat` mapping table, including sRGB, depth, and integer formats.
+- Shared/private storage modes, staging uploads, `TransientMemory` ring allocator.
+- `GpuQueryPool` via `MTLCounterSampleBuffer`.
+
+**Done when:** the game creates all its textures, buffers and samplers without falling back.
+
+### Phase 3 — Pipelines and draw calls · **M**
+
+- `MetalRenderPipeline` — `RenderPipeline` → `MTLRenderPipelineState` + `MTLDepthStencilState`; blend, cull, polygon mode, vertex layouts, primitive topology.
+- `MetalBindGroupLayout` → argument buffers or explicit bindings; uniform buffer/sampler binding.
+- Full `RenderPassBackend`: indexed/indirect/multi-draw, scissor, timestamp writes, debug groups.
+
+**Done when:** simple geometry renders correctly (the sky and a flat-coloured world).
+
+### Phase 4 — Shaders · **M**
+
+- Reuse the GLSL front end: `GlslPreprocessor` → shaderc → SPIR-V.
+- **SPIR-V → MSL via SPIRV-Cross** (`org.lwjgl.util.spvc`, already bundled), then
+  `newLibraryWithSource:` / `newLibraryWithData:`.
+- Translate reflection output (uniform buffers, samplers, inputs/outputs) into Metal bindings.
+- Shader cache keyed as `VulkanDevice$ShaderCompilationKey` does (id + type + defines).
+
+**Done when:** unmodified vanilla shaders compile and run.
+
+**Risk:** MC's `ShaderType` has only `VERTEX` and `FRAGMENT`. Any pack needing compute or geometry
+shaders — common in modern shaderpacks — requires extending the pipeline beyond what the vanilla
+abstraction models. Plan for that in Phase 6.
+
+### Phase 5 — Vanilla render parity  · **L–XL**
+
+The bulk of the work, and where "it compiles" becomes "it plays".
+
+- World/terrain, entities, block entities, particles, sky/weather.
+- GUI, text, item rendering, tooltips, debug overlays.
+- Post-processing chains, framebuffers, shadow/lightmap passes.
+- `HintsAndWorkarounds` / `DeviceFeatures` / `DeviceLimits` reporting so the game takes Metal-appropriate paths.
+
+**Done when:** a normal session is visually indistinguishable from Vulkan/MoltenVK, at comparable
+frame rate.
+
+**Compatibility risk:** Sodium replaces terrain rendering. It sits on Blaze3D's abstraction in
+modern versions, so it should follow, but its terrain path is the performance-critical one and needs
+dedicated testing. Iris is the shaderpack loader and is a Phase 6 dependency.
+
+### Phase 6 — Shaderpacks  · **L**
+
+- A shaderpack-aware `ShaderSource` (packs ship GLSL, so the Phase 4 path applies).
+- Injecting pack-declared passes (shadow, deferred, composite) into the frame graph.
+- Extending beyond vertex/fragment for packs that use compute — likely a backend-specific extension to `RenderPipeline`.
+- Pack-provided uniforms, samplers, custom textures, and buffer formats.
+
+**Done when:** a representative set of popular packs loads without errors and produces correct
+output. Feature coverage, not a single pack, is the milestone.
+
+### Phase 7 — MetalFX, natively  · **S–M**
+
+Now straightforward, because MetalMod owns the device and the swapchain:
+
+- Temporal/spatial upscaling over our own textures — no `VK_EXT_metal_objects`, no format
+  reconciliation, no presentation fight.
+- Temporal upscaling needs motion vectors, which vanilla does not produce: either the render graph
+  exposes them or we add a depth-reprojection pass.
+- Frame generation via `CAMetalDisplayLink` pacing, presenting the interpolated frame on its own
+  refresh. This costs about one refresh of input latency (~8 ms at 120 Hz) — a deliberate trade, not
+  a free win.
+
+### Phase 8 — Ray tracing  · **XL (research)**
+
+- Build BLAS/TLAS from chunk meshes; rebuild strategy for chunk edits.
+- Hybrid raster + RT: shadows, reflections, ambient occlusion first; full path tracing later.
+- Denoising and temporal accumulation on top of Phase 7's machinery.
+
+Apple silicon M3 and later have hardware ray tracing; this is the objective that most justifies a
+native Metal backend, since MoltenVK cannot express it at all.
+
+---
+
+## 6. Honest risk assessment
+
+- **Scale.** This is a multi-month project. The Vulkan backend — written by people with full access
+  to the engine and paid to do it — is 69 classes. Treat Phase 5 as the real cost.
+- **Performance is not guaranteed.** MoltenVK is mature and well-tuned. A new backend may be
+  *slower* than the Vulkan path for a long time. The justification for MetalMod is ray tracing,
+  MetalFX, and control over presentation — **not** an assumed frame-rate win. If raw FPS on the
+  current Vulkan path is the only goal, this project is the wrong tool.
+- **Upstream drift.** Mojang maintains its own backends. When the abstraction changes, ours breaks
+  and theirs does not. Budget ongoing maintenance.
+- **Feature gaps.** Apple GPUs differ from the Vulkan feature set MC targets; some assumptions will
+  need `DeviceFeatures` negotiation rather than hardcoding.
+- **Ecosystem.** Sodium and Iris must work, or the mod is not usable in practice.
+
+---
+
+## 7. Immediate next step
+
+**Phase 1.** Concretely:
+
+1. `MetalBackend` + `MetalDeviceBackend` + `MetalSurfaceBackend` + a minimal clear-only encoder.
+2. A mixin on `PreferredGraphicsApi.getBackendsToTry()` to prepend Metal.
+3. Native Objective-C++ bridge for `MTLDevice`, `MTLCommandQueue`, `CAMetalLayer`.
+
+Success is a Minecraft window that opens, presents, and clears — with the vanilla renderer offline.
+
+Before starting, one question worth answering: **is the objective ray tracing and MetalFX
+capability, or frame rate?** If it is capability, Phase 1 is unambiguously right. If it is frame
+rate on the *existing* Vulkan path, the measurement in HANDOFF.md matters more than this roadmap.
+
+---
+
+## 8. Verified facts and how to re-verify
+
+Everything in §2 was read from the real client jar, not assumed:
+
+```bash
+INST="$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2"
+JAR="$INST/MetalMod_Test_26.2.jar"
+JAVAP=/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/javap
+
+# the backend abstraction
+$JAVAP -cp "$JAR" -p com.mojang.blaze3d.systems.GpuBackend
+$JAVAP -cp "$JAR" -p com.mojang.blaze3d.systems.GpuDeviceBackend
+$JAVAP -cp "$JAR" -p com.mojang.blaze3d.systems.RenderPassBackend
+$JAVAP -cp "$JAR" -p net.minecraft.client.PreferredGraphicsApi
+
+# the shader pipeline
+$JAVAP -cp "$JAR" -p com.mojang.blaze3d.vulkan.glsl.IntermediaryShaderModule
+$JAVAP -cp "$JAR" -p com.mojang.blaze3d.preprocessor.GlslPreprocessor
+
+# the reference backend, for calibration
+unzip -l "$JAR" | grep "blaze3d/vulkan/"
+```
+
+Note the environment specifics that matter: this instance runs with **named mappings** (the client
+jar contains zero `class_XXXX` entries), on **Vulkan 1.2.334 / MoltenVK 1.4.2**, Apple M4 Pro,
+macOS 27, Java 26.

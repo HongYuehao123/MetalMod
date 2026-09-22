@@ -43,8 +43,11 @@ void* metalmod_uma_alloc(size_t size) {
     size_t alignedSize = align_up_16k(size);
 
     // MTLResourceStorageModeShared: CPU and GPU share the same physical DRAM on Apple Silicon.
-    // MTLResourceCPUCacheModeWriteCombined: Writes bypass CPU L1/L2 data cache directly into DRAM,
-    // avoiding cache pollution of active game loop instructions.
+    // MTLResourceCPUCacheModeWriteCombined: Writes bypass CPU L1/L2 data cache directly into DRAM.
+    //
+    // NOTE: write-combined memory is fast to write but slow to *read* from the CPU. Callers that
+    // read these buffers back on the CPU should prefer MetalMemoryAllocator's default (non-UMA)
+    // path; see the README section on the UMA pool.
     MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
 
     id<MTLBuffer> buffer = [device newBufferWithLength:alignedSize options:options];
@@ -72,19 +75,24 @@ void metalmod_uma_free(void* ptr) {
         }
     }
 
-    if (buffer) {
-        // Advise Mach VM that this region is freed and reusable without swap writes
-        size_t len = [buffer length];
-        madvise(ptr, len, MADV_FREE_REUSABLE);
-        // ARC will release buffer when it goes out of scope
-    }
+    // No madvise(MADV_FREE_REUSABLE) here.
+    //
+    // The buffer may still be referenced by an in-flight command buffer (Metal retains the
+    // resources an encoder used), so marking its pages reclaimable while the GPU is reading them
+    // can hand out or discard live data. Releasing the MTLBuffer is what actually returns the
+    // memory; local variable `buffer` goes out of scope here and ARC releases it.
+    (void)buffer;
 }
 
 void* metalmod_uma_calloc(size_t num, size_t size) {
+    if (num == 0 || size == 0) return nullptr;
+    // Guard against multiplication overflow before it can under-allocate.
+    if (num > SIZE_MAX / size) return nullptr;
+
     size_t total = num * size;
     void *ptr = metalmod_uma_alloc(total);
     if (ptr) {
-        memset(ptr, 0, align_up_16k(total));
+        memset(ptr, 0, total);
     }
     return ptr;
 }
@@ -96,8 +104,6 @@ void* metalmod_uma_realloc(void* ptr, size_t newSize) {
         return nullptr;
     }
 
-    size_t newAligned = align_up_16k(newSize);
-
     id<MTLBuffer> oldBuf = nil;
     {
         std::lock_guard<std::mutex> lock(g_UmaMutex);
@@ -108,12 +114,16 @@ void* metalmod_uma_realloc(void* ptr, size_t newSize) {
     }
 
     if (!oldBuf) {
-        return metalmod_uma_alloc(newSize);
+        // Not our pointer. Returning a fresh allocation here would silently discard the caller's
+        // existing contents, so fail instead and let the caller fall back to the allocator that
+        // actually owns the pointer.
+        return nullptr;
     }
 
+    size_t newAligned = align_up_16k(newSize);
     size_t oldLen = [oldBuf length];
     if (newAligned <= oldLen) {
-        return ptr; // Already fits inside the 16KB-aligned memory page
+        return ptr; // Already fits inside the 16 KB-aligned allocation
     }
 
     MetalModState *state = [MetalModState sharedState];
@@ -125,6 +135,8 @@ void* metalmod_uma_realloc(void* ptr, size_t newSize) {
     if (!newBuf) return nullptr;
 
     void *newPtr = [newBuf contents];
+    if (!newPtr) return nullptr;
+
     memcpy(newPtr, ptr, oldLen);
 
     {
@@ -132,13 +144,23 @@ void* metalmod_uma_realloc(void* ptr, size_t newSize) {
         g_UmaAllocations.erase(ptr);
         g_UmaAllocations[newPtr] = newBuf;
     }
-    madvise(ptr, oldLen, MADV_FREE_REUSABLE);
 
     return newPtr;
 }
 
 void* metalmod_uma_aligned_alloc(size_t alignment, size_t size) {
+    if (size == 0) return nullptr;
+
+    // MTLBuffer backing store is page-aligned (16 KB on Apple Silicon), which is the strongest
+    // guarantee this pool can make. A larger alignment cannot be honoured here, so report failure
+    // and let the caller use an allocator that can satisfy it - rather than returning a pointer
+    // that is misaligned for the caller's expectations.
+    if (alignment > kAppleSiliconPageSize) {
+        return nullptr;
+    }
+
     size_t effectiveAlign = alignment > kAppleSiliconPageSize ? alignment : kAppleSiliconPageSize;
+    if (size > SIZE_MAX - (effectiveAlign - 1)) return nullptr;
     size_t alignedSize = (size + effectiveAlign - 1) & ~(effectiveAlign - 1);
     return metalmod_uma_alloc(alignedSize);
 }
@@ -147,16 +169,34 @@ void metalmod_uma_aligned_free(void* ptr) {
     metalmod_uma_free(ptr);
 }
 
+bool metalmod_uma_owns(const void* ptr) {
+    if (!ptr) return false;
+    std::lock_guard<std::mutex> lock(g_UmaMutex);
+    return g_UmaAllocations.find(const_cast<void*>(ptr)) != g_UmaAllocations.end();
+}
+
+size_t metalmod_uma_size(const void* ptr) {
+    if (!ptr) return 0;
+    std::lock_guard<std::mutex> lock(g_UmaMutex);
+    auto it = g_UmaAllocations.find(const_cast<void*>(ptr));
+    if (it == g_UmaAllocations.end()) return 0;
+    return (size_t)[it->second length];
+}
+
 void metalmod_uma_purge_idle(void) {
-    // Conservative trimming:
-    // Only inform Mach VM about uncommitted or idle reusable pages.
-    // Do NOT evict in-use gameplay buffers or cause stutter.
+    // Conservative trimming: only mark dormant scratch textures as volatile, and never while
+    // frame generation is actively writing them.
     MetalModState *state = [MetalModState sharedState];
     if (!state.device) return;
+    if (state.frameGenerationActive) return;
 
-    // Set intermediate scratch textures to volatile if currently dormant
     if (state.interpolatedTexture) {
-        [state.interpolatedTexture setPurgeableState:MTLPurgeableStateVolatile];
+        MTLPurgeableState previous = [state.interpolatedTexture setPurgeableState:MTLPurgeableStateVolatile];
+        if (previous == MTLPurgeableStateVolatile) {
+            // The contents are now undefined; the frame pipeline must restore NonVolatile before
+            // writing to (or reading from) it again.
+            state.interpolatedTexturePurged = YES;
+        }
     }
 }
 

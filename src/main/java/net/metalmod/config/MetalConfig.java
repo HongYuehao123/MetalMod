@@ -57,15 +57,24 @@ public class MetalConfig {
         }
     }
 
-    public ScalingMode scalingMode = ScalingMode.SPATIAL;
-    public QualityPreset preset = QualityPreset.QUALITY;
-    public boolean frameGeneration = true;
-    public float sharpness = 0.5f;
-    public boolean enableHDR = false;
-    public boolean enableUIOverlay = true;
-    public int targetDisplayFPS = 120; // ProMotion 120Hz default
-    public boolean enableUnifiedMemoryPool = true; // Apple Silicon 16KB zero-copy UMA pool
-    public boolean enableMemoryPressureHandler = true; // macOS kernel memory pressure listener
+    // These fields are written by the config GUI thread and read by the render thread, so they
+    // must be volatile for changes to be visible without tearing or stale reads.
+    // OFF by default: the RenderTarget scaling hook now actually applies, so a fresh install
+    // would otherwise render at a fraction of native resolution and look broken. Set to SPATIAL
+    // deliberately when you want to measure GPU headroom (see TESTING.md stage 2).
+    public volatile ScalingMode scalingMode = ScalingMode.OFF;
+    public volatile QualityPreset preset = QualityPreset.QUALITY;
+    public volatile boolean frameGeneration = false; // needs a presentation pacer; see README
+    public volatile float sharpness = 0.5f;
+    public volatile boolean enableHDR = false;
+    public volatile boolean enableUIOverlay = true;
+    public volatile int targetDisplayFPS = 120; // ProMotion 120Hz default
+    // Gates the UMA *telemetry* shown on F3. The LWJGL allocator interception that used to sit
+    // behind this flag was removed: LWJGL 3.4's MemoryAllocator needs native function pointers for
+    // its fast path, and mixing libc- and pool-allocated pointers behind one free() risks
+    // corruption. See ROADMAP.md, "Memory".
+    public volatile boolean enableUnifiedMemoryPool = false;
+    public volatile boolean enableMemoryPressureHandler = true; // macOS kernel memory pressure listener
 
     public void load() {
         if (!CONFIG_FILE.exists()) {
@@ -76,7 +85,7 @@ public class MetalConfig {
             Properties props = new Properties();
             props.load(reader);
 
-            String modeStr = props.getProperty("scalingMode", "SPATIAL");
+            String modeStr = props.getProperty("scalingMode", "OFF");
             try {
                 this.scalingMode = ScalingMode.valueOf(modeStr);
             } catch (Exception ignored) {}
@@ -86,12 +95,12 @@ public class MetalConfig {
                 this.preset = QualityPreset.valueOf(presetStr);
             } catch (Exception ignored) {}
 
-            this.frameGeneration = Boolean.parseBoolean(props.getProperty("frameGeneration", "true"));
+            this.frameGeneration = Boolean.parseBoolean(props.getProperty("frameGeneration", "false"));
             this.sharpness = Float.parseFloat(props.getProperty("sharpness", "0.5"));
             this.enableHDR = Boolean.parseBoolean(props.getProperty("enableHDR", "false"));
             this.enableUIOverlay = Boolean.parseBoolean(props.getProperty("enableUIOverlay", "true"));
             this.targetDisplayFPS = Integer.parseInt(props.getProperty("targetDisplayFPS", "120"));
-            this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "true"));
+            this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "false"));
             this.enableMemoryPressureHandler = Boolean.parseBoolean(props.getProperty("enableMemoryPressureHandler", "true"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());

@@ -1,6 +1,14 @@
 #import "metalmod_internal.h"
 #include <mach/mach_time.h>
 
+// Apple GPUs support 16384x16384 textures; anything above that is guaranteed to fail and is
+// treated as an invalid capability query rather than being silently reported as "supported".
+static const uint32_t kMetalModMaxTextureDimension = 16384;
+
+// A distinct diagnostic message is logged immediately the first time it occurs, then at most
+// once per this interval. Prevents per-frame failures from flooding the log.
+static const NSTimeInterval kMetalModDiagnosticRepeatIntervalSeconds = 60.0;
+
 @implementation MetalModState
 
 + (instancetype)sharedState {
@@ -19,38 +27,103 @@
         if (_device) {
             _commandQueue = [_device newCommandQueue];
         }
+        _pipelineLock = [[NSLock alloc] init];
         _hasHistory = NO;
+        _frameGenerationActive = NO;
+        _interpolatedTexturePurged = NO;
+        _lastDiagnosticTimestamp = 0.0;
+        _diagnosticTimestamps = [NSMutableDictionary dictionary];
         _lastFrameTimestamp = mach_absolute_time();
+        _presentedWindowStart = CACurrentMediaTime();
+        _presentedWindowCount = 0;
+        _lastRenderTimestamp = 0.0;
         memset(&_telemetry, 0, sizeof(MetalModTelemetry));
         memset(&_config, 0, sizeof(MetalModConfig));
     }
     return self;
 }
 
+- (void)logDiagnostic:(NSString *)message {
+    NSTimeInterval now = CACurrentMediaTime();
+
+    // A recurring per-frame failure must not spam the log. Each distinct message is reported
+    // immediately the first time, then at most once per repeat interval.
+    NSNumber *previous = self.diagnosticTimestamps[message];
+    if (previous != nil && (now - previous.doubleValue) < kMetalModDiagnosticRepeatIntervalSeconds) {
+        return;
+    }
+    self.diagnosticTimestamps[message] = @(now);
+    NSLog(@"[MetalMod] %@", message);
+}
+
 - (id<MTLTexture>)exportTextureFromVkImage:(VkImage)image
                                     aspect:(VkImageAspectFlagBits)aspect {
     if (!image) return nil;
 
-    if (self.exportMetalObjectsFunc && self.vkDevice) {
-        VkExportMetalTextureInfoEXT textureInfo = {};
-        textureInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_TEXTURE_INFO_EXT;
-        textureInfo.pNext = nullptr;
-        textureInfo.image = image;
-        textureInfo.imageView = VK_NULL_HANDLE;
-        textureInfo.bufferView = VK_NULL_HANDLE;
-        textureInfo.plane = aspect;
-        textureInfo.mtlTexture = nil;
-
-        VkExportMetalObjectsInfoEXT exportInfo = {};
-        exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT;
-        exportInfo.pNext = &textureInfo;
-
-        self.exportMetalObjectsFunc(self.vkDevice, &exportInfo);
-        return (__bridge id<MTLTexture>)textureInfo.mtlTexture;
+    // A VkImage is an opaque driver handle. It can only be turned into an id<MTLTexture> through
+    // VK_EXT_metal_objects with a registered VkDevice and its vkExportMetalObjectsEXT pointer.
+    //
+    // This method previously fell back to `(__bridge id<MTLTexture>)image` when interop was not
+    // registered. That reinterprets an arbitrary integer handle as an Objective-C object and
+    // crashes the process (verified: SIGSEGV in objc_retain). Refuse instead.
+    if (!self.vkDevice || !self.exportMetalObjectsFunc) {
+        [self logDiagnostic:@"Vulkan interop is not registered; call "
+                             "metalmod_register_vulkan_device() with the live VkDevice and "
+                             "vkExportMetalObjectsEXT before supplying VkImage handles."];
+        return nil;
     }
 
-    // Direct cast fallback if MoltenVK direct memory handle is mapped
-    return (__bridge id<MTLTexture>)image;
+    // VkExportMetalTextureInfoEXT::plane accepts only COLOR / PLANE_0..2. Depth and stencil
+    // aspects are not planes and must not be passed here; the exported MTLTexture carries its
+    // own pixel format.
+    (void)aspect;
+
+    VkExportMetalTextureInfoEXT textureInfo = {};
+    textureInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_TEXTURE_INFO_EXT;
+    textureInfo.pNext = nullptr;
+    textureInfo.image = image;
+    textureInfo.imageView = VK_NULL_HANDLE;
+    textureInfo.bufferView = VK_NULL_HANDLE;
+    textureInfo.plane = VK_IMAGE_ASPECT_COLOR_BIT;
+    textureInfo.mtlTexture = nullptr;
+
+    VkExportMetalObjectsInfoEXT exportInfo = {};
+    exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT;
+    exportInfo.pNext = &textureInfo;
+
+    self.exportMetalObjectsFunc(self.vkDevice, &exportInfo);
+
+    id<MTLTexture> texture = (__bridge id<MTLTexture>)textureInfo.mtlTexture;
+    if (!texture) {
+        [self logDiagnostic:@"vkExportMetalObjectsEXT returned no MTLTexture. The VkImage was "
+                             "probably not created with VkExportMetalObjectCreateInfoEXT "
+                             "(VK_EXPORT_METAL_OBJECT_TYPE_METAL_TEXTURE_BIT_EXT)."];
+    }
+    return texture;
+}
+
+/**
+ * A MetalFX scaler is only usable if the textures handed to it use the exact pixel formats the
+ * descriptor was configured with. MoltenVK textures are created by the Vulkan driver, so the
+ * format must be reconciled at runtime instead of assumed.
+ */
+- (BOOL)validateTexture:(id<MTLTexture>)texture
+             expected:(MTLPixelFormat)expected
+                 role:(NSString *)role
+               scaler:(NSString *)scalerName {
+    if (!texture) {
+        [self logDiagnostic:[NSString stringWithFormat:@"%@ requires a %@ texture but none was "
+                             @"supplied; skipping this frame.", scalerName, role]];
+        return NO;
+    }
+    if (texture.pixelFormat != expected) {
+        [self logDiagnostic:[NSString stringWithFormat:@"%@ %@ texture format is %lu but the "
+                             @"scaler was configured for %lu; skipping this frame.",
+                             scalerName, role, (unsigned long)texture.pixelFormat,
+                             (unsigned long)expected]];
+        return NO;
+    }
+    return YES;
 }
 
 @end
@@ -60,8 +133,12 @@
 extern "C" {
 
 int metalmod_init(void* nsWindowHandle) {
-    // Set Apple Silicon MoltenVK environment optimizations
-    setenv("MVK_CONFIG_HOST_COHERENT_MEMORY_FLUSH_MODE", "0", 1);
+    // MoltenVK reads MVK_CONFIG_* once, at first use. Setting them here only has an effect if
+    // MoltenVK has not initialised yet; to guarantee they apply, pass them as launch environment
+    // variables instead (e.g. -DMVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1).
+    //
+    // MVK_CONFIG_HOST_COHERENT_MEMORY_FLUSH_MODE is deliberately NOT overridden: disabling
+    // automatic flushes can drop writes to host-coherent memory and corrupt data.
     setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "1", 1);
     setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", 1);
     setenv("MVK_CONFIG_RESUME_LOST_DEVICE", "1", 1);
@@ -99,7 +176,9 @@ int metalmod_init(void* nsWindowHandle) {
         state.targetView = view;
     }
 
-    // Find or attach CAMetalLayer
+    // Find an existing CAMetalLayer. NOTE: on a MoltenVK-backed client this layer belongs to
+    // MoltenVK's swapchain; presenting our own drawables into it conflicts with the swapchain.
+    // It is only used here for inspection/telemetry until presentation ownership is resolved.
     CAMetalLayer *metalLayer = nil;
     if ([view.layer isKindOfClass:[CAMetalLayer class]]) {
         metalLayer = (CAMetalLayer *)view.layer;
@@ -112,40 +191,54 @@ int metalmod_init(void* nsWindowHandle) {
         }
     }
 
-    if (metalLayer) {
-        metalLayer.maximumDrawableCount = 4;
-        metalLayer.presentsWithTransaction = NO;
-        metalLayer.displaySyncEnabled = YES;
-    }
-
     state.metalLayer = metalLayer;
     return 0;
 }
 
 void metalmod_shutdown(void) {
     MetalModState *state = [MetalModState sharedState];
+    [state.pipelineLock lock];
     state.spatialScaler = nil;
     state.temporalScaler = nil;
     state.frameInterpolator = nil;
     state.upscaledTexture = nil;
     state.prevColorTexture = nil;
     state.interpolatedTexture = nil;
+    state.compositePipelineState = nil;
+    state.passthroughPipelineState = nil;
+    state.samplerState = nil;
     state.hasHistory = NO;
+    state.frameGenerationActive = NO;
+    state.interpolatedTexturePurged = NO;
+    state.vkDevice = NULL;
+    state.exportMetalObjectsFunc = NULL;
+    [state.pipelineLock unlock];
 }
 
 int metalmod_configure(const MetalModConfig* config) {
     if (!config) return -1;
     MetalModState *state = [MetalModState sharedState];
+    if (!state.device) return -2;
+
+    // Rebuilding scalers and textures must not overlap a frame that is still encoding with them.
+    [state.pipelineLock lock];
     state.config = *config;
     BOOL success = [state recreatePipelines];
-    return success ? 0 : -2;
+    [state.pipelineLock unlock];
+    return success ? 0 : -3;
 }
 
 int metalmod_register_vulkan_device(VkDevice device, PFN_vkExportMetalObjectsEXT exportFunc) {
+    if (!device || !exportFunc) return -1;
     MetalModState *state = [MetalModState sharedState];
     state.vkDevice = device;
     state.exportMetalObjectsFunc = exportFunc;
     return 0;
+}
+
+bool metalmod_has_vulkan_interop(void) {
+    MetalModState *state = [MetalModState sharedState];
+    return (state.vkDevice != NULL && state.exportMetalObjectsFunc != NULL);
 }
 
 int metalmod_process_frame(
@@ -155,36 +248,55 @@ int metalmod_process_frame(
     VkImage uiImage,
     const MetalModFrameParams* params
 ) {
-    if (!params) return -1;
+    if (!params) return METALMOD_ERR_INVALID_PARAMS;
 
     MetalModState *state = [MetalModState sharedState];
+    if (!state.device || !state.commandQueue) return METALMOD_ERR_NO_RUNTIME;
+
+    // Nothing to do. Report success so callers do not treat "upscaling disabled" as an error.
+    BOOL needsUpscale = (state.config.scalingMode != METALMOD_SCALING_OFF);
+    BOOL needsInterpolation = state.config.frameGenerationEnabled;
+    if (!needsUpscale && !needsInterpolation) return METALMOD_OK;
+
+    if (!METALMOD_OWNS_PRESENTATION) {
+        // MoltenVK owns the CAMetalLayer and presents *after* this hook runs, so any drawable we
+        // present is overwritten. Producing an image nobody can see would only burn CPU and GPU
+        // time - the exact opposite of the goal. Report a distinct, non-fatal status instead.
+        [state logDiagnostic:@"MetalMod frame pipeline is inactive: MoltenVK owns presentation. "
+                             "Upscaling and frame generation cannot reach the display until "
+                             "MetalMod owns the CAMetalLayer (see METALMOD_OWNS_PRESENTATION)."];
+        return METALMOD_ERR_NO_PRESENTATION;
+    }
+
+    if (!metalmod_has_vulkan_interop()) {
+        // The previous implementation allocated a fallback texture here that was never written
+        // to, and presented it: the result was an uninitialised full-screen frame. Refuse
+        // instead of presenting garbage.
+        [state logDiagnostic:@"Frame pipeline unavailable: no Vulkan interop registered. "
+                             "Upscaling and frame generation are inert until "
+                             "metalmod_register_vulkan_device() is called."];
+        return METALMOD_ERR_NO_VULKAN_INTEROP;
+    }
+
     id<MTLTexture> colorTex = [state exportTextureFromVkImage:colorImage aspect:VK_IMAGE_ASPECT_COLOR_BIT];
+    if (!colorTex) return METALMOD_ERR_NO_COLOR_TEXTURE;
+
     id<MTLTexture> depthTex = [state exportTextureFromVkImage:depthImage aspect:VK_IMAGE_ASPECT_DEPTH_BIT];
     id<MTLTexture> motionTex = [state exportTextureFromVkImage:motionImage aspect:VK_IMAGE_ASPECT_COLOR_BIT];
     id<MTLTexture> uiTex = [state exportTextureFromVkImage:uiImage aspect:VK_IMAGE_ASPECT_COLOR_BIT];
 
-    if (!colorTex) {
-        // Fallback to shared Metal render texture if direct VkImage export was not bound
-        uint32_t inW = state.config.inputWidth > 0 ? state.config.inputWidth : 1280;
-        uint32_t inH = state.config.inputHeight > 0 ? state.config.inputHeight : 720;
-        if (!state.fallbackColorTexture ||
-            state.fallbackColorTexture.width != inW ||
-            state.fallbackColorTexture.height != inH) {
-            MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
-                                                                                             width:inW
-                                                                                            height:inH
-                                                                                         mipmapped:NO];
-            desc.storageMode = MTLStorageModeShared;
-            desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
-            state.fallbackColorTexture = [state.device newTextureWithDescriptor:desc];
+    // Temporal upscaling and frame interpolation both need depth and motion vectors; without
+    // them MetalFX would read whatever the texture happens to contain.
+    if (state.config.scalingMode == METALMOD_SCALING_TEMPORAL || needsInterpolation) {
+        if (!depthTex || !motionTex) {
+            [state logDiagnostic:@"Temporal upscaling / frame generation require depth and motion "
+                                 "vector textures; skipping this frame."];
+            return METALMOD_ERR_MISSING_DEPTH_OR_MOTION;
         }
-        colorTex = state.fallbackColorTexture;
     }
 
-    if (!colorTex) return -2;
-
     [state processFrameWithColor:colorTex depth:depthTex motion:motionTex ui:uiTex params:params];
-    return 0;
+    return METALMOD_OK;
 }
 
 void metalmod_get_telemetry(MetalModTelemetry* outTelemetry) {
@@ -194,78 +306,132 @@ void metalmod_get_telemetry(MetalModTelemetry* outTelemetry) {
 }
 
 bool metalmod_is_spatial_scaler_supported(uint32_t inW, uint32_t inH, uint32_t outW, uint32_t outH) {
-    (void)inW; (void)inH; (void)outW; (void)outH;
     MetalModState *state = [MetalModState sharedState];
     if (!state.device) return false;
+    if (inW == 0 || inH == 0 || outW == 0 || outH == 0) return false;
+    // Spatial scaling means upscaling: input must be smaller than output.
+    if (inW > outW || inH > outH) return false;
+    if (outW > kMetalModMaxTextureDimension || outH > kMetalModMaxTextureDimension) return false;
+    if (![MTLFXSpatialScalerDescriptor supportsDevice:state.device]) return false;
 
-    return [MTLFXSpatialScalerDescriptor supportsDevice:state.device];
+    MTLFXSpatialScalerDescriptor *desc = [MTLFXSpatialScalerDescriptor new];
+    desc.inputWidth = inW;
+    desc.inputHeight = inH;
+    desc.outputWidth = outW;
+    desc.outputHeight = outH;
+    desc.colorTextureFormat = MTLPixelFormatBGRA8Unorm;
+    desc.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
+    desc.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+
+    // Creating the scaler is the only query that actually validates the requested configuration.
+    id<MTLFXSpatialScaler> scaler = [desc newSpatialScalerWithDevice:state.device];
+    return scaler != nil;
 }
 
 bool metalmod_is_temporal_scaler_supported(uint32_t inW, uint32_t inH, uint32_t outW, uint32_t outH) {
-    (void)inW; (void)inH; (void)outW; (void)outH;
     MetalModState *state = [MetalModState sharedState];
     if (!state.device) return false;
+    if (inW == 0 || inH == 0 || outW == 0 || outH == 0) return false;
+    if (inW > outW || inH > outH) return false;
+    if (outW > kMetalModMaxTextureDimension || outH > kMetalModMaxTextureDimension) return false;
+    if (![MTLFXTemporalScalerDescriptor supportsDevice:state.device]) return false;
 
-    return [MTLFXTemporalScalerDescriptor supportsDevice:state.device];
+    MTLFXTemporalScalerDescriptor *desc = [MTLFXTemporalScalerDescriptor new];
+    desc.inputWidth = inW;
+    desc.inputHeight = inH;
+    desc.outputWidth = outW;
+    desc.outputHeight = outH;
+    desc.colorTextureFormat = MTLPixelFormatBGRA8Unorm;
+    desc.depthTextureFormat = MTLPixelFormatDepth32Float;
+    desc.motionTextureFormat = MTLPixelFormatRG16Float;
+    desc.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
+    desc.autoExposureEnabled = YES;
+    desc.inputContentPropertiesEnabled = NO;
+
+    id<MTLFXTemporalScaler> scaler = [desc newTemporalScalerWithDevice:state.device];
+    return scaler != nil;
 }
 
 bool metalmod_is_frame_gen_supported(uint32_t width, uint32_t height) {
-    (void)width; (void)height;
     MetalModState *state = [MetalModState sharedState];
     if (!state.device) return false;
+    if (width == 0 || height == 0) return false;
+    if (width > kMetalModMaxTextureDimension || height > kMetalModMaxTextureDimension) return false;
 
     if (@available(macOS 26.0, *)) {
-        return [MTLFXFrameInterpolatorDescriptor supportsDevice:state.device];
+        if (![MTLFXFrameInterpolatorDescriptor supportsDevice:state.device]) return false;
+
+        MTLFXFrameInterpolatorDescriptor *desc = [MTLFXFrameInterpolatorDescriptor new];
+        // Frame interpolation is 1:1: inputWidth/Height describe the depth and motion texture
+        // resolution, which equals the output resolution.
+        desc.inputWidth = width;
+        desc.inputHeight = height;
+        desc.outputWidth = width;
+        desc.outputHeight = height;
+        desc.colorTextureFormat = MTLPixelFormatBGRA8Unorm;
+        desc.depthTextureFormat = MTLPixelFormatDepth32Float;
+        desc.motionTextureFormat = MTLPixelFormatRG16Float;
+        desc.outputTextureFormat = MTLPixelFormatBGRA8Unorm;
+        desc.uiTextureFormat = MTLPixelFormatBGRA8Unorm;
+
+        id<MTLFXFrameInterpolator> interpolator = [desc newFrameInterpolatorWithDevice:state.device];
+        return interpolator != nil;
     }
     return false;
+}
+
+void metalmod_report_pipeline_status(const char* status) {
+    MetalModState *state = [MetalModState sharedState];
+    state.pipelineStatusText = status ? @(status) : nil;
 }
 
 void metalmod_update_window_title(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         MetalModState *state = [MetalModState sharedState];
+        // Nothing meaningful to report before the runtime is up.
+        if (!state.device) return;
+
         NSArray<NSWindow *> *windows = [NSApp windows];
         NSWindow *w = [NSApp keyWindow] ?: [NSApp mainWindow];
         if (!w && [windows count] > 0) w = [windows firstObject];
         if (!w) return;
 
-        // Query the actual physical backing pixel size of the macOS window
-        NSSize backingSize = [w.contentView convertSizeToBacking:w.contentView.bounds.size];
-        uint32_t realW = (uint32_t)backingSize.width;
-        uint32_t realH = (uint32_t)backingSize.height;
-
-        uint32_t outW = (realW > 0) ? realW : state.config.outputWidth;
-        uint32_t outH = (realH > 0) ? realH : state.config.outputHeight;
+        // Use the size the renderer actually works with (GLFW's framebuffer size, reported through
+        // the config) rather than converting the view's bounds: convertSizeToBacking on the content
+        // view includes the macOS title bar, so it reported 5120x2880 for a window whose framebuffer
+        // is 5120x2664 - disagreeing with the resolution shown on F3.
+        uint32_t outW = state.config.outputWidth;
+        uint32_t outH = state.config.outputHeight;
+        if (outW == 0 || outH == 0) {
+            NSSize backingSize = [w.contentView convertSizeToBacking:w.contentView.bounds.size];
+            outW = (uint32_t)backingSize.width;
+            outH = (uint32_t)backingSize.height;
+        }
 
         uint32_t inW = state.config.inputWidth;
         uint32_t inH = state.config.inputHeight;
 
-        if (state.config.outputWidth > 0 && outW != state.config.outputWidth) {
-            float ratioW = (float)state.config.inputWidth / (float)state.config.outputWidth;
-            float ratioH = (float)state.config.inputHeight / (float)state.config.outputHeight;
-            inW = (uint32_t)(outW * ratioW);
-            inH = (uint32_t)(outH * ratioH);
-            if (inW & 1) inW++;
-            if (inH & 1) inH++;
-            MetalModConfig cfg = state.config;
-            cfg.inputWidth = inW;
-            cfg.inputHeight = inH;
-            cfg.outputWidth = outW;
-            cfg.outputHeight = outH;
-            state.config = cfg;
-        } else if (inW == 0 || inH == 0) {
-            float scale = 0.50f;
-            inW = (uint32_t)(outW * scale);
-            inH = (uint32_t)(outH * scale);
-            if (inW & 1) inW++;
-            if (inH & 1) inH++;
+        NSString *modeStr = @"Off";
+        if (state.config.scalingMode == METALMOD_SCALING_TEMPORAL) {
+            modeStr = @"Temporal";
+        } else if (state.config.scalingMode == METALMOD_SCALING_SPATIAL) {
+            modeStr = @"Spatial";
         }
 
-        NSString *modeStr = state.config.scalingMode == METALMOD_SCALING_TEMPORAL ? @"Temporal" : (state.config.scalingMode == METALMOD_SCALING_SPATIAL ? @"Spatial" : @"Off");
-        NSString *title = [NSString stringWithFormat:@"Minecraft [MetalMod: %ux%u -> %ux%u (%@) | FG: %@]",
-                          inW, inH,
-                          outW, outH,
-                          modeStr,
-                          state.config.frameGenerationEnabled ? @"ON (Metal 4)" : @"OFF"];
+        // Report frame generation as inactive when it cannot actually be presented, instead of
+        // echoing the requested setting back as if it were in effect.
+        NSString *fgStr = @"OFF";
+        if (state.config.frameGenerationEnabled) {
+            fgStr = state.frameGenerationActive ? @"ON" : @"requested/inactive";
+        }
+
+        // Status published by the Java side. This is the only diagnostic channel that does not
+        // depend on a mixin applying, so it is what tells "no hook ran" apart from "idle".
+        NSString *statusStr = state.pipelineStatusText ?: @"no frame submitted";
+
+        NSString *title = [NSString stringWithFormat:
+            @"Minecraft [MetalMod: %ux%u -> %ux%u (%@) | FG: %@ | %@]",
+            inW, inH, outW, outH, modeStr, fgStr, statusStr];
 
         for (NSWindow *win in windows) {
             if ([win isVisible]) {

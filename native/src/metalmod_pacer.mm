@@ -42,33 +42,38 @@
                        params:(const MetalModFrameParams *)params {
     if (!self.commandQueue || !colorTex) return;
 
-    uint64_t startTime = mach_absolute_time();
+    [self.pipelineLock lock];
+
+    uint64_t frameIdx = params->frameIndex;
+
+    MTLPixelFormat colorFormat = self.config.enableHDR ? MTLPixelFormatRGBA16Float
+                                                       : MTLPixelFormatBGRA8Unorm;
+    MTLPixelFormat uiFormat = colorFormat;
+
+    // Validate every input against the format the scaler was configured with. MetalFX does not
+    // validate this for us; feeding it a mismatched format produces undefined results.
+    if (self.config.scalingMode == METALMOD_SCALING_SPATIAL) {
+        if (![self validateTexture:colorTex expected:colorFormat role:@"color" scaler:@"Spatial"]) {
+            [self.pipelineLock unlock];
+            return;
+        }
+    } else if (self.config.scalingMode == METALMOD_SCALING_TEMPORAL) {
+        if (![self validateTexture:colorTex expected:colorFormat role:@"color" scaler:@"Temporal"] ||
+            ![self validateTexture:depthTex expected:MTLPixelFormatDepth32Float role:@"depth" scaler:@"Temporal"] ||
+            ![self validateTexture:motionTex expected:MTLPixelFormatRG16Float role:@"motion" scaler:@"Temporal"]) {
+            [self.pipelineLock unlock];
+            return;
+        }
+    }
+
+    if (self.interpolatedTexturePurged && self.interpolatedTexture) {
+        // A purged texture holds undefined contents until it is made non-volatile again.
+        [self.interpolatedTexture setPurgeableState:MTLPurgeableStateNonVolatile];
+        self.interpolatedTexturePurged = NO;
+    }
 
     id<MTLCommandBuffer> cmdBuffer = [self.commandQueue commandBuffer];
     cmdBuffer.label = @"MetalMod Pipeline Command Buffer";
-
-    if (!self.metalLayer) {
-        NSWindow *w = [NSApp keyWindow] ?: [NSApp mainWindow];
-        if (!w && [[NSApp windows] count] > 0) w = [[NSApp windows] firstObject];
-        if (w) {
-            NSView *v = [w contentView];
-            if ([v.layer isKindOfClass:[CAMetalLayer class]]) {
-                self.metalLayer = (CAMetalLayer *)v.layer;
-            } else {
-                for (CALayer *sub in v.layer.sublayers) {
-                    if ([sub isKindOfClass:[CAMetalLayer class]]) {
-                        self.metalLayer = (CAMetalLayer *)sub;
-                        break;
-                    }
-                }
-            }
-            if (self.metalLayer) {
-                self.metalLayer.maximumDrawableCount = 4;
-                self.metalLayer.presentsWithTransaction = NO;
-                self.metalLayer.displaySyncEnabled = YES;
-            }
-        }
-    }
 
     id<MTLTexture> currentUpscaleDst = self->_historyTextures[self.currentHistoryIndex] ?: self.upscaledTexture;
     id<MTLTexture> prevFrameTexture = self->_historyTextures[1 - self.currentHistoryIndex] ?: self.prevColorTexture;
@@ -88,9 +93,22 @@
                                params:params];
     }
 
-    // 2. Metal 4 Frame Interpolation Pass (if enabled and history exists)
-    if (self.config.frameGenerationEnabled && self.frameInterpolator && self.hasHistory && !params->resetHistory) {
-        // Generate intermediate frame (t - 0.5)
+    // 2. Metal 4 Frame Interpolation Pass.
+    //
+    // This is only encoded when a pacer exists: interpolation is pointless without the ability to
+    // present the intermediate frame on its own display refresh, and it roughly triples the CPU
+    // cost of the frame (measured ~0.9 ms -> ~3.1 ms per frame for temporal + interpolation).
+    BOOL wantsInterpolation = self.config.frameGenerationEnabled &&
+                              METALMOD_PACER_AVAILABLE &&
+                              self.frameInterpolator != nil &&
+                              self.hasHistory && !params->resetHistory;
+
+    self.frameGenerationActive = wantsInterpolation;
+
+    if (wantsInterpolation &&
+        [self validateTexture:depthTex expected:MTLPixelFormatDepth32Float role:@"depth" scaler:@"FrameInterpolator"] &&
+        [self validateTexture:motionTex expected:MTLPixelFormatRG16Float role:@"motion" scaler:@"FrameInterpolator"]) {
+
         [self encodeFrameInterpolation:cmdBuffer
                           currentFrame:currentFullResWorld
                          previousFrame:prevFrameTexture
@@ -100,8 +118,9 @@
                    interpolatedTexture:self.interpolatedTexture
                                 params:params];
 
-        // Present intermediate frame to CAMetalLayer if available
-        if (self.metalLayer) {
+        // The interpolated frame is composited and presented in the same command buffer as the
+        // real frame only as a placeholder; a correct pacer must present it separately.
+        if (self.metalLayer && METALMOD_PACER_AVAILABLE) {
             id<CAMetalDrawable> interpDrawable = [self.metalLayer nextDrawable];
             if (interpDrawable) {
                 MTLRenderPassDescriptor *passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -115,13 +134,13 @@
                 [enc endEncoding];
 
                 [cmdBuffer presentDrawable:interpDrawable];
-                _telemetry.totalFramesPresented++;
+                self->_telemetry.totalFramesPresented++;
             }
         }
     }
 
-    // 3. Present Real Frame (t)
-    if (self.metalLayer) {
+    // 3. Present the real frame (t)
+    if (self.metalLayer && METALMOD_OWNS_PRESENTATION) {
         id<CAMetalDrawable> realDrawable = [self.metalLayer nextDrawable];
         if (realDrawable) {
             MTLRenderPassDescriptor *passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -131,55 +150,72 @@
 
             id<MTLRenderCommandEncoder> enc = [cmdBuffer renderCommandEncoderWithDescriptor:passDesc];
             enc.label = @"Real Frame UI Compositor Encoder";
-            [self compositeUIOnTarget:enc worldTexture:currentFullResWorld uiTexture:uiTex];
+            [self compositeUIOnTarget:enc worldTexture:currentFullResWorld
+                            uiTexture:(uiTex.pixelFormat == uiFormat ? uiTex : nil)];
             [enc endEncoding];
 
             [cmdBuffer presentDrawable:realDrawable];
-            _telemetry.totalFramesPresented++;
+            self->_telemetry.totalFramesPresented++;
         }
     }
 
-    // 4. Zero-Copy History Advance: Simply flip the ping-pong index!
+    // 4. Zero-Copy History Advance: flip the ping-pong index
     if (self.config.frameGenerationEnabled) {
         self.currentHistoryIndex ^= 1;
         self.hasHistory = YES;
     }
 
-    // Telemetry updates
-    _telemetry.totalFramesRendered++;
-    mach_timebase_info_data_t timebase;
-    mach_timebase_info(&timebase);
-    uint64_t frameIdx = params->frameIndex;
+    self->_telemetry.totalFramesRendered++;
 
+    // GPU time must come from the command buffer's own GPU timestamps, not from wall-clock around
+    // encoding. Wall-clock spans queue latency (including waiting on in-flight buffers) and is not
+    // a GPU measurement; the previous implementation used it and derived a fake FPS from it.
     [cmdBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-        (void)buffer;
-        uint64_t endTime = mach_absolute_time();
-        uint64_t elapsedNano = (endTime - startTime) * timebase.numer / timebase.denom;
-        float frameTimeMs = (float)elapsedNano / 1000000.0f;
-        self->_telemetry.gpuFrameTimeMs = frameTimeMs;
-        if (frameTimeMs > 0.0001f) {
-            self->_telemetry.renderFPS = 1000.0f / frameTimeMs;
-            self->_telemetry.presentedFPS = self.config.frameGenerationEnabled ? (2.0f * self->_telemetry.renderFPS) : self->_telemetry.renderFPS;
+        CFTimeInterval gpuStart = buffer.GPUStartTime;
+        CFTimeInterval gpuEnd = buffer.GPUEndTime;
+        if (gpuEnd > gpuStart && gpuStart > 0.0) {
+            self->_telemetry.gpuFrameTimeMs = (float)((gpuEnd - gpuStart) * 1000.0);
         }
+
+        // Presented FPS is derived only from frames that were actually handed to the display.
+        NSTimeInterval now = CACurrentMediaTime();
+        NSTimeInterval window = now - self->_presentedWindowStart;
+        if (window >= 0.5) {
+            self->_telemetry.presentedFPS = (float)((double)self->_presentedWindowCount / window);
+            self->_presentedWindowCount = 0;
+            self->_presentedWindowStart = now;
+        }
+
         if ((frameIdx & 63) == 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSWindow *w = [NSApp keyWindow] ?: [NSApp mainWindow];
                 if (!w && [[NSApp windows] count] > 0) w = [[NSApp windows] firstObject];
-                if (w) {
-                    NSString *modeStr = self.config.scalingMode == METALMOD_SCALING_TEMPORAL ? @"Temporal" : (self.config.scalingMode == METALMOD_SCALING_SPATIAL ? @"Spatial" : @"Off");
-                    NSString *title = [NSString stringWithFormat:@"Minecraft [MetalMod: %ux%u -> %ux%u (%@) | FG: %@ | FPS: %.0f]",
-                                      self.config.inputWidth, self.config.inputHeight,
-                                      self.config.outputWidth, self.config.outputHeight,
-                                      modeStr,
-                                      self.config.frameGenerationEnabled ? @"ON" : @"OFF",
-                                      self->_telemetry.presentedFPS];
-                    [w setTitle:title];
+                if (!w) return;
+
+                NSString *modeStr = @"Off";
+                if (self.config.scalingMode == METALMOD_SCALING_TEMPORAL) {
+                    modeStr = @"Temporal";
+                } else if (self.config.scalingMode == METALMOD_SCALING_SPATIAL) {
+                    modeStr = @"Spatial";
                 }
+
+                NSString *fgStr = self.config.frameGenerationEnabled
+                    ? (self.frameGenerationActive ? @"ON" : @"requested/inactive")
+                    : @"OFF";
+
+                NSString *title = [NSString stringWithFormat:
+                    @"Minecraft [MetalMod: %ux%u -> %ux%u (%@) | FG: %@ | GPU: %.2f ms]",
+                    self.config.inputWidth, self.config.inputHeight,
+                    self.config.outputWidth, self.config.outputHeight,
+                    modeStr, fgStr, self->_telemetry.gpuFrameTimeMs];
+                [w setTitle:title];
             });
         }
     }];
 
     [cmdBuffer commit];
+
+    [self.pipelineLock unlock];
 }
 
 @end

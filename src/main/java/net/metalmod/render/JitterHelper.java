@@ -22,8 +22,12 @@ public final class JitterHelper {
 
     /**
      * Advance to next subpixel phase and compute jitter offsets.
-     * @param renderWidth Low-resolution input width
-     * @param renderHeight Low-resolution input height
+     *
+     * Must be called once per frame from the render thread only: the phase is global state that is
+     * read when building the projection matrix.
+     *
+     * @param renderWidth Low-resolution input width (reserved for future per-resolution scaling)
+     * @param renderHeight Low-resolution input height (reserved for future per-resolution scaling)
      */
     public static void advance(int renderWidth, int renderHeight) {
         currentPhase = (currentPhase + 1) % PHASE_COUNT;
@@ -36,6 +40,16 @@ public final class JitterHelper {
         // Pixel-space jitter
         currentJitterX = hx;
         currentJitterY = hy;
+    }
+
+    /**
+     * Return to zero jitter. Called when temporal upscaling is not active so a stale phase cannot
+     * leak into the projection matrix when the mode is switched on later.
+     */
+    public static void reset() {
+        currentPhase = 0;
+        currentJitterX = 0.0f;
+        currentJitterY = 0.0f;
     }
 
     public static float getJitterX() {

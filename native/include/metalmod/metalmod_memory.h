@@ -20,10 +20,39 @@ extern "C" {
  */
 METALMOD_API void* metalmod_uma_alloc(size_t size);
 METALMOD_API void* metalmod_uma_calloc(size_t num, size_t size);
+
+/**
+ * Resize a UMA buffer.
+ *
+ * Only pointers returned by metalmod_uma_alloc/calloc/aligned_alloc (i.e. pointers for which
+ * metalmod_uma_owns() returns true) may be passed here. Passing any other pointer returns NULL
+ * without allocating, so that the caller can fall back to its own allocator instead of silently
+ * losing the previous contents.
+ */
 METALMOD_API void* metalmod_uma_realloc(void* ptr, size_t newSize);
 METALMOD_API void metalmod_uma_free(void* ptr);
 METALMOD_API void* metalmod_uma_aligned_alloc(size_t alignment, size_t size);
 METALMOD_API void metalmod_uma_aligned_free(void* ptr);
+
+/**
+ * Query whether a pointer was handed out by this UMA pool and is still live.
+ *
+ * A custom allocator must route free()/realloc() by ownership: pointers that predate the pool
+ * (or were allocated as a fallback) must go back to the allocator that produced them.
+ *
+ * @return true if ptr is a live UMA allocation, false otherwise.
+ */
+METALMOD_API bool metalmod_uma_owns(const void* ptr);
+
+/**
+ * Report the usable size of a live UMA allocation.
+ *
+ * Needed to copy exactly the live bytes when a caller has to migrate a block to another
+ * allocator; reading a fixed byte count could run past the end of the old block.
+ *
+ * @return the allocation length in bytes, or 0 if ptr is not a live UMA allocation.
+ */
+METALMOD_API size_t metalmod_uma_size(const void* ptr);
 
 /**
  * Perform conservative memory reclamation.

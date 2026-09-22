@@ -1,3 +1,24 @@
+// ---------------------------------------------------------------------------------------------
+// MetalMod build configuration
+// ---------------------------------------------------------------------------------------------
+// STATUS: this file is NOT a working mod build.
+//
+// * fabric-loom is declared with `apply false`, so it never runs.
+// * No Minecraft / mappings / fabric-loader dependency is declared. gradle.properties lists
+//   minecraft_version / loader_version / fabric_version, but nothing consumes them.
+// * There is no Gradle wrapper in this repository, so `./gradlew` does not exist.
+//
+// The authoritative build is `scripts/build_mod.sh`, which compiles the native library and then
+// compiles the Java sources against the API stubs produced by scripts/generate_stubs.py.
+//
+// WARNING: because the Java sources are compiled against stubs, mixin targets and Minecraft
+// method signatures are NOT validated against the real game. All mixin injections use
+// `require = 0`, so a wrong signature is silently ignored rather than reported. See README.
+//
+// To make this a real mod build: apply fabric-loom, add the minecraft/mappings/fabric-loader
+// dependencies for the actual target version, add the Gradle wrapper, and remove the stub step.
+// ---------------------------------------------------------------------------------------------
+
 plugins {
     id 'fabric-loom' version '1.8-SNAPSHOT' apply false
     id 'java'

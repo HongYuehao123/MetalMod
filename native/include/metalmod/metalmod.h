@@ -33,6 +33,15 @@ METALMOD_API int metalmod_configure(const MetalModConfig* config);
 METALMOD_API int metalmod_register_vulkan_device(VkDevice device, PFN_vkExportMetalObjectsEXT exportFunc);
 
 /**
+ * Report whether a Vulkan device + vkExportMetalObjectsEXT pointer have been registered.
+ *
+ * Until this returns true, metalmod_process_frame() cannot convert a VkImage into an
+ * id<MTLTexture> and therefore refuses to run. Callers must not pass raw texture ids or
+ * unregistered VkImage handles into the frame pipeline.
+ */
+METALMOD_API bool metalmod_has_vulkan_interop(void);
+
+/**
  * Core per-frame processing function.
  * Called at the end of the frame (interception of vkQueuePresentKHR).
  * 
@@ -60,6 +69,14 @@ METALMOD_API void metalmod_get_telemetry(MetalModTelemetry* outTelemetry);
  * Update macOS window title directly with active MetalMod resolution and mode.
  */
 METALMOD_API void metalmod_update_window_title(void);
+
+/**
+ * Publish a human-readable pipeline status for display in the window title.
+ *
+ * The window title is updated from the telemetry thread, so it reports pipeline state even when
+ * no render mixin applies - which is otherwise indistinguishable from "working but idle".
+ */
+METALMOD_API void metalmod_report_pipeline_status(const char* status);
 
 /**
  * Capabilities queries.

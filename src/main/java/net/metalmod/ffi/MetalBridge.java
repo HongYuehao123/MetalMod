@@ -27,6 +27,7 @@ public final class MetalBridge {
     private static MethodHandle mh_is_temporal_supported;
     private static MethodHandle mh_is_frame_gen_supported;
     private static MethodHandle mh_update_window_title;
+    private static MethodHandle mh_report_pipeline_status;
     private static MethodHandle mh_uma_alloc;
     private static MethodHandle mh_uma_calloc;
     private static MethodHandle mh_uma_realloc;
@@ -34,8 +35,11 @@ public final class MetalBridge {
     private static MethodHandle mh_uma_aligned_alloc;
     private static MethodHandle mh_uma_aligned_free;
     private static MethodHandle mh_uma_purge_idle;
+    private static MethodHandle mh_uma_owns;
+    private static MethodHandle mh_uma_size;
     private static MethodHandle mh_get_memory_telemetry;
     private static MethodHandle mh_memory_pressure_init;
+    private static MethodHandle mh_has_vulkan_interop;
 
     // Struct Layout: MetalModConfig
     // uint32_t inputWidth, inputHeight, outputWidth, outputHeight (4 x 4 = 16 bytes)
@@ -161,28 +165,31 @@ public final class MetalBridge {
         Linker linker = Linker.nativeLinker();
         SymbolLookup lookup = SymbolLookup.loaderLookup();
 
+        // Resolve by name with a message that names the missing symbol: a bare orElseThrow()
+        // reports only "No value present", which hides which export is missing.
+
         mh_init = linker.downcallHandle(
-                lookup.find("metalmod_init").orElseThrow(),
+                symbol(lookup, "metalmod_init"),
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
         );
 
         mh_shutdown = linker.downcallHandle(
-                lookup.find("metalmod_shutdown").orElseThrow(),
+                symbol(lookup, "metalmod_shutdown"),
                 FunctionDescriptor.ofVoid()
         );
 
         mh_configure = linker.downcallHandle(
-                lookup.find("metalmod_configure").orElseThrow(),
+                symbol(lookup, "metalmod_configure"),
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
         );
 
         mh_register_vulkan_device = linker.downcallHandle(
-                lookup.find("metalmod_register_vulkan_device").orElseThrow(),
+                symbol(lookup, "metalmod_register_vulkan_device"),
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
 
         mh_process_frame = linker.downcallHandle(
-                lookup.find("metalmod_process_frame").orElseThrow(),
+                symbol(lookup, "metalmod_process_frame"),
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_INT,
                         ValueLayout.ADDRESS,
@@ -194,12 +201,12 @@ public final class MetalBridge {
         );
 
         mh_get_telemetry = linker.downcallHandle(
-                lookup.find("metalmod_get_telemetry").orElseThrow(),
+                symbol(lookup, "metalmod_get_telemetry"),
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
 
         mh_is_spatial_supported = linker.downcallHandle(
-                lookup.find("metalmod_is_spatial_scaler_supported").orElseThrow(),
+                symbol(lookup, "metalmod_is_spatial_scaler_supported"),
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_BOOLEAN,
                         ValueLayout.JAVA_INT,
@@ -210,7 +217,7 @@ public final class MetalBridge {
         );
 
         mh_is_temporal_supported = linker.downcallHandle(
-                lookup.find("metalmod_is_temporal_scaler_supported").orElseThrow(),
+                symbol(lookup, "metalmod_is_temporal_scaler_supported"),
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_BOOLEAN,
                         ValueLayout.JAVA_INT,
@@ -221,7 +228,7 @@ public final class MetalBridge {
         );
 
         mh_is_frame_gen_supported = linker.downcallHandle(
-                lookup.find("metalmod_is_frame_gen_supported").orElseThrow(),
+                symbol(lookup, "metalmod_is_frame_gen_supported"),
                 FunctionDescriptor.of(
                         ValueLayout.JAVA_BOOLEAN,
                         ValueLayout.JAVA_INT,
@@ -230,52 +237,72 @@ public final class MetalBridge {
         );
 
         mh_update_window_title = linker.downcallHandle(
-                lookup.find("metalmod_update_window_title").orElseThrow(),
+                symbol(lookup, "metalmod_update_window_title"),
                 FunctionDescriptor.ofVoid()
         );
 
+        mh_report_pipeline_status = linker.downcallHandle(
+                symbol(lookup, "metalmod_report_pipeline_status"),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+
         mh_uma_alloc = linker.downcallHandle(
-                lookup.find("metalmod_uma_alloc").orElseThrow(),
+                symbol(lookup, "metalmod_uma_alloc"),
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
         );
         mh_uma_calloc = linker.downcallHandle(
-                lookup.find("metalmod_uma_calloc").orElseThrow(),
+                symbol(lookup, "metalmod_uma_calloc"),
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
 
         mh_uma_realloc = linker.downcallHandle(
-                lookup.find("metalmod_uma_realloc").orElseThrow(),
+                symbol(lookup, "metalmod_uma_realloc"),
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
         );
 
         mh_uma_free = linker.downcallHandle(
-                lookup.find("metalmod_uma_free").orElseThrow(),
+                symbol(lookup, "metalmod_uma_free"),
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
 
         mh_uma_aligned_alloc = linker.downcallHandle(
-                lookup.find("metalmod_uma_aligned_alloc").orElseThrow(),
+                symbol(lookup, "metalmod_uma_aligned_alloc"),
                 FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG)
         );
 
         mh_uma_aligned_free = linker.downcallHandle(
-                lookup.find("metalmod_uma_aligned_free").orElseThrow(),
+                symbol(lookup, "metalmod_uma_aligned_free"),
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
 
         mh_uma_purge_idle = linker.downcallHandle(
-                lookup.find("metalmod_uma_purge_idle").orElseThrow(),
+                symbol(lookup, "metalmod_uma_purge_idle"),
                 FunctionDescriptor.ofVoid()
         );
 
         mh_get_memory_telemetry = linker.downcallHandle(
-                lookup.find("metalmod_get_memory_telemetry").orElseThrow(),
+                symbol(lookup, "metalmod_get_memory_telemetry"),
                 FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
 
         mh_memory_pressure_init = linker.downcallHandle(
-                lookup.find("metalmod_memory_pressure_init").orElseThrow(),
+                symbol(lookup, "metalmod_memory_pressure_init"),
                 FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+        );
+
+        mh_uma_owns = linker.downcallHandle(
+                symbol(lookup, "metalmod_uma_owns"),
+                FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+        );
+
+        mh_uma_size = linker.downcallHandle(
+                symbol(lookup, "metalmod_uma_size"),
+                FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+
+        mh_has_vulkan_interop = linker.downcallHandle(
+                symbol(lookup, "metalmod_has_vulkan_interop"),
+                FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN)
         );
 
         available = true;
@@ -334,14 +361,18 @@ public final class MetalBridge {
             MemorySegment paramsSegment
     ) {
         if (!available) return -1;
+        // invokeExact is signature-polymorphic: the *static* types of the arguments at the call
+        // site must match the MethodHandle type exactly. A reference conditional expression is a
+        // poly expression in an invocation context, so
+        //     mh.invokeExact(a != null ? a : MemorySegment.NULL, ...)
+        // compiles to an (Object,...) descriptor and throws WrongMethodTypeException on every
+        // call. Bind each argument to a typed local first.
+        MemorySegment color = (colorImage == null) ? MemorySegment.NULL : colorImage;
+        MemorySegment depth = (depthImage == null) ? MemorySegment.NULL : depthImage;
+        MemorySegment motion = (motionImage == null) ? MemorySegment.NULL : motionImage;
+        MemorySegment ui = (uiImage == null) ? MemorySegment.NULL : uiImage;
         try {
-            return (int) mh_process_frame.invokeExact(
-                    colorImage != null ? colorImage : MemorySegment.NULL,
-                    depthImage != null ? depthImage : MemorySegment.NULL,
-                    motionImage != null ? motionImage : MemorySegment.NULL,
-                    uiImage != null ? uiImage : MemorySegment.NULL,
-                    paramsSegment
-            );
+            return (int) mh_process_frame.invokeExact(color, depth, motion, ui, paramsSegment);
         } catch (Throwable t) {
             throw new RuntimeException(t);
         }
@@ -387,6 +418,22 @@ public final class MetalBridge {
         if (!available || mh_update_window_title == null) return;
         try {
             mh_update_window_title.invokeExact();
+        } catch (Throwable t) {
+            // non-fatal
+        }
+    }
+
+    /**
+     * Publish a pipeline status string for the window title.
+     *
+     * This is the diagnostic channel that does not depend on any mixin applying. The text is copied
+     * natively, so the confined segment only needs to outlive the call.
+     */
+    public static void reportPipelineStatus(String status) {
+        if (!available || mh_report_pipeline_status == null || status == null) return;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment text = arena.allocateFrom(status);
+            mh_report_pipeline_status.invokeExact(text);
         } catch (Throwable t) {
             // non-fatal
         }
@@ -482,5 +529,56 @@ public final class MetalBridge {
         } catch (Throwable t) {
             throw new RuntimeException("Failed to init memory pressure listener", t);
         }
+    }
+
+    /**
+     * Whether the native side holds a live VkDevice + vkExportMetalObjectsEXT.
+     *
+     * VkImage handles must not be handed to {@link #processFrame} unless this is true: without
+     * interop a VkImage cannot be converted to an MTLTexture, and the pipeline refuses to run.
+     */
+    public static boolean hasVulkanInterop() {
+        if (!available || mh_has_vulkan_interop == null) return false;
+        try {
+            return (boolean) mh_has_vulkan_interop.invokeExact();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a pointer is a live allocation from the native UMA pool.
+     *
+     * A custom LWJGL allocator must route free()/realloc() by ownership: pointers that were
+     * allocated before the pool was installed must go back to the allocator that produced them.
+     */
+    public static boolean ownsUnifiedBuffer(long address) {
+        if (!available || address == 0 || mh_uma_owns == null) return false;
+        try {
+            return (boolean) mh_uma_owns.invokeExact(MemorySegment.ofAddress(address));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Usable size of a live UMA allocation, or 0 if the address is not a live UMA allocation.
+     */
+    public static long unifiedBufferSize(long address) {
+        if (!available || address == 0 || mh_uma_size == null) return 0L;
+        try {
+            return (long) mh_uma_size.invokeExact(MemorySegment.ofAddress(address));
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /**
+     * Resolve an exported native symbol, failing with the symbol name in the message.
+     */
+    private static MemorySegment symbol(SymbolLookup lookup, String name) {
+        return lookup.find(name).orElseThrow(() -> new IllegalStateException(
+                "libmetalmod.dylib does not export '" + name + "'. The bundled native library is "
+                        + "out of date with the Java bindings; rebuild it with scripts/build_mod.sh."));
     }
 }

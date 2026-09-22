@@ -11,10 +11,15 @@
         desc.inputHeight = self.config.outputHeight;
         desc.outputWidth = self.config.outputWidth;
         desc.outputHeight = self.config.outputHeight;
-        desc.colorTextureFormat = self.config.enableHDR ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm;
+        MTLPixelFormat colorFormat = self.config.enableHDR ? MTLPixelFormatRGBA16Float
+                                                           : MTLPixelFormatBGRA8Unorm;
+        desc.colorTextureFormat = colorFormat;
         desc.depthTextureFormat = MTLPixelFormatDepth32Float;
         desc.motionTextureFormat = MTLPixelFormatRG16Float;
-        desc.outputTextureFormat = self.config.enableHDR ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm;
+        desc.outputTextureFormat = colorFormat;
+        // uiTextureFormat has no meaningful default (MTLPixelFormatInvalid). Assigning a
+        // uiTexture without setting it is invalid usage, so it must always be configured.
+        desc.uiTextureFormat = colorFormat;
 
         if (![MTLFXFrameInterpolatorDescriptor supportsDevice:self.device]) {
             NSLog(@"[MetalMod] Device does not support MTLFXFrameInterpolator with specified settings.");
@@ -46,8 +51,9 @@
         self.frameInterpolator.motionTexture = motionTex;
         self.frameInterpolator.outputTexture = interpolatedDst;
 
-        // Decoupled UI texture injection
-        if (uiTex) {
+        // Only supply a UI texture if it matches the configured uiTextureFormat; MetalFX does not
+        // validate this and a mismatched format produces undefined results.
+        if (uiTex && uiTex.pixelFormat == self.frameInterpolator.uiTextureFormat) {
             self.frameInterpolator.uiTexture = uiTex;
             self.frameInterpolator.uiTextureComposited = NO;
         } else {

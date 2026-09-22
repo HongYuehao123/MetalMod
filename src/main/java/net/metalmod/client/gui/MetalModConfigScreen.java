@@ -88,7 +88,8 @@ public class MetalModConfigScreen extends Screen {
     }
 
     private Component getScalerText() {
-        return Component.literal("Upscaling: " + MetalConfig.INSTANCE.scalingMode.getDisplayName());
+        return Component.literal("Upscaling: " + MetalConfig.INSTANCE.scalingMode.getDisplayName()
+                + (MetalConfig.INSTANCE.scalingMode == MetalConfig.ScalingMode.OFF ? "" : " (not applied)"));
     }
 
     private Component getPresetText() {
@@ -96,7 +97,8 @@ public class MetalModConfigScreen extends Screen {
     }
 
     private Component getFrameGenText() {
-        return Component.literal("Frame Generation: " + (MetalConfig.INSTANCE.frameGeneration ? "ON (Metal 4)" : "OFF"));
+        return Component.literal("Frame Generation: " + (MetalConfig.INSTANCE.frameGeneration ? "ON (Metal 4)" : "OFF")
+                + (MetalConfig.INSTANCE.frameGeneration ? " (not applied)" : ""));
     }
 
     private Component getDisplayRateText() {

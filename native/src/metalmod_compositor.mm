@@ -17,6 +17,25 @@
 - (BOOL)recreatePipelines {
     if (!self.device) return NO;
 
+    // With upscaling off and frame generation off there is nothing to render into these textures,
+    // so do not allocate them: at 2560x1440 BGRA8 they are ~14 MB each, and three of them would be
+    // ~42 MB of GPU memory held for no reason in the default configuration.
+    BOOL pipelineInUse = (self.config.scalingMode != METALMOD_SCALING_OFF)
+                         || self.config.frameGenerationEnabled;
+    if (!pipelineInUse) {
+        for (int i = 0; i < 2; i++) {
+            self->_historyTextures[i] = nil;
+        }
+        self.upscaledTexture = nil;
+        self.prevColorTexture = nil;
+        self.interpolatedTexture = nil;
+        self.spatialScaler = nil;
+        self.temporalScaler = nil;
+        self.frameInterpolator = nil;
+        self.hasHistory = NO;
+        return YES;
+    }
+
     // 1. Allocate textures for output dimensions
     MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:self.config.enableHDR ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm
                                                                                        width:self.config.outputWidth

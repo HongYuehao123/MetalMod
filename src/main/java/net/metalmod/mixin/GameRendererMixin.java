@@ -1,41 +1,37 @@
 package net.metalmod.mixin;
 
-import net.metalmod.config.MetalConfig;
-import net.metalmod.render.JitterHelper;
+import net.metalmod.Diagnostics;
 import net.metalmod.render.VulkanFrameManager;
-import org.joml.Matrix4f;
+import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.renderer.GameRenderer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin(targets = {
-    "net.minecraft.client.renderer.GameRenderer",
-    "net.minecraft.class_757"
-})
+/**
+ * Per-frame hook.
+ *
+ * Retargeted to the real API. The previous revision injected into
+ * {@code GameRenderer.render} by looking for {@code method_3192}, and into
+ * {@code getBasicProjectionMatrix} by looking for {@code method_3198}. Neither the intermediary
+ * names nor {@code getBasicProjectionMatrix} exist in this build (verified with javap), and the
+ * non-existent {@code class_757} target additionally caused Mixin to reject the whole mixin.
+ *
+ * Real signature: {@code public void render(DeltaTracker, boolean)}.
+ */
+@Mixin(GameRenderer.class)
 public class GameRendererMixin {
 
-    @Inject(method = {"render", "method_3192"}, at = @At("HEAD"), require = 0)
-    private void onRenderBegin(CallbackInfo ci) {
+    @Inject(method = "render", at = @At("HEAD"))
+    private void metalmod$onFrameBegin(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
+        Diagnostics.hook("GameRenderer.render");
         VulkanFrameManager.getInstance().onFrameBegin();
     }
 
-    @Inject(method = {"getBasicProjectionMatrix", "method_3198"}, at = @At("RETURN"), cancellable = true, require = 0)
-    private void injectSubpixelJitter(float fov, CallbackInfoReturnable<Matrix4f> cir) {
-        if (MetalConfig.INSTANCE.scalingMode == MetalConfig.ScalingMode.TEMPORAL) {
-            Matrix4f matrix = cir.getReturnValue();
-            if (matrix != null) {
-                int renderW = VulkanFrameManager.getInstance().getRenderWidth();
-                int renderH = VulkanFrameManager.getInstance().getRenderHeight();
-
-                float jitterX = JitterHelper.getProjectionJitterX(renderW);
-                float jitterY = JitterHelper.getProjectionJitterY(renderH);
-
-                matrix.m20(matrix.m20() + jitterX);
-                matrix.m21(matrix.m21() + jitterY);
-                cir.setReturnValue(matrix);
-            }
-        }
+    @Inject(method = "resize", at = @At("RETURN"))
+    private void metalmod$onRendererResize(int width, int height, CallbackInfo ci) {
+        Diagnostics.hook("GameRenderer.resize");
+        VulkanFrameManager.getInstance().onDisplayResized();
     }
 }
