@@ -67,7 +67,8 @@ echo "==> Step 5: Creating mod jar: ${MOD_JAR}..."
 echo "==> Step 6: Compiling standalone verification suite..."
 "${JAVAC}" --release 22 -nowarn -cp "${MOD_BIN}:${CLASSPATH}" -d "${TEST_BIN}" \
   "${ROOT_DIR}/src/test/java/net/metalmod/StandaloneTestRunner.java" \
-  "${ROOT_DIR}/src/test/java/net/metalmod/UnifiedMemoryTest.java"
+  "${ROOT_DIR}/src/test/java/net/metalmod/UnifiedMemoryTest.java" \
+  "${ROOT_DIR}/src/test/java/net/metalmod/backend/MetalRenderPassBackendTest.java"
 
 echo "=================================================="
 echo "SUCCESS -> ${MOD_JAR}"

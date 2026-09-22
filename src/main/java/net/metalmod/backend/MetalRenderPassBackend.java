@@ -253,19 +253,50 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
-        setIndexBuffer(indexBuffer, indexType);
         for (RenderPass.Draw<T> draw : draws) {
+            // Per-draw uniforms arrive through the draw's own uploader consumer, which the backend
+            // must invoke. Vanilla's chunk terrain is the main user: each draw's payload is the
+            // GpuBufferSlice[] of section info, uploaded as the 'ChunkSection' uniform block
+            // (ModelViewMat / ChunkPosition / TextureSize). Skipping this left ChunkSection unbound,
+            // so terrain had no chunk position and no model-view matrix at all.
+            uploadDrawUniforms(draw, pushConstant, this::setUniform);
+            setIndexBuffer(effectiveIndexBuffer(draw, indexBuffer), effectiveIndexType(draw, indexType));
             if (draw.vertexBuffer() != null) {
                 setVertexBuffer(draw.slot(), draw.vertexBuffer().slice());
             }
-            // This is the one path whose bindings are not fully expressed as setUniform/bindTexture:
-            // per-draw data arrives through the draw's uniformUploaderConsumer, and the
-            // dynamicUniforms collection names buffers filled that way. Reporting "unbound" here
-            // would flag those false positives, so the diagnostic is skipped.
-            applyBindings(false);
+            // Safe to diagnose here now that the consumer has supplied its uniforms.
+            applyBindings(true);
             MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
                     this.indexType, draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
+    }
+
+    /**
+     * Hand a draw's opaque payload to its own uploader consumer.
+     *
+     * <p>The payload is deliberately opaque to the backend: {@code RenderPass.drawMultipleIndexed}
+     * passes it straight through, and {@code VulkanRenderPass} only ever forwards it to this same
+     * consumer. For chunk terrain it is a {@code GpuBufferSlice[]}, and the consumer decides what
+     * that means, pushing each uniform through {@link RenderPass.UniformUploader#upload}.
+     */
+    static <T> void uploadDrawUniforms(RenderPass.Draw<T> draw, T pushConstant,
+                                       RenderPass.UniformUploader uploader) {
+        java.util.function.BiConsumer<T, RenderPass.UniformUploader> consumer =
+                draw.uniformUploaderConsumer();
+        if (consumer == null || uploader == null) {
+            return;
+        }
+        consumer.accept(pushConstant, uploader);
+    }
+
+    /** A draw may carry its own index buffer; {@code null} means use the pass-level one. */
+    static GpuBuffer effectiveIndexBuffer(RenderPass.Draw<?> draw, GpuBuffer fallback) {
+        return draw.indexBuffer() != null ? draw.indexBuffer() : fallback;
+    }
+
+    /** A draw may carry its own index type; {@code null} means use the pass-level one. */
+    static IndexType effectiveIndexType(RenderPass.Draw<?> draw, IndexType fallback) {
+        return draw.indexType() != null ? draw.indexType() : fallback;
     }
 
     @Override

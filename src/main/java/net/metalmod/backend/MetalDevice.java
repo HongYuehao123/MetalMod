@@ -79,6 +79,7 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " failures=" + resourceFailureCount
                 + " pipelineFailures=" + pipelineFailureCount
                 + " unboundBindings=" + unboundBindingCount()
+                + " unmappedVertexAttributes=" + unmappedAttributeCount()
                 + " | " + SHADER_COMPILER_SUMMARY.get();
     }
 
@@ -121,6 +122,33 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     public static synchronized int unboundBindingCount() {
         return unboundCount;
+    }
+
+    // A VertexFormat element whose name has no matching shader input is silently left out of the
+    // vertex descriptor, and Metal then feeds the shader whatever the buffer happens to hold at that
+    // attribute index. That is a nasty failure mode: the geometry is drawn, just wrongly. The line
+    // shader, for instance, reads LineWidth - garbage there means a line expands to a screen-filling
+    // quad rather than a hairline.
+    private static final java.util.Set<String> reportedUnmappedAttributes = new java.util.HashSet<>();
+    private static int unmappedAttributeCount;
+    private static int unmappedAttributeLogCount;
+
+    static synchronized void reportUnmappedVertexAttribute(String pipeline, String element) {
+        if (reportedUnmappedAttributes.size() >= 64
+                || !reportedUnmappedAttributes.add(pipeline + "|" + element)) {
+            return;
+        }
+        unmappedAttributeCount++;
+        if (unmappedAttributeLogCount < 20) {
+            unmappedAttributeLogCount++;
+            System.err.println("[MetalMod] vertex attribute '" + element + "' in " + pipeline
+                    + " has no matching shader input, so it is missing from the vertex descriptor "
+                    + "and the shader reads undefined data");
+        }
+    }
+
+    public static synchronized int unmappedAttributeCount() {
+        return unmappedAttributeCount;
     }
 
     // The engine clears its main render target with the sky/background colour; capture it so the

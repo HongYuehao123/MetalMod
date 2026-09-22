@@ -324,9 +324,26 @@ public final class MetalShaderCompiler implements AutoCloseable {
         SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(listPtr.get(0), (int) count);
         for (int index = 0; index < count; index++) {
             SpvcReflectedResource resource = list.get(index);
-            String name = Spvc.spvc_compiler_get_name(compiler, resource.id());
-            if (name == null || name.isEmpty()) {
+            // Uniform blocks are keyed by their block TYPE name, everything else by its variable
+            // name. The engine binds by the type name - its BindGroupLayouts declare "LightmapInfo",
+            // and MC's own GlslCompiler.addToBindGroup builds those layouts from the same SPIR-V
+            // block name - so keying on the GLSL instance name binds nothing.
+            //
+            // lightmap.fsh is the one vanilla shader that names its instance
+            // (`layout(std140) uniform LightmapInfo { ... } lightmapInfo;`), which is exactly why the
+            // lightmap was the only binding the unbound-binding diagnostic reported: every other
+            // vanilla block omits the instance name, so the two conventions happened to agree.
+            String name;
+            if (type == Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
                 name = Spvc.spvc_compiler_get_name(compiler, resource.base_type_id());
+                if (name == null || name.isEmpty()) {
+                    name = Spvc.spvc_compiler_get_name(compiler, resource.id());
+                }
+            } else {
+                name = Spvc.spvc_compiler_get_name(compiler, resource.id());
+                if (name == null || name.isEmpty()) {
+                    name = Spvc.spvc_compiler_get_name(compiler, resource.base_type_id());
+                }
             }
             if (name == null || name.isEmpty()) {
                 continue;

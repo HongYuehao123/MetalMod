@@ -166,6 +166,12 @@ public final class MetalRenderPipeline {
                     for (VertexFormatElement element : format.getElements()) {
                         Integer location = vs.inputs().get(element.name());
                         if (location == null || attributeCount >= 64) {
+                            if (location == null) {
+                                // Silently dropping this would make the shader read undefined data
+                                // for that attribute; report it instead (see MetalDevice).
+                                MetalDevice.reportUnmappedVertexAttribute(
+                                        pipeline.getLocation().toString(), element.name());
+                            }
                             continue;
                         }
                         MemorySegment attribute = attributes.asSlice(

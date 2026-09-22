@@ -32,6 +32,7 @@ public class StandaloneTestRunner {
         testPipelineConfiguration();
         testFrameSubmissionContract();
         testUmaOwnershipRouting();
+        failures += net.metalmod.backend.MetalRenderPassBackendTest.runTests();
 
         UnifiedMemoryTest.runTests();
 

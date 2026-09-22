@@ -80,6 +80,25 @@ a line primitive). Likely candidates: the wrong primitive topology for the outli
 mis-scaled `ModelViewMat`/`DynamicTransforms` bound to the outline draw, or a `fillMode`/
 `lines` mapping bug in `MetalFormat`. Part of the Phase 5 parity work.
 
+### Ruled out (Phase 5)
+
+Checked directly, so these are *not* the cause:
+
+- **Primitive topology.** `MetalFormat.mtlTopology` maps `LINES`/`DEBUG_LINES` to
+  `MTLPrimitiveTypeLine` correctly, and MC supplies indices for `QUADS`.
+- **Front-face winding.** `mmm_render_pass_begin` sets `MTLWindingCounterClockwise` and
+  `mmm_render_pass_set_pipeline` sets cull/fill; the negative-height (flipped) viewport that reverses
+  winding is applied only to `/atlas/` passes, each with its own encoder.
+- **Vertex descriptor.** A new diagnostic reports any `VertexFormat` element with no matching shader
+  input. Compiling all 87 vanilla pipelines reports **none**, so `LineWidth` and friends are all
+  mapped and the shader is not reading undefined attribute data.
+- **Missing bindings.** The unbound-binding diagnostic named only `lightmapInfo` and `CloudFaces`
+  (BUG-005), neither of which is on this path.
+
+That leaves the *values* rather than the plumbing — most plausibly `LineWidth` vertex data or the
+`ScreenSize` uniform, since the shader's thickness is `LineWidth / ScreenSize`. This needs a runtime
+inspection of those two on the outline draw, not more static reading.
+
 ### Workaround
 
 Turn the selection outline off in Options (if the pack allows) or ignore it; it does not affect play.
@@ -88,9 +107,23 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ## BUG-005 — Two pipelines draw with bindings that were never set
 
-**Status:** open, unfixed. **Scheduled for Phase 5.**
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
 **Severity:** high for world appearance — one of these is the lightmap.
 **Found by:** the Phase 4 unbound-binding diagnostic, in-game (run `[10:21:31]`, see below).
+
+### Fix
+
+Uniform blocks are now reflected by their block **type** name, not the GLSL instance name. The engine
+binds by type name: `BindGroupLayouts` declares `LightmapInfo`, and `Lightmap` is the class that
+binds it. `lightmap.fsh` is the one vanilla shader that names its instance —
+
+```glsl
+layout(std140) uniform LightmapInfo { ... } lightmapInfo;
+```
+
+— while every other vanilla block omits the instance name, so the two conventions happened to agree
+and only the lightmap broke. Verified offline: the fragment shader now reflects as `[LightmapInfo]`.
+
 
 ### Symptoms
 
@@ -125,16 +158,37 @@ actually passes to `RenderPass.setUniform`/`bindTexture` for those two pipelines
 
 ### Workaround
 
-None. Phase 5 work.
+None. Fixed in Phase 5.
 
 ---
 
 ## BUG-004 — Multi-draw chunk passes never upload their per-draw uniforms
 
-**Status:** open, unfixed. **Scheduled for Phase 5 (draw path)** — see the note on why it was not
-fixed during Phase 4.
-**Severity:** high for world rendering; likely a direct cause of the flat/unlit world in BUG-003.
-**Found by:** the Phase 4 binding audit (code inspection against the Vulkan backend's contract).
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Severity:** high for world rendering; was a direct cause of missing/wrong terrain.
+**Found by:** the Phase 4 binding audit, then confirmed by reading the shaders.
+
+### Fix
+
+`drawMultipleIndexed` now invokes each draw's `uniformUploaderConsumer` before encoding, uses the
+per-draw index buffer/type when present, and re-enables the binding diagnostic on that path. Coverage:
+`MetalRenderPassBackendTest` (7 assertions).
+
+The payload turned out to be exactly what terrain needed. `chunksection.glsl` declares
+
+```glsl
+layout(std140) uniform ChunkSection { mat4 ModelViewMat; float ChunkVisibility;
+                                      ivec2 TextureSize; ivec3 ChunkPosition; };
+```
+
+and `ChunkSectionsToRender` passes `GpuBufferSlice[] chunkSectionInfos` as the payload. With the
+consumer never invoked, `ChunkSection` was never bound, so terrain had no chunk position and no
+model-view matrix at all.
+
+`pushConstant` is opaque to the backend — `RenderPass` passes it straight through and
+`VulkanRenderPass` only forwards it to the same consumer — so no push-constant reflection was needed
+for vanilla. It is still needed for Sodium, which uses `layout(push_constant)` under `VULKAN`.
+
 
 ### Symptoms
 
