@@ -264,8 +264,8 @@ without the flip appears in `logs/latest.log` rather than showing up as a wrong 
 
 ## BUG-023 — Water puts a glaze on itself, and its edge lags the surface
 
-**Status:** **FIXED** (Phase 5) — the mesh-upload copy was a CPU memcpy, so a section could render
-with the next section's vertices. Pending in-game confirmation on a fresh run.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. `writeToBuffer` and `copyToBuffer` were
+synchronous CPU memcpys, so a section could be drawn with the next section's data.
 **Severity:** medium for appearance; it is the most visible remaining artefact.
 **Found on:** the second in-game run. Reported as "the water is more like only glaze where water is.
 It feels like the water is lagging a little bit, as if you fly through the edge of water in creative
@@ -370,28 +370,22 @@ worth removing for its own sake but is not what the glaze is.
 
 ### Confirmed fixed
 
-Confirmed in game. The earlier note here claiming the blit did not help was **wrong, and the mistake
-was mine**: the jar was installed at 14:11 and the recording was taken at 14:11:33, seconds later, so
-the running session had almost certainly not reloaded it - Java loads the mod jar at launch, so a copy
-made while the game is up does not take effect until the next start. The frames I compared were the
-old build.
+Confirmed in game. The cause was **`writeToBuffer` and `copyToBuffer` being synchronous CPU memcpys**:
+a buffer transfer that the engine expects to be a GPU-side operation blocked the CPU and could leave a
+section's data mid-flight, so a section rendered with another's - per-region, per-frame, and visible
+the moment the camera moved, which is exactly the reported behaviour.
 
-The artefact was transient, random and movement-triggered, which is the signature of the CPU copy
-racing the GPU: `replaceRegion` writes shared memory from the CPU while the GPU may still be reading
-that same texture for the previous frame's composite. A stale value only differs from the current one
-while the camera moves, and which texels tear depends on timing. Water was the only sufferer because
-the translucent layer's depth buffer is the texture being rewritten. The blit removes the CPU write
-entirely and is ordered with the frame by commit order.
+The texture-copy blit fixed earlier is a separate, real improvement (it removes a stall and a CPU
+write that races the GPU) but it was not this bug, and the note that once stood here claiming the
+blit "did not help" was measured against a session that had not reloaded the jar.
 
 ### Lesson worth keeping
 
-Two things cost real time here, and both are measurement failures rather than reasoning ones:
-
-1. **A stale build was mistaken for a wrong fix.** Before concluding a fix did not work, check the
-   running process picked it up - the jar's mtime against the log's first line is enough.
-2. **Three checks in this area passed while proving nothing**: an inverted depth assertion, a depth
-   check that cleared the depth before loading it, and a readback helper that read GPU-written memory
-   without synchronising the queue. A green check is only evidence if it can fail.
+Two measurement failures cost real time on this bug: judging a fix from a build the running process
+had not loaded (compare the jar's mtime against the log's first line), and - separately - three checks
+in this area that passed while proving nothing (an inverted depth assertion, a depth check that
+cleared the depth before loading it, and a readback helper that read GPU-written memory without
+synchronising). A green check is only evidence if it can fail.
 
 ### Superseded: the fix and why it was reverted once
 
