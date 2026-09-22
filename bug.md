@@ -51,3 +51,60 @@ with a wrong sub-rect or transform, so this is probably a leftover of the Phase 
 
 None needed. Use the default (Vulkan/OpenGL) backend if the list is hard to read; select worlds
 by their position, which still works.
+
+---
+
+## BUG-002 — Block selection outline is drawn as a huge wireframe box
+
+**Status:** open, unfixed.
+**Severity:** low / cosmetic. Nothing breaks; it just looks wrong and is distracting.
+**Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native, 111 fps.
+**Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)
+
+### Symptoms
+
+The block the player is looking at is outlined by a **giant white/light wireframe quad** covering
+a large part of the screen, instead of a thin black line hugging one block. It looks like two nested
+wireframe rectangles with a small green/red axis marker near one corner. Depth testing does not hide
+it, so it is drawn on top of everything, including the sky.
+
+### Reproduce
+
+1. Metal backend enabled, load a world, look at a nearby block with the crosshair.
+2. Compare with the default backend, where the outline is a thin black box around the block.
+
+### Suspected cause (unconfirmed)
+
+The outline goes through a line-rendering pipeline (`lines` / `debug_line` with a wireframe fill or
+a line primitive). Likely candidates: the wrong primitive topology for the outline pipeline, a
+mis-scaled `ModelViewMat`/`DynamicTransforms` bound to the outline draw, or a `fillMode`/
+`lines` mapping bug in `MetalFormat`. Part of the Phase 5 parity work.
+
+### Workaround
+
+Turn the selection outline off in Options (if the pack allows) or ignore it; it does not affect play.
+
+---
+
+## BUG-003 — Small black silhouettes float in the sky (world is unlit/flat black)
+
+**Status:** open, unfixed.
+**Severity:** low / cosmetic, but it is the most visible sign that Phase 4/5 shader work is unfinished.
+**Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native.
+**Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)
+
+### Symptoms
+
+Dozens of small solid-black shapes (item-like silhouettes) hang in the sky, and the terrain renders
+as flat black silhouettes against the sky with no textures or lightmap. GUI, text and the hotbar
+render correctly, and the sky colour is right.
+
+### Suspected cause (unconfirmed)
+
+World rendering is geometry with textures/lighting still incomplete: entities/items and terrain are
+likely sampling an unbound lightmap/texture or using a shader whose inputs are not all bound yet.
+Tracked as the Phase 4/5 (shaders + vanilla parity) work rather than a Phase 3 regression.
+
+### Workaround
+
+None. use the default backend for normal play until Phase 5.
