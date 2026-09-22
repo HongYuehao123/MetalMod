@@ -257,20 +257,33 @@ Also for Phase 5:
 - **Checked and found correct** (so not worth re-investigating): the hardcoded `D32_FLOAT` depth
   format is what MC actually creates; every vertex element format vanilla uses (`FLOAT_32` x1/2/3,
   `SINT_16` x2, `SNORM_8` x4, `UNORM_8` x4) maps correctly; vertex attributes all resolve.
-- **BUG-002's candidate causes were checked and ruled out** (topology mapping, front-face winding,
-  atlas-only viewport flip, vertex descriptor, missing bindings). What remains is the *values* on the
-  outline draw — most plausibly `LineWidth` vertex data or the `ScreenSize` uniform, since the
-  shader's thickness is `LineWidth / ScreenSize`. That needs runtime inspection.
+- **BUG-002 has a confirmed cause, and it was a topology mapping.** The earlier note here said the
+  topology mapping had been ruled out; it had not - it was checked by eye, and `LINES` "obviously"
+  meant `MTLPrimitiveTypeLine`. It does not. `rendertype_lines.vsh` offsets each vertex by
+  `+/- LineWidth / ScreenSize` according to `gl_VertexID % 2`, so four vertices make one segment's
+  quad; `PrimitiveTopology.LINES` reports `indexCount(4) == 6`, which only `QUADS` otherwise does;
+  and `VulkanConst.toVk(LINES)` is `VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST`. Drawn as line primitives,
+  each segment became two short perpendicular ticks and one diagonal instead of an outline. See
+  BUG-014. The `Globals`/`ScreenSize` collision (BUG-012) is a *second* cause in the same pipeline,
+  so the outline had two independent defects stacked on it.
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Eleven rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Thirteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
-  per-face lighting and four uniform blocks, screen-space line expansion, UV orientation, texture
-  copies (whole and by rectangle), the atlas compositing flip, `multiDrawIndexed` through Minecraft's
-  own `RenderPass`, scissor clipping, alpha blending, and 16-bit indices with non-zero
-  `firstIndex`/base-vertex offsets. Each one is a mechanism one of the open bugs implicates, and the
-  harness has eliminated five BUG-001 theories.
+  per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
+  orientation, texture copies (whole and by rectangle), the atlas compositing flip,
+  `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, and
+  16-bit indices with non-zero `firstIndex`/base-vertex offsets. Each one is a mechanism one of the
+  open bugs implicates, and the harness has eliminated five BUG-001 theories.
+- **Census the pipeline space before trusting a mapping.** Tabulating all 87 pipelines by topology,
+  blend function, colour format, depth state and vertex stride found two live defects that reading
+  the code had missed, because both mappings *look* right: `LINES` is quad geometry (`rendertype_lines`
+  offsets by `gl_VertexID % 2`, and `PrimitiveTopology.indexCount(4)` is 6, the same as `QUADS`), and
+  `TRIANGLE_FAN` has no Metal primitive, so the sky disc's single ten-vertex fan draw was landing as
+  three stray triangles. The engine's own Vulkan backend was the oracle for both. The same census
+  showed no vanilla pipeline uses more than one colour target, which is what makes the backend's
+  single-attachment pipeline assumption safe for vanilla and a shaderpack-only concern for Phase 7.
 - **A wrong pixel can now be diagnosed without a debugger.** `-Dmetalmod.dumpMsl=<substring>` prints
   the generated MSL for the matching shader pairs, with `all` for every pair. The MSL is where the
   varyings, their interpolation and the `[[attribute(N)]]` / `[[buffer(N)]]` indices are decided, and
@@ -284,11 +297,14 @@ Also for Phase 5:
   `ChunkSection`, `Projection` and `Fog` to all be bound correctly. That terrain case is precisely
   what BUG-012 broke, so the harness would have caught it. It also caught a mistake in my own test
   first: the terrain pipeline uses reversed-Z, so the quad was correctly depth-rejected until the
-  test used near = 1.0 and cleared depth to 0.0. It also draws a 2px line through the real `LINES`
-  pipeline and checks a row 8px away stays untouched, which is BUG-002's mechanism: the line
-  expansion divides by `ScreenSize` from `Globals`, the block that collided with `Fog`, so a
-  mis-bound `Globals` turned the outline into a screen-filling quad. BUG-002's root cause is
-  therefore BUG-012, confirmed at render level. It also maps each corner of the screen onto one
+  test used near = 1.0 and cleared depth to 0.0. It also draws one line segment through the real
+  `LINES` pipeline using Minecraft's own four-vertex, six-index geometry - `RenderSystem`'s
+  `sharedSequentialLines` pattern, `0,1,2,3,2,1` - and checks that rows 4px either side of the centre
+  are covered and a row 12px out is not. That single check now covers both of BUG-002's causes: the
+  line expansion divides by `ScreenSize` from `Globals`, the block that collided with `Fog` before
+  BUG-012, so a mis-bound `Globals` inflates the band; and the topology has to be triangles, so
+  BUG-014's line-primitive mapping fails it too. Both were confirmed to fail when deliberately
+  reverted. It also maps each corner of the screen onto one
   texel of a 2x2 texture through `gui_textured`, which confirms `texCoord0` samples the right texel
   in the right orientation - ruling out a Y flip as the cause of BUG-001's "wrong sprite". It also
   copies a 4x4 texture whole and as a 2x2 rectangle at (1,1), which rules out the post-processing
@@ -329,12 +345,14 @@ audited end to end and no further defect can be settled by reading code.
 
 ## What does not work
 
-- **Vanilla visual parity (Phase 5):** some GUI screens are missing sprites (BUG-001) and the
-  block-selection outline is wrong (BUG-002). Both mechanisms are now reproduced and pass offline, so
-  the leading hypothesis for each is that it is already fixed by BUG-007/010/012 and simply has not
-  been looked at since. Terrain and entity rendering (BUG-003) both now render correctly offline —
-  terrain through `SOLID_TERRAIN` and entities through `ENTITY_CUTOUT` with the real 36-byte vertex
-  format — so what is left there is in-game confirmation, not a known defect.
+- **Vanilla visual parity (Phase 5):** some GUI screens are missing sprites (BUG-001). Its candidate
+  mechanisms are now reproduced and pass offline, so the leading hypothesis is that it is already fixed
+  by BUG-007/010/012 and simply has not been looked at since. The block-selection outline (BUG-002) had
+  two independent defects stacked on the same pipeline, both now fixed and both reproduced at render
+  level: the `Globals`/`ScreenSize` slot collision (BUG-012) and the `LINES` topology (BUG-014). The
+  sky disc's triangle fan (BUG-015) is fixed. Terrain and entity rendering (BUG-003) both render
+  correctly offline — terrain through `SOLID_TERRAIN` and entities through `ENTITY_CUTOUT` with the real
+  36-byte vertex format — so what is left there is in-game confirmation, not a known defect.
 - **Upscaling / frame generation:** inactive until the mod owns presentation and the later phases.
 - **Shaderpacks, MetalFX, ray tracing:** not started.
 

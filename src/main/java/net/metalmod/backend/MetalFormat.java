@@ -278,14 +278,34 @@ public final class MetalFormat {
         };
     }
 
-    /** MTLPrimitiveType. */
+    /**
+     * Sentinel returned by {@link #mtlTopology} for {@code TRIANGLE_FAN}.
+     *
+     * <p>Metal has no fan primitive, and this value is negative so it can never be mistaken for an
+     * {@code MTLPrimitiveType}. The render pass expands a fan into an indexed triangle list.
+     */
+    public static final int TOPOLOGY_TRIANGLE_FAN = -1;
+
+    /**
+     * MTLPrimitiveType.
+     *
+     * <p>{@code LINES} is deliberately <em>not</em> {@code MTLPrimitiveTypeLine}. Minecraft's line
+     * geometry is one 4-vertex quad per segment, expanded in the vertex shader:
+     * {@code rendertype_lines.vsh} picks {@code +lineOffset} or {@code -lineOffset} from
+     * {@code gl_VertexID % 2}, and {@code PrimitiveTopology.indexCount(4)} is 6 - the same as
+     * {@code QUADS}. The Vulkan backend maps it to {@code VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST} for
+     * exactly this reason. Real line primitives are {@code DEBUG_LINES} and {@code DEBUG_LINE_STRIP}.
+     * Getting this wrong turns the block outline ({@code SECONDARY_BLOCK_OUTLINE}) into a pair of
+     * short perpendicular ticks per segment instead of an outline.
+     */
     public static int mtlTopology(PrimitiveTopology topology) {
         return switch (topology) {
             case POINTS -> 0;
-            case LINES, DEBUG_LINES -> 1;
+            case DEBUG_LINES -> 1;
             case DEBUG_LINE_STRIP -> 2;
-            case TRIANGLES, TRIANGLE_FAN, QUADS -> 3;
+            case LINES, TRIANGLES, QUADS -> 3;
             case TRIANGLE_STRIP -> 4;
+            case TRIANGLE_FAN -> TOPOLOGY_TRIANGLE_FAN;
         };
     }
 

@@ -40,7 +40,7 @@ public final class MetalNative {
             mhRenderPassSetVertexBuffer, mhRenderPassSetFragmentBuffer, mhRenderPassSetVertexTexture,
             mhRenderPassSetFragmentTexture, mhRenderPassSetVertexSampler, mhRenderPassSetFragmentSampler,
             mhRenderPassSetScissor, mhRenderPassSetViewport, mhRenderPassPushDebugGroup,
-            mhRenderPassPopDebugGroup, mhRenderPassDraw, mhRenderPassDrawIndexed;
+            mhRenderPassPopDebugGroup, mhRenderPassDraw, mhRenderPassDrawFan, mhRenderPassDrawIndexed;
 
     static {
         try {
@@ -154,6 +154,7 @@ public final class MetalNative {
         mhRenderPassPushDebugGroup = linker.downcallHandle(symbol(lookup, "mmm_render_pass_push_debug_group"), FunctionDescriptor.ofVoid(A, A));
         mhRenderPassPopDebugGroup = linker.downcallHandle(symbol(lookup, "mmm_render_pass_pop_debug_group"), FunctionDescriptor.ofVoid(A));
         mhRenderPassDraw = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw"), FunctionDescriptor.ofVoid(A, I, I, I, I, I));
+        mhRenderPassDrawFan = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_fan"), FunctionDescriptor.ofVoid(A, I, I, I, I));
         mhRenderPassDrawIndexed = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_indexed"), FunctionDescriptor.ofVoid(A, I, A, L, I, I, I, I, I, I));
     }
 
@@ -346,6 +347,14 @@ public final class MetalNative {
     public static void renderPassPopDebugGroup(MemorySegment enc) { v(mhRenderPassPopDebugGroup, enc); }
     public static void renderPassDraw(MemorySegment enc, int topology, int vertexStart, int vertexCount, int instanceCount, int firstInstance) {
         v(mhRenderPassDraw, enc, topology, vertexStart, vertexCount, instanceCount, firstInstance);
+    }
+    /**
+     * Draw a triangle fan. Metal has no fan primitive, so the native side expands one into an
+     * indexed triangle list from a cached index pattern; {@code vertexStart} becomes Metal's
+     * {@code baseVertex} rather than an offset into the vertex buffer.
+     */
+    public static void renderPassDrawFan(MemorySegment enc, int vertexStart, int vertexCount, int instanceCount, int firstInstance) {
+        v(mhRenderPassDrawFan, enc, vertexStart, vertexCount, instanceCount, firstInstance);
     }
     public static void renderPassDrawIndexed(MemorySegment enc, int topology, MemorySegment indexBuffer, long offset,
             int indexType, int indexCount, int instanceCount, int firstIndex, int baseVertex, int firstInstance) {

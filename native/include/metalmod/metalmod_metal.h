@@ -213,6 +213,10 @@ MMM_API void mmm_render_pass_push_debug_group(void* encoder, const char* label);
 MMM_API void mmm_render_pass_pop_debug_group(void* encoder);
 MMM_API void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart,
                                   int32_t vertexCount, int32_t instanceCount, int32_t firstInstance);
+/// Draw a triangle fan. Metal has no fan primitive, so this expands one into an indexed triangle
+/// list from a cached, prefix-stable index buffer; `vertexStart` becomes Metal's baseVertex.
+MMM_API void mmm_render_pass_draw_fan(void* encoder, int32_t vertexStart, int32_t vertexCount,
+                                      int32_t instanceCount, int32_t firstInstance);
 MMM_API void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBuffer,
                                           int64_t indexBufferOffset, int32_t indexType,
                                           int32_t indexCount, int32_t instanceCount,

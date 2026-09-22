@@ -82,6 +82,7 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " missingVertexAttributes=" + missingVertexAttributeCount()
                 + " slotCollisions=" + slotCollisionCount()
                 + " bindingKindMismatches=" + bindingKindMismatchCount()
+                + " indexedFans=" + indexedFanCount()
                 + " | " + SHADER_COMPILER_SUMMARY.get();
     }
 
@@ -219,6 +220,26 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     public static synchronized int missingVertexAttributeCount() {
         return missingAttributeCount;
+    }
+
+    // Metal has no triangle fan, so a non-indexed fan is expanded into a triangle list by the native
+    // side. An *indexed* fan cannot be expanded that way - its vertex order lives in the index
+    // buffer - and no vanilla pipeline indexed-draws one, so report it rather than draw something
+    // plausible but wrong.
+    private static final java.util.Set<String> reportedIndexedFans = new java.util.HashSet<>();
+    private static int indexedFanCount;
+
+    static synchronized void reportIndexedFan(String pipeline) {
+        if (!reportedIndexedFans.add(pipeline)) {
+            return;
+        }
+        indexedFanCount++;
+        System.err.println("[MetalMod] " + pipeline + " indexed-draws a triangle fan, which Metal "
+                + "cannot represent; drawing it as a triangle list instead");
+    }
+
+    public static synchronized int indexedFanCount() {
+        return indexedFanCount;
     }
 
     public static synchronized int pipelineFailureCount() {

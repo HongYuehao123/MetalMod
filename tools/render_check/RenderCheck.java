@@ -125,8 +125,11 @@ public final class RenderCheck {
             //   lineOffset = perpendicular * LineWidth / ScreenSize
             // and ScreenSize lives in Globals. If Globals were mis-bound (it shared a SPIR-V binding
             // with Fog before BUG-012), that divisor is garbage and the "line" becomes a huge quad -
-            // which is exactly what BUG-002 describes. So: draw a 2px line and check that a pixel
-            // well away from it is untouched.
+            // which is exactly what BUG-002 describes.
+            //
+            // The pipeline also has to be drawn as triangles rather than as line primitives: the
+            // shader offsets by gl_VertexID % 2, so four vertices make one segment's quad and
+            // SECONDARY_BLOCK_OUTLINE - the block outline itself - is a LINES pipeline.
             RenderPipeline lines = (RenderPipeline) Class
                     .forName("net.minecraft.client.renderer.RenderPipelines")
                     .getField("LINES").get(null);
@@ -134,6 +137,18 @@ public final class RenderCheck {
             check("lines pipeline compiled and registered", device.pipelineFor(lines) != null, "");
             if (device.pipelineFor(lines) != null) {
                 linesCheck(device, lines);
+            }
+
+            // Sky and sunrise/sunset. Metal has no triangle fan primitive, and the sky disc is a
+            // single non-indexed fan draw, so this is where a topology mapping that is merely
+            // "closest" shows up as a shape rather than as an error.
+            RenderPipeline sky = (RenderPipeline) Class
+                    .forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("SKY").get(null);
+            device.precompilePipeline(sky, source);
+            check("sky pipeline compiled and registered", device.pipelineFor(sky) != null, "");
+            if (device.pipelineFor(sky) != null) {
+                fanCheck(device, sky);
             }
 
             // Sprite and text rendering both come down to "does texCoord0 sample the texel the
@@ -465,14 +480,26 @@ public final class RenderCheck {
     }
 
     /**
-     * Draw one thin line across the middle of the target and check it stays thin.
+     * Draw one line segment the way Minecraft does and check that it lands as a filled band.
      *
-     * <p>Two pixels wide, so the centre row must be lit and a row well above it must not be. A huge
-     * offset - the BUG-002 symptom - lights the far pixel too.
+     * <p>{@code rendertype_lines} is <em>not</em> a line primitive. {@code rendertype_lines.vsh}
+     * takes {@code Position} as the segment start and {@code Position + Normal} as its end, then
+     * offsets the vertex perpendicular to the segment by {@code +/- LineWidth / ScreenSize} according
+     * to {@code gl_VertexID % 2}. Four vertices therefore make one segment's quad, and Minecraft's own
+     * {@code PrimitiveTopology.LINES} reports {@code indexCount(4) == 6} - the quad index pattern,
+     * the same as {@code QUADS} - which is why the Vulkan backend maps it to a triangle list.
+     *
+     * <p>Drawing that as {@code MTLPrimitiveTypeLine} instead pairs the indices: (0,1) and (2,3)
+     * become two short perpendicular ticks at the segment's ends and (2,0) becomes the band's top
+     * edge, so the inside of the band is empty. The three sample points are chosen so that the wrong
+     * topology fails, and so that a giant band - BUG-002's other candidate, from a mis-bound
+     * {@code ScreenSize} in {@code Globals} - fails too.
      */
     private static void linesCheck(MetalDevice device, RenderPipeline pipeline) {
         GpuBuffer vertices = device.createBuffer(() -> "line vertices",
                 GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, lineVertices());
+        GpuBuffer indices = device.createBuffer(() -> "line indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, lineIndexBytes());
         Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
         uniforms.put("Projection", device.createBuffer(() -> "Projection",
                 GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
@@ -484,37 +511,65 @@ public final class RenderCheck {
         uniforms.put("Fog", device.createBuffer(() -> "Fog",
                 GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, fog()));
 
-        // A 64x64 target with ScreenSize 64 and LineWidth 2 gives a 2px line, so the centre row is
-        // lit and 8px away is clear.
-        int[] rows = renderLines(device, pipeline, vertices, uniforms);
-        int centreRow = rows[0];
-        int farRow = rows[1];
-        check("thin line lights the centre row -> R" + centreRow, centreRow > 200, "");
-        check("thin line does not cover a row 8px away -> R" + farRow + " (a giant quad would)",
-                farRow < 60, "");
+        // ScreenSize is 64 and LineWidth is 16, so the band is 16px tall: rows 24..40 of 64. The
+        // centre row is inside it, a row 4px out is still inside, and a row 12px out is not.
+        int[] rows = renderLines(device, pipeline, vertices, indices, uniforms);
+        check("line band covers a row 4px above its centre -> R" + rows[0]
+                        + " (line primitives would draw only the two edges and a diagonal)",
+                rows[0] > 200, "");
+        check("line band covers a row 4px below its centre -> R" + rows[1], rows[1] > 200, "");
+        check("line band does not reach a row 12px outside it -> R" + rows[2]
+                        + " (a giant band would)", rows[2] < 60, "");
+
+        indices.close();
         vertices.close();
         for (GpuBuffer buffer : uniforms.values()) {
             buffer.close();
         }
     }
 
-    /** Two 24-byte line vertices: Position RGB32_FLOAT, Color RGBA8_UNORM, Normal RGBA8_SNORM, LineWidth F32. */
+    /**
+     * Four 24-byte line vertices making one segment: Position RGB32_FLOAT, Color RGBA8_UNORM,
+     * Normal RGBA8_SNORM, LineWidth F32.
+     *
+     * <p>Start, start, end, end. The shader takes the segment's direction from
+     * {@code Position + Normal} and only the normalised direction matters, so repeating each endpoint
+     * and carrying the segment vector in {@code Normal} is what one segment's four vertices are.
+     */
     private static ByteBuffer lineVertices() {
-        ByteBuffer buffer = ByteBuffer.allocateDirect(2 * 24).order(ByteOrder.nativeOrder());
-        // Start, then end. Normal carries the direction, which is how the shader finds the end point.
-        for (float x : new float[]{-0.8f, 0.8f}) {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 24).order(ByteOrder.nativeOrder());
+        for (float x : new float[]{-0.8f, -0.8f, 0.8f, 0.8f}) {
             buffer.putFloat(x).putFloat(0.0f).putFloat(1.0f);        // Position, reversed-Z near plane
             buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
             buffer.put((byte) 127).put((byte) 0).put((byte) 0).put((byte) 0);   // Normal (1, 0, 0)
-            buffer.putFloat(2.0f);                                   // LineWidth in pixels
+            buffer.putFloat(16.0f);                                  // LineWidth in pixels
         }
         buffer.flip();
         return buffer;
     }
 
-    /** Render the line and return the centre row and a row 8px above it, as red channel values. */
+    /**
+     * The six indices Minecraft uses for one line segment: its {@code sharedSequentialLines}
+     * generator emits {@code i, i+1, i+2, i+3, i+2, i+1}.
+     *
+     * <p>It is not the quad pattern. {@code BufferBuilder} duplicates every vertex written to a
+     * {@code LINES} buffer, so the four vertices of a segment are start, start, end, end, and with
+     * the shader's alternating offset the corners land in the zig-zag order top-left, bottom-left,
+     * top-right, bottom-right. The quad pattern {@code 0,1,2,0,2,3} over that order leaves a
+     * V-shaped hole through the middle of the band; {@code 0,1,2,3,2,1} tiles it.
+     */
+    private static ByteBuffer lineIndexBytes() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(6 * 4).order(ByteOrder.nativeOrder());
+        for (int index : new int[]{0, 1, 2, 3, 2, 1}) {
+            buffer.putInt(index);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /** Render the band and return rows 4px above and below the centre and 12px outside it, as red. */
     private static int[] renderLines(MetalDevice device, RenderPipeline pipeline, GpuBuffer vertices,
-                                     Map<String, GpuBuffer> uniforms) {
+                                     GpuBuffer indices, Map<String, GpuBuffer> uniforms) {
         GpuTexture color = device.createTexture("lines", GpuTexture.USAGE_RENDER_ATTACHMENT
                 | GpuTexture.USAGE_COPY_SRC, pipeline.getColorTargetState().format(), WIDTH, HEIGHT, 1, 1);
         GpuTextureView colorView = device.createTextureView(color);
@@ -535,19 +590,123 @@ public final class RenderCheck {
             pass.setUniform(uniform.getKey(), uniform.getValue().slice());
         }
         pass.setVertexBuffer(0, vertices.slice());
-        pass.draw(2, 1, 0, 0);
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6, 1, 0, 0, 0);
         encoder.submitRenderPass();
 
         encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
         ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
-        int centreRow = pixels.get(((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4) & 0xFF;
-        int farRow = pixels.get(((HEIGHT / 2 - 8) * WIDTH + (WIDTH / 2)) * 4) & 0xFF;
+        int aboveRow = red(pixels, WIDTH / 2, HEIGHT / 2 - 4);
+        int belowRow = red(pixels, WIDTH / 2, HEIGHT / 2 + 4);
+        int outsideRow = red(pixels, WIDTH / 2, HEIGHT / 2 - 12);
         readback.close();
         depthView.close();
         depth.close();
         colorView.close();
         color.close();
-        return new int[]{centreRow, farRow};
+        return new int[]{aboveRow, belowRow, outsideRow};
+    }
+
+    /**
+     * Draw a triangle fan the way the sky does, and check it fills the disc.
+     *
+     * <p>Metal has no fan primitive, so the backend expands one into an indexed triangle list. A
+     * triangle <em>list</em> over the same ten vertices - which is what a plain topology mapping
+     * gives - draws (0,1,2), (3,4,5) and (6,7,8) instead of the eight wedges around the centre, so
+     * the middle of the disc comes out empty. Sampling the centre and eight points around it
+     * separates the two. {@code SkyRenderer.renderSkyDisc} makes exactly this call, one non-indexed
+     * {@code draw(10, 1, 0, 0)} of a centre plus nine rim vertices.
+     */
+    private static void fanCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuBuffer vertices = device.createBuffer(() -> "fan vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, fanVertices());
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
+        uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f})));
+        // FogColor's alpha is 0, and sky.fsh colours the fragment with ColorModulator, so this both
+        // keeps the output white and checks the Fog block is bound.
+        uniforms.put("Fog", device.createBuffer(() -> "Fog",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                fog(new float[]{0f, 0f, 0f, 0f}, 0f, 1000f, 0f, 1000f)));
+
+        ByteBuffer pixels = renderFanPixels(device, pipeline, vertices, 10, uniforms);
+        int centre = red(pixels, WIDTH / 2, HEIGHT / 2);
+        check("triangle fan covers its centre -> R" + centre
+                        + " (a triangle list over the same 10 vertices leaves it empty)",
+                centre > 200, "");
+
+        int lit = 0;
+        for (int i = 0; i < 8; i++) {
+            double angle = Math.toRadians(i * 45.0);
+            int x = WIDTH / 2 + (int) Math.round(16 * Math.cos(angle));
+            int y = HEIGHT / 2 - (int) Math.round(16 * Math.sin(angle));
+            if (red(pixels, x, y) > 200) {
+                lit++;
+            }
+        }
+        check("triangle fan covers all 8 sampled points around the centre -> " + lit + "/8", lit == 8, "");
+
+        int outside = red(pixels, WIDTH - 4, HEIGHT - 4);
+        check("nothing is drawn outside the fan's radius -> R" + outside, outside < 60, "");
+
+        vertices.close();
+        for (GpuBuffer buffer : uniforms.values()) {
+            buffer.close();
+        }
+    }
+
+    /**
+     * Ten 12-byte sky vertices: a centre and nine rim points spanning the full circle, so the last
+     * rim point repeats the first and the fan closes into a disc of 8 wedges. That is the shape
+     * {@code SkyRenderer.renderSkyDisc} builds - it steps from -180 to +180 inclusive, where the two
+     * ends are the same point - and a fan that stops one wedge short does not fill the disc.
+     */
+    private static ByteBuffer fanVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(10 * 12).order(ByteOrder.nativeOrder());
+        buffer.putFloat(0.0f).putFloat(0.0f).putFloat(1.0f);          // centre, reversed-Z near plane
+        for (int i = 0; i < 9; i++) {
+            double angle = Math.toRadians(i * 45.0);
+            buffer.putFloat((float) (0.8 * Math.cos(angle)));
+            buffer.putFloat((float) (0.8 * Math.sin(angle)));
+            buffer.putFloat(1.0f);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /** Render one non-indexed draw and return the whole colour buffer, for checks that sample widely. */
+    private static ByteBuffer renderFanPixels(MetalDevice device, RenderPipeline pipeline,
+                                              GpuBuffer vertices, int vertexCount,
+                                              Map<String, GpuBuffer> uniforms) {
+        GpuTexture color = device.createTexture("fan", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, pipeline.getColorTargetState().format(), WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "fan")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        for (Map.Entry<String, GpuBuffer> uniform : uniforms.entrySet()) {
+            pass.setUniform(uniform.getKey(), uniform.getValue().slice());
+        }
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.draw(vertexCount, 1, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+        colorView.close();
+        color.close();
+        return ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+    }
+
+    /** The red channel of one pixel of a readback buffer. */
+    private static int red(ByteBuffer pixels, int x, int y) {
+        return pixels.get((y * WIDTH + x) * 4) & 0xFF;
     }
 
     /**

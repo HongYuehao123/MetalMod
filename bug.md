@@ -206,7 +206,99 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
-## BUG-013 — Texel buffers had no binding path (vanilla clouds)
+## BUG-015 — `TRIANGLE_FAN` had no Metal primitive, so the sky disc was truncated
+
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Severity:** high for the sky; the sky disc is a single fan draw.
+**Found by:** taking a census of every vanilla pipeline's `PrimitiveTopology`.
+
+### Cause
+
+`MetalFormat.mtlTopology` mapped `PrimitiveTopology.TRIANGLE_FAN` to `MTLPrimitiveTypeTriangle`. That
+is the closest Metal has, but it is not the same shape: a triangle **list** over ten vertices draws
+`(0,1,2)`, `(3,4,5)` and `(6,7,8)`, while a **fan** draws the eight wedges `(0,1,2)`, `(0,2,3)`, …,
+`(0,8,9)`.
+
+`SkyRenderer.renderSkyDisc` makes exactly one non-indexed call:
+
+```java
+pass.setPipeline(RenderPipelines.SKY);
+pass.setVertexBuffer(0, this.topSkyBuffer.slice());
+pass.draw(10, 1, 0, 0);
+```
+
+and `buildSkyDisc` fills those ten vertices with a centre plus nine rim points stepping `-180` to
+`+180` - so the fan is the disc, and a triangle list over it is three stray triangles. `SKY` and
+`SUNRISE_SUNSET` both use this topology. This is probably why the sky "looked right" in the original
+report: with the disc missing, the fog/clear colour behind it is still sky-coloured.
+
+### Fix
+
+Metal has no fan primitive at all, so the fan is expanded into an **indexed triangle list**. A fan
+over `v0..vN-1` is the triangles `(v0, vi, vi+1)` for `i` in `1..N-2`, which is exactly the prefix of
+the index sequence `0,1,2, 0,2,3, 0,3,4, …`. One buffer holding that whole pattern therefore serves
+every vertex count - the draw just takes the first `3*(N-2)` indices - and the fan's own start vertex
+becomes Metal's `baseVertex`, so the pattern never has to be rewritten for a particular draw.
+
+That last part matters. Every draw in a command buffer reads memory at execution time, not at encode
+time, so a shared index buffer rewritten per draw would give every fan the pattern written last.
+`mtlTopology` now returns a negative sentinel for `TRIANGLE_FAN`, and
+`mmm_render_pass_draw_fan` draws from the cached, prefix-stable buffer. An *indexed* fan cannot be
+expanded that way - its vertex order lives in the index buffer - so that case is reported in the
+telemetry as `indexedFans=` rather than drawn plausibly-but-wrongly. No vanilla pipeline does it.
+
+### Verified
+
+`tools/render_check` now draws a ten-vertex fan through the real `SKY` pipeline - a centre plus nine
+rim points spanning the full circle, which is the shape `buildSkyDisc` produces - and asserts that the
+centre and all eight sampled points around it are covered while the corner is not. Reverting the native
+expansion to the old triangle-list behaviour fails it: the centre goes to `R0` and only **1 of 8**
+sample points is covered, which is the truncation described above.
+
+---
+
+## BUG-014 — `LINES` was drawn as line primitives instead of triangles
+
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Severity:** high; this is the block-selection outline of BUG-002, plus chunk borders and leash lines.
+**Found by:** comparing every `PrimitiveTopology` mapping against the Vulkan backend's.
+
+### Cause
+
+`MetalFormat.mtlTopology` mapped `PrimitiveTopology.LINES` to `MTLPrimitiveTypeLine`, which reads
+correctly and is wrong. Minecraft's `LINES` is not a line primitive:
+
+- `rendertype_lines.vsh` offsets each vertex perpendicular to the segment by
+  `+/- LineWidth / ScreenSize`, chosen by {@code gl_VertexID % 2}. Four vertices therefore make one
+  segment's quad, and drawing them as lines pairs the indices into short perpendicular ticks.
+  `SECONDARY_BLOCK_OUTLINE` - the block outline itself - is a `LINES` pipeline.
+- `PrimitiveTopology.LINES` reports `indexCount(4) == 6`; `QUADS` is the only other topology that
+  does. `BufferBuilder` also duplicates every vertex written to a `LINES` buffer, so the four
+  vertices of a segment are start, start, end, end.
+- `VulkanConst.toVk(PrimitiveTopology.LINES)` is `VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST`.
+
+Real line primitives are `DEBUG_LINES` and `DEBUG_LINE_STRIP`, which keep their own mappings.
+
+### Fix
+
+`LINES` now maps to `MTLPrimitiveTypeTriangle`. `DEBUG_LINES` and `DEBUG_LINE_STRIP` are unchanged.
+
+### Verified
+
+The old render check drew two vertices with no index buffer and read the centre row, which passed
+under either mapping because the two-vertex case happens to produce a line through the centre - so it
+could not detect this. It now draws MC's real geometry (four vertices, six indices) and samples rows
+4px above and below the centre. Reverting the mapping fails both: they come back `R0`, because line
+primitives draw only the two vertical edges and one diagonal of the quad.
+
+One trap is worth recording, because it cost a detour. The index pattern matters and it is **not** the
+quad pattern: `BufferBuilder`'s vertex duplication puts the four corners in the zig-zag order
+top-left, bottom-left, top-right, bottom-right, and `RenderSystem`'s `sharedSequentialLines` generator
+emits `i, i+1, i+2, i+3, i+2, i+1` for it. The quad pattern `0,1,2,0,2,3` over that order leaves a
+V-shaped hole through the middle of the band, which is what the check reported until it used MC's own
+pattern.
+
+---
 
 **Status:** **FIXED** (Phase 5) — pending in-game confirmation.
 **Severity:** clouds rendered with undefined data; also a Sodium prerequisite.

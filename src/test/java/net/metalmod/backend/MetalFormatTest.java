@@ -193,15 +193,27 @@ public final class MetalFormatTest {
         }
     }
 
-    /** MTLPrimitiveType: Point=0, Line=1, LineStrip=2, Triangle=3, TriangleStrip=4. */
+    /**
+     * MTLPrimitiveType: Point=0, Line=1, LineStrip=2, Triangle=3, TriangleStrip=4.
+     *
+     * <p>{@code LINES} is Triangle, not Line, and {@code TRIANGLE_FAN} has no Metal primitive at all.
+     * Both were wrong here first, which is why this test now says how they were settled rather than
+     * just naming the values: Minecraft's own {@code PrimitiveTopology} reports
+     * {@code indexCount(4) == 6} for {@code LINES} - the same 4-vertices-to-6-indices quad pattern as
+     * {@code QUADS} - and {@code VulkanConst.toVk(LINES)} is
+     * {@code VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST}. {@code rendertype_lines.vsh} confirms it in the
+     * shader: it picks {@code +/- lineOffset} from {@code gl_VertexID % 2}, so four vertices make one
+     * segment's quad. {@code TRIANGLE_FAN} is what {@code SkyRenderer.renderSkyDisc} uses for its
+     * single non-indexed {@code draw(10, 1, 0, 0)}, so it must be expanded rather than truncated.
+     */
     private static void testPrimitiveTopologies() {
         Object[][] expected = {
                 {PrimitiveTopology.POINTS, 0},
-                {PrimitiveTopology.LINES, 1},
+                {PrimitiveTopology.LINES, 3},
                 {PrimitiveTopology.DEBUG_LINES, 1},
                 {PrimitiveTopology.DEBUG_LINE_STRIP, 2},
                 {PrimitiveTopology.TRIANGLES, 3},
-                {PrimitiveTopology.TRIANGLE_FAN, 3},
+                {PrimitiveTopology.TRIANGLE_FAN, MetalFormat.TOPOLOGY_TRIANGLE_FAN},
                 {PrimitiveTopology.QUADS, 3},
                 {PrimitiveTopology.TRIANGLE_STRIP, 4},
         };

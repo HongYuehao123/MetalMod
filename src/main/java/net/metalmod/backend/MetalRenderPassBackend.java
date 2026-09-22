@@ -239,7 +239,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         applyBindings(true);
-        MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
+        MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
                 this.indexType, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
@@ -251,7 +251,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         for (int i = 0; i < firstIndices.remaining(); i++) {
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
+            MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
                     this.indexType, indexCount, instanceCount,
                     firstIndices.get(firstIndices.position() + i), 0, firstInstance);
         }
@@ -266,7 +266,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         int draws = Math.min(firstIndices.remaining(), Math.min(indexCounts.remaining(), vertexOffsets.remaining()));
         for (int i = 0; i < draws; i++) {
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
+            MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
                     this.indexType, indexCounts.get(indexCounts.position() + i), instanceCount,
                     (int) firstIndices.get(firstIndices.position() + i),
                     vertexOffsets.get(vertexOffsets.position() + i), 0);
@@ -297,7 +297,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             }
             // Safe to diagnose here now that the consumer has supplied its uniforms.
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
+            MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
                     this.indexType, draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
     }
@@ -336,8 +336,32 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         applyBindings(true);
+        if (this.topology == MetalFormat.TOPOLOGY_TRIANGLE_FAN) {
+            // Metal has no triangle fan. The native side expands it into an indexed triangle list
+            // from a cached pattern that is prefix-stable, so one buffer serves every vertex count
+            // without ever being rewritten between draws. Vanilla fans are the sky disc (10
+            // vertices, 1 non-indexed draw) and sunrise/sunset.
+            MetalNative.renderPassDrawFan(this.encoder, firstVertex, vertexCount, instanceCount,
+                    firstInstance);
+            return;
+        }
         MetalNative.renderPassDraw(this.encoder, this.topology, firstVertex, vertexCount,
                 instanceCount, firstInstance);
+    }
+
+    /**
+     * The {@code MTLPrimitiveType} to use for indexed draws, with the fan sentinel resolved.
+     *
+     * <p>An <em>indexed</em> fan cannot be expanded the way a non-indexed one is, because its vertex
+     * order lives in the index buffer. No vanilla pipeline indexed-draws a fan, so this resolves to a
+     * triangle list and reports it once rather than reading a negative primitive type.
+     */
+    private int indexedTopology() {
+        if (this.topology == MetalFormat.TOPOLOGY_TRIANGLE_FAN) {
+            MetalDevice.reportIndexedFan(this.pipelineName);
+            return 3;
+        }
+        return this.topology;
     }
 
     @Override

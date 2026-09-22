@@ -279,14 +279,22 @@ modern versions, so it should follow, but its terrain path is the performance-cr
 dedicated testing. Iris is the shaderpack loader and is a Phase 7 dependency.
 
 **Progress (in flight).** Phase 5 began with the draw-path defects rather than the visual ones,
-because they are what make a visual symptom fixable. Thirteen bugs were found and fixed
-(BUG-004 … BUG-013; see `bug.md`), all of them in the *values* rather than the plumbing: per-draw
-chunk uniforms never uploaded, uniform blocks keyed by instance name, five wrong `MTLBlendFactor`
-values, swapped sampler address modes, a hardcoded mip filter, arena sub-buffers binding the parent's
-offset 0, sub-rectangle clears wiping a whole attachment, a no-op `GpuFence`, duplicate SPIR-V
-bindings that shared a Metal slot, and unsupported texel buffers. The last one is worth noting because
-`R8_SINT` buffer textures make Metal abort the process outright, so it had to be re-expressed as a 2D
-`R8Sint` texture with `spvTexelBufferCoord`.
+because they are what make a visual symptom fixable. Fifteen bugs were found and fixed
+(BUG-004 … BUG-015; see `bug.md`). Most were in the *values* rather than the plumbing: per-draw chunk
+uniforms never uploaded, uniform blocks keyed by instance name, five wrong `MTLBlendFactor` values,
+swapped sampler address modes, a hardcoded mip filter, arena sub-buffers binding the parent's offset
+0, sub-rectangle clears wiping a whole attachment, a no-op `GpuFence`, duplicate SPIR-V bindings that
+shared a Metal slot, and unsupported texel buffers. The last one is worth noting because `R8_SINT`
+buffer textures make Metal abort the process outright, so it had to be re-expressed as a 2D `R8Sint`
+texture with `spvTexelBufferCoord`.
+
+The other two came from a different method: **census the pipeline space, then compare each mapping
+against the engine's own Vulkan backend.** All 87 pipelines were tabulated by topology, blend
+function, colour format, depth state and vertex stride, which showed that no vanilla pipeline uses
+more than one colour target (so the single-attachment assumption is safe for vanilla) and that
+`LINES` and `TRIANGLE_FAN` were mapped to Metal primitives that merely look close - `LINES` is quad
+geometry and `TRIANGLE_FAN` has no Metal equivalent at all. Reading the code would not have found
+either; `VulkanConst.toVk` and `PrimitiveTopology.indexCount` said so outright.
 
 Verification moved from "it compiles" to "it renders the right pixel", which is what caught that
 three of those fixes were incomplete. Five offline gates now cover the phase:
@@ -296,7 +304,7 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 | `scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `scripts/run_smoke.sh` | native device/pipeline/draw/surface, 11 sections |
 | `tools/shader_inventory/run.sh` | `total=87 ok=87 failed=0`, no diagnostics from any pipeline |
-| `tools/render_check/run.sh` | 26 pixel assertions over 11 mechanisms, real vanilla pipelines |
+| `tools/render_check/run.sh` | 31 pixel assertions over 13 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 
 What remains for Phase 5 is the part that needs a running game: BUG-001 (missing GUI sprites),
@@ -385,7 +393,7 @@ native Metal backend, since MoltenVK cannot express it at all.
 
 **Phase 5 — vanilla render parity, in progress.** Phases 0–4 are done, and Phase 4's exit criterion
 is met: all 87 vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`. Phase 5's
-thirteen draw-path fixes (BUG-004 … BUG-013) are in and all four offline suites are green — see the
+fifteen draw-path fixes (BUG-004 … BUG-015) are in and all four offline suites are green — see the
 progress note under Phase 5 above.
 
 The next step is **an in-game run on a current build**, not more static analysis. BUG-001, BUG-002
@@ -393,7 +401,7 @@ and BUG-003 are runtime observations from a build predating most of these fixes,
 hypothesis for each is that it is already fixed: the harness now reproduces every mechanism they
 implicate — uniform-block slots, atlas samplers, region clears, the screen-space line expansion, the
 entity vertex format — and each renders correctly. What the run has to settle is which of them
-survive, and it also confirms the thirteen fixes, which have no in-game evidence yet.
+survive, and it also confirms the fifteen fixes, which have no in-game evidence yet.
 
 Install the current jar and re-check:
 

@@ -742,6 +742,77 @@ void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart, 
                     baseInstance:(NSUInteger)MAX(0, firstInstance)];
 }
 
+// Metal has no triangle fan, but Minecraft has one: the sky disc is a single non-indexed
+// drawPrimitives of 10 vertices (a centre plus nine rim points), and sunrise/sunset is another.
+// Drawn as a triangle *list* that becomes three stray triangles instead of a disc.
+//
+// A fan over v0..vN-1 is the triangles (v0, vi, vi+1) for i in 1..N-2, which is exactly the prefix
+// of the index sequence 0,1,2, 0,2,3, 0,3,4, ... So one buffer holding that whole pattern serves
+// every vertex count - the draw simply takes the first 3*(N-2) indices - and the fan's own start
+// vertex becomes Metal's baseVertex, so the pattern never has to be rewritten for a particular
+// draw. That matters because every draw in a command buffer reads memory at execution time, not at
+// encode time, so a shared buffer that were rewritten per draw would give every fan the last
+// pattern written.
+//
+// UInt16 indices cover fans of up to 65536 vertices, far beyond anything Minecraft draws. A longer
+// fan falls back to the triangle list and is reported, rather than silently reading out of bounds.
+static id<MTLBuffer> g_FanIndexBuffer = nil;
+static NSUInteger g_FanIndexCapacity = 0;   // in indices
+
+static id<MTLBuffer> mmm_fan_index_buffer(NSUInteger triangles) {
+    if (g_FanIndexBuffer != nil && g_FanIndexCapacity >= triangles * 3) {
+        return g_FanIndexBuffer;
+    }
+    if (g_Device == nil) return nil;
+
+    // Grow geometrically, so the pattern is generated a bounded number of times.
+    NSUInteger capacity = 4096;
+    while (capacity < triangles * 3) {
+        capacity *= 4;
+    }
+    // Indices are UInt16, and the largest index is trianglesInCapacity + 1.
+    if (capacity / 3 + 2 > 65535u) return nil;
+
+    uint16_t* pattern = (uint16_t*)malloc(capacity * sizeof(uint16_t));
+    if (pattern == NULL) return nil;
+    NSUInteger trianglesInCapacity = capacity / 3;
+    for (NSUInteger triangle = 0; triangle < trianglesInCapacity; triangle++) {
+        pattern[triangle * 3 + 0] = 0;
+        pattern[triangle * 3 + 1] = (uint16_t)(triangle + 1);
+        pattern[triangle * 3 + 2] = (uint16_t)(triangle + 2);
+    }
+    id<MTLBuffer> buffer = [g_Device newBufferWithBytes:pattern
+                                                 length:capacity * sizeof(uint16_t)
+                                                options:MTLResourceStorageModeShared];
+    free(pattern);
+    if (buffer == nil) return nil;
+
+    // Replacing the cache is safe: a command buffer retains the resources its encoders reference
+    // until it completes, so the buffer a previous frame is still reading stays alive.
+    g_FanIndexBuffer = buffer;
+    g_FanIndexCapacity = capacity;
+    return buffer;
+}
+
+void mmm_render_pass_draw_fan(void* encoder, int32_t vertexStart, int32_t vertexCount,
+                              int32_t instanceCount, int32_t firstInstance) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    // A fan of fewer than three vertices has no triangles in it at all.
+    if (vertexCount < 3) return;
+
+    id<MTLBuffer> indices = mmm_fan_index_buffer((NSUInteger)(vertexCount - 2));
+    if (indices == nil) return;
+    [metalEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                             indexCount:(NSUInteger)((vertexCount - 2) * 3)
+                              indexType:MTLIndexTypeUInt16
+                            indexBuffer:indices
+                      indexBufferOffset:0
+                          instanceCount:(NSUInteger)MAX(1, instanceCount)
+                             baseVertex:(NSInteger)MAX(0, vertexStart)
+                           baseInstance:(NSUInteger)MAX(0, firstInstance)];
+}
+
 void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBuffer,
                                   int64_t indexBufferOffset, int32_t indexType, int32_t indexCount,
                                   int32_t instanceCount, int32_t firstIndex, int32_t baseVertex,
