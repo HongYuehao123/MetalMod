@@ -149,6 +149,16 @@ terrain are fixed:
   GL order: SourceAlphaSaturated is 10 and the constant factors are 11..14. No vanilla pipeline uses
   those five, but a shaderpack blending with a constant alpha would have blended wrongly and
   silently.
+- **BUG-013 — texel buffers (fixed).** `CloudFaces` is an `isamplerBuffer` that the engine binds with
+  `setUniform(name, GpuBuffer)`, which MetalMod had no path for, so vanilla clouds texel-fetched
+  undefined data. Measured twice rather than guessed: the cloud buffer is 258 bytes at one byte per
+  texel, and the natural fix — an `MTLTextureTypeTextureBuffer` — *aborts* Metal for `R8_SINT`. The
+  working path is the one SPIRV-Cross already emits (`texture2d<int>` + `spvTexelBufferCoord`), so
+  the bytes are presented as a 2D texture, cached per backing buffer.
+- **The shader binding layer now reports clean.** With BUG-012 and BUG-013 fixed, the inventory
+  compiles all 87 pipelines and reports **no diagnostics at all** — no slot collisions, no
+  reflection/MSL mismatches for uniform buffers, textures or vertex attributes, and no binding-kind
+  mismatches. That is the first time the full pipeline set has been clean.
 - **BUG-012 — uniform blocks shared Metal slots (fixed, live for vanilla).** Each resource's Metal
   slot came from its SPIR-V `binding`, but glslang emits duplicate bindings: every shader importing
   `fog.glsl` gets `Fog` at binding 0 alongside another block also at 0, so both landed in MSL buffer
