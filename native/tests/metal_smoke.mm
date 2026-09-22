@@ -220,6 +220,112 @@ static void test_resources(void) {
     mmm_device_release(device);
 }
 
+// BUG-008: mmm_sampler_create used to hardcode MTLSamplerMipFilterNotMipmapped, so no sampler ever
+// read a mip level. Prove the chosen filter is honoured by sampling an explicit LOD of 1 from a
+// texture whose level 0 is red and level 1 is blue: which colour comes back names the level used.
+static int draw_at_lod1(void* device, void* queue, void* pipeline, void* texture,
+                        void* vertexBuffer, int mipFilter, unsigned char* out) {
+    void* sampler = mmm_sampler_create(device, 0, 0, 0 /*nearest*/, 0 /*nearest*/, mipFilter,
+                                       1, false, 0.0);
+    if (sampler == NULL) return -1;
+    const int W = 32, H = 32;
+    void* target = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, 1u | 4u);
+    void* cb = mmm_command_buffer_create(queue);
+    void* colors[1] = { target };
+    int32_t clears[1] = { 1 };
+    float clear[4] = { 0.0f, 1.0f, 0.0f, 1.0f };  // green, so "nothing drawn" is distinguishable
+    void* encoder = mmm_render_pass_begin(cb, 1, colors, clears, clear, NULL, 0, 0.0, W, H);
+    if (encoder != NULL) {
+        mmm_render_pass_set_pipeline(encoder, pipeline);
+        mmm_render_pass_set_vertex_buffer(encoder, vertexBuffer, 0, 0);
+        mmm_render_pass_set_fragment_texture(encoder, texture, 0);
+        mmm_render_pass_set_fragment_sampler(encoder, sampler, 0);
+        mmm_render_pass_draw(encoder, 3, 0, 3, 1, 0);
+        mmm_render_pass_end(encoder);
+    }
+    mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb);
+
+    unsigned char pixels[32 * 32 * 4];
+    int rc = mmm_texture_read_region(target, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+    if (out != NULL && rc == 0) {
+        unsigned char* center = pixels + ((H / 2) * W + (W / 2)) * 4;
+        out[0] = center[0]; out[1] = center[1]; out[2] = center[2]; out[3] = center[3];
+    }
+    mmm_command_buffer_release(cb);
+    mmm_texture_release(target);
+    mmm_sampler_release(sampler);
+    return rc;
+}
+
+static void test_mip_filter(void) {
+    printf("\n== mip filter (sampler must honour the requested mip level) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const char* msl =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct VOut { float4 pos [[position]]; };\n"
+        "vertex VOut vmain(uint vid [[vertex_id]], const device float2* positions [[buffer(0)]]) {\n"
+        "    VOut o; o.pos = float4(positions[vid], 0.0, 1.0); return o;\n"
+        "}\n"
+        "fragment float4 fmain(texture2d<float> tex [[texture(0)]], sampler s [[sampler(0)]]) {\n"
+        "    return tex.sample(s, float2(0.5, 0.5), level(1.0));\n"
+        "}\n";
+    void* library = mmm_library_create(device, msl, strlen(msl));
+    check("mip test MSL library compiles", library != NULL, "");
+    void* pipeline = mmm_render_pipeline_create(device, library, "vmain", library, "fmain",
+            70, 15, 0, 0, 0, 0, 0, 0, 0,
+            0, 1, 0,
+            3, 1, 0, 0, 0.0f, 0.0f,
+            NULL, 0, NULL, 0);
+    check("mip test pipeline created", pipeline != NULL, "");
+
+    void* texture = mmm_texture_create_full(device, 70, 16, 16, 1, 2 /* two mips */, 2, true, 1u | 4u);
+    check("two-mip texture created", texture != NULL, "");
+    unsigned char red[16 * 16 * 4];
+    unsigned char blue[8 * 8 * 4];
+    for (int i = 0; i < 16 * 16; i++) {
+        red[i * 4 + 0] = 255; red[i * 4 + 1] = 0; red[i * 4 + 2] = 0; red[i * 4 + 3] = 255;
+    }
+    for (int i = 0; i < 8 * 8; i++) {
+        blue[i * 4 + 0] = 0; blue[i * 4 + 1] = 0; blue[i * 4 + 2] = 255; blue[i * 4 + 3] = 255;
+    }
+    mmm_texture_replace_region(texture, 0, 0, 0, 0, 16, 16, red, 16 * 4);
+    mmm_texture_replace_region(texture, 1, 0, 0, 0, 8, 8, blue, 8 * 4);
+
+    void* vertexBuffer = mmm_buffer_create(device, 24);
+    float* positions = (float*)mmm_buffer_contents(vertexBuffer);
+    if (positions != NULL) {
+        positions[0] = -0.8f; positions[1] = -0.8f;
+        positions[2] =  0.8f; positions[3] = -0.8f;
+        positions[4] =  0.0f; positions[5] =  0.8f;
+    }
+
+    unsigned char linear[4] = { 0, 0, 0, 0 };
+    unsigned char notMipmapped[4] = { 0, 0, 0, 0 };
+    // MTLSamplerMipFilterLinear = 2, MTLSamplerMipFilterNotMipmapped = 0.
+    int rcLinear = draw_at_lod1(device, queue, pipeline, texture, vertexBuffer, 2, linear);
+    int rcNone = draw_at_lod1(device, queue, pipeline, texture, vertexBuffer, 0, notMipmapped);
+    check("both mip test draws read back", rcLinear == 0 && rcNone == 0, "");
+
+    printf("     mipFilter=Linear       -> R%d G%d B%d\n", linear[0], linear[1], linear[2]);
+    printf("     mipFilter=NotMipmapped -> R%d G%d B%d\n", notMipmapped[0], notMipmapped[1], notMipmapped[2]);
+    check("mipFilter=Linear reads mip level 1 (blue)",
+          linear[2] > 200 && linear[0] < 40, "");
+    check("mipFilter=NotMipmapped is pinned to level 0 (red) - the old hardcoded behaviour",
+          notMipmapped[0] > 200 && notMipmapped[2] < 40, "");
+
+    if (vertexBuffer) mmm_buffer_release(vertexBuffer);
+    mmm_texture_release(texture);
+    mmm_render_pipeline_release(pipeline);
+    mmm_library_release(library);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 // Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
 static void test_draw(void) {
     printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
@@ -304,6 +410,7 @@ int main(void) {
         test_device();
         test_clear_and_readback();
         test_resources();
+        test_mip_filter();
         test_draw();
         test_surface();
     }

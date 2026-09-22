@@ -196,6 +196,20 @@ way, because Metal clamps LOD to the texture's level count.
 **Override for the in-game A/B:** `-Dmetalmod.mipFilter=off` restores the old behaviour; `nearest`
 or `linear` forces a filter. Five assertions cover the selection logic.
 
+### Verified, not assumed
+
+`metalmod_smoke` now proves it rather than reasoning about it. It builds a two-level texture (level 0
+red, level 1 blue), samples a fixed texel at an explicit `level(1.0)`, and reads the result back:
+
+```
+mipFilter=Linear       -> R0 G0 B255     (level 1)
+mipFilter=NotMipmapped -> R255 G0 B0     (level 0)
+```
+
+So the filter parameter really is honoured, and the old hardcoded value really did pin every sample
+to level 0. That also confirms the failure mode was exactly as described, and that a single-level
+texture is unaffected.
+
 ### What to look for in-game
 
 Distant terrain should lose the shimmer it had with level-0 minification; nothing should look newly
