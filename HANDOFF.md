@@ -149,6 +149,13 @@ terrain are fixed:
   GL order: SourceAlphaSaturated is 10 and the constant factors are 11..14. No vanilla pipeline uses
   those five, but a shaderpack blending with a constant alpha would have blended wrongly and
   silently.
+- **BUG-011 — fences were no-ops (fixed, live for vanilla).** `MetalFence.awaitCompletion` returned
+  `true` immediately on the premise that "submission is synchronous"; it is not — MetalMod commits
+  command buffers without waiting. `MappableRingBuffer.rotate` awaits a slot's fence with an unbounded
+  timeout before recycling it, so the CPU could overwrite data the GPU was still reading: a
+  write-after-read that shows up as intermittently corrupted streamed data rather than an error.
+  `MetalFence` now wraps an `MTLSharedEvent` signalled in commit order. This is a strong candidate for
+  any *intermittent* artefacts in BUG-002/003, which a deterministic bug would not explain.
 - **BUG-010 — sub-rectangle clears (fixed, live for vanilla).** The region variant of
   `clearColorAndDepthTextures` dropped its `x/y/width/height` and cleared the whole attachment, because
   a Metal render pass clears a whole attachment and the load action ignores the scissor. Vulkan honours
@@ -169,9 +176,10 @@ terrain are fixed:
 
 Also for Phase 5:
 
-- **Three fixes are now proven against real Metal behaviour**, not just against headers or
-  reasoning: the mip filter (level 1 sampled when asked), the address modes (REPEAT wraps,
-  CLAMP_TO_EDGE clamps), and the region clear (rectangle changed, outside preserved, depth included).
+- **Four fixes are now proven against real Metal behaviour**, not just against headers or reasoning:
+  the mip filter (level 1 sampled when asked), the address modes (REPEAT wraps, CLAMP_TO_EDGE
+  clamps), the region clear (rectangle changed, outside preserved, depth included), and the fence
+  (a clear is only visible after waiting on it).
   All three are in `metalmod_smoke`, which now covers mip selection, address modes, region clears,
   resources, draw and surface.
 - **Enum tables are now pinned rather than trusted.** `MetalFormatTest` asserts every blend factor,
