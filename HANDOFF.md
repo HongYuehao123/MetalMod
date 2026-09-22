@@ -149,6 +149,13 @@ terrain are fixed:
   GL order: SourceAlphaSaturated is 10 and the constant factors are 11..14. No vanilla pipeline uses
   those five, but a shaderpack blending with a constant alpha would have blended wrongly and
   silently.
+- **BUG-010 — sub-rectangle clears (fixed, live for vanilla).** The region variant of
+  `clearColorAndDepthTextures` dropped its `x/y/width/height` and cleared the whole attachment, because
+  a Metal render pass clears a whole attachment and the load action ignores the scissor. Vulkan honours
+  the rect via `VkClearRect`, so the backends disagreed. `GuiItemAtlas` clears one slot-sized rectangle
+  at a time into the GUI item atlas, so every slot already rendered was being erased — a likely
+  contributor to BUG-001. Now cleared with a scissored full-screen triangle (colour *and* depth), with
+  the no-rectangle path keeping the fast load-action clear. Proven by a native test.
 - **BUG-008 — mip filtering (fixed).** `mmm_sampler_create` hardcoded
   `MTLSamplerMipFilterNotMipmapped` behind a `// TEST: force mip 0` comment, so no sampler ever read a
   mip level and `lodMaxClamp` was ignored. The filter now follows the engine's `maxLod`. This is the
@@ -162,6 +169,11 @@ terrain are fixed:
 
 Also for Phase 5:
 
+- **Three fixes are now proven against real Metal behaviour**, not just against headers or
+  reasoning: the mip filter (level 1 sampled when asked), the address modes (REPEAT wraps,
+  CLAMP_TO_EDGE clamps), and the region clear (rectangle changed, outside preserved, depth included).
+  All three are in `metalmod_smoke`, which now covers mip selection, address modes, region clears,
+  resources, draw and surface.
 - **Enum tables are now pinned rather than trusted.** `MetalFormatTest` asserts every blend factor,
   blend op, compare function, primitive topology, sampler address/filter, texture type/usage and the
   write-mask bits against the SDK header values, plus all 55 `GpuFormat` → `MTLPixelFormat` entries
