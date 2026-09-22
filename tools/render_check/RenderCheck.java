@@ -221,6 +221,13 @@ public final class RenderCheck {
             // backend cannot render - the pipeline builds state for one target.
             colorTargetLimitCheck();
 
+            // Post-processing. MC builds these pipelines from POST_PROCESSING_SNIPPET, which declares
+            // no colour target and no vertex format, and precompiles them through the one-argument
+            // precompilePipeline(pipeline) that passes a null ShaderSource. Both are unlike anything
+            // else in the pipeline space, and the whole blur/invert/creeper/spider/outline chain
+            // lives here.
+            postProcessingCheck(device, source);
+
             // Depth bias is encoder state in Metal, not pipeline state, so a biased pipeline must
             // not leave its bias behind for the rest of the pass. Five vanilla pipelines bias.
             depthBiasLeakCheck(device, source);
@@ -1182,6 +1189,103 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Render a post-processing pass the way the engine does: a full-screen triangle from
+     * {@code core/screenquad}, a post fragment shader, and one input sampler.
+     *
+     * <p>Three things here are unlike every other pipeline in the game, and all three are on the menu
+     * blur's path:
+     *
+     * <ul>
+     *   <li>{@code POST_PROCESSING_SNIPPET} declares <b>no colour target</b> - all eight entries are
+     *       null - and {@code PostChain} never overrides one. Metal has nothing like Vulkan's dynamic
+     *       rendering, so the attachment format has to come from somewhere.</li>
+     *   <li>It declares <b>no vertex format</b>, because {@code screenquad.vsh} builds the triangle
+     *       from {@code gl_VertexID}. No vertex buffer is bound at all.</li>
+     *   <li>{@code PostChain} precompiles it with the <b>one-argument</b>
+     *       {@code GpuDevice.precompilePipeline(pipeline)}, which passes a null {@code ShaderSource} -
+     *       so the shader has to be resolved from the source the backend was given earlier.</li>
+     * </ul>
+     *
+     * <p>The pass samples a white 1x1 texture through {@code post/blit} with a red
+     * {@code ColorModulate}, so a working chain gives red and anything else is a failure.
+     *
+     * <p>It is worth recording what was <em>measured</em> here rather than assumed: a null colour
+     * target becomes {@code MTLPixelFormatInvalid}, and Metal accepts such a pipeline state in a pass
+     * whose colour attachment is RGBA8_UNORM - the draw writes the target correctly. There is no
+     * dynamic-rendering equivalent to fall back on, so this looked like it must fail; it does not, and
+     * this check is what says so.
+     */
+    private static void postProcessingCheck(MetalDevice device, ShaderSource source) throws Exception {
+        Object snippet = Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("POST_PROCESSING_SNIPPET").get(null);
+        RenderPipeline post = RenderPipeline.builder((RenderPipeline.Snippet) snippet)
+                .withVertexShader(Identifier.parse("minecraft:core/screenquad"))
+                .withFragmentShader(Identifier.parse("minecraft:post/blit"))
+                .withLocation("post_check/blit")
+                .build();
+
+        // Exactly what PostChain does: the one-argument form, so the source arrives null.
+        device.precompilePipeline(post, null);
+        MetalRenderPipeline compiled = device.pipelineFor(post);
+        check("a post-processing pipeline compiles (no colour target, no vertex format, null source)",
+                compiled != null, "");
+        if (compiled == null) {
+            return;
+        }
+
+        GpuTexture white = device.createTexture("post input", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        solid(white, 255, 255, 255, 255);
+        GpuTextureView whiteView = device.createTextureView(white);
+        GpuTexture target = device.createTexture("post target", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView targetView = device.createTextureView(target);
+        GpuBuffer blitConfig = device.createBuffer(() -> "BlitConfig",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, blitConfig(1.0f, 0.0f, 0.0f, 1.0f));
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "post")
+                .withColorAttachment(targetView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(post);
+        pass.setUniform("BlitConfig", blitConfig.slice());
+        GpuSampler sampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+                FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.empty());
+        pass.bindTexture("InSampler", whiteView, sampler);
+        // No vertex buffer: screenquad.vsh generates the triangle from gl_VertexID alone.
+        pass.draw(3, 1, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        int red = pixels.get(at) & 0xFF;
+        int green = pixels.get(at + 1) & 0xFF;
+        check("the post pass drew its result into the target -> R" + red + " G" + green
+                        + " (the clear is black, so black means nothing was drawn)",
+                red > 200 && green < 60, "");
+
+        readback.close();
+        sampler.close();
+        blitConfig.close();
+        targetView.close();
+        target.close();
+        whiteView.close();
+        white.close();
+    }
+
+    /** std140 BlitConfig: vec4 ColorModulate, post/blit's only uniform. */
+    private static ByteBuffer blitConfig(float r, float g, float b, float a) {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder());
+        buffer.putFloat(r).putFloat(g).putFloat(b).putFloat(a);
+        buffer.flip();
+        return buffer;
     }
 
     /**

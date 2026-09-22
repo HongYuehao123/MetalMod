@@ -46,10 +46,11 @@ public final class MetalDevice implements GpuDeviceBackend {
     private final MetalShaderCompiler shaderCompiler = new MetalShaderCompiler();
     private final Map<RenderPipeline, MetalRenderPipeline> pipelines = new HashMap<>();
 
-    // Pipelines are mostly compiled ahead of time through precompilePipeline(), but the engine also
-    // binds pipelines it never precompiled (the loading-screen 'mojang_logo', for instance). Keep the
-    // most recent ShaderSource - lookups are by identifier, so any one will do - and compile on first
-    // use so those pipelines draw instead of being silently skipped.
+    // The engine supplies a ShaderSource for the static pipelines and none at all for the
+    // post-processing chain, which arrives through the one-argument precompilePipeline(pipeline).
+    // Keep the most recent source - lookups are by identifier, so any one will do - and use it both
+    // for those passes and for the pipelines the engine binds without precompiling at all (the
+    // loading-screen 'mojang_logo', for instance), so they draw instead of being silently skipped.
     private ShaderSource lastShaderSource;
     private final Set<RenderPipeline> failedPipelines =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
@@ -504,12 +505,19 @@ public final class MetalDevice implements GpuDeviceBackend {
             this.lastShaderSource = shaderSource;
         }
         String key = pipeline.getLocation().toString();
-        // The engine announces some pipelines (the blur chain) without a ShaderSource. There is
-        // nothing to compile, and those passes are skipped by the draw path.
-        if (shaderSource == null) {
+        // The one-argument GpuDevice.precompilePipeline(pipeline) - which is what PostChain uses for
+        // every post-processing pass - arrives here with a null source. Resolving it to the source
+        // the engine gave us for the static pipelines is what lets those passes compile eagerly.
+        // Returning a marker instead left them entirely to the lazy draw path, which silently draws
+        // nothing at all until some source has been seen.
+        ShaderSource effective = shaderSource != null ? shaderSource : this.lastShaderSource;
+        if (effective == null) {
+            // Genuinely nothing to compile with. Counted rather than treated as ready, so the
+            // telemetry shows it instead of the pass quietly disappearing.
+            reportResourceFailure("no shader source available yet for " + key);
             return new MetalCompiledPipeline(true);
         }
-        MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline, shaderSource);
+        MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline, effective);
         SHADER_COMPILER_SUMMARY.set(this.shaderCompiler.cacheSummary());
         if (compiled != null) {
             MetalRenderPipeline previous = this.pipelines.put(pipeline, compiled);

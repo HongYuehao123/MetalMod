@@ -206,6 +206,71 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-019 — Post-processing passes were never precompiled, only skipped
+
+**Status:** **FIXED** (Phase 5). The chain rendered anyway through the lazy path; what was missing
+was the compile and the report.
+**Severity:** low as it stood, high if the lazy path ever has no shader source - the whole chain
+disappears without a word.
+**Found by:** following the post-processing chain after the objective called it out, and reading what
+`PostChain` actually calls.
+
+### What the post-processing chain looks like
+
+It is a separate shader space from the 87 `RenderPipeline`s the inventory covers, and it is not
+shaped like anything else in it:
+
+- `PostChain` builds each pass from `RenderPipelines.POST_PROCESSING_SNIPPET`, which declares **no
+  colour target** (all eight entries null) and **no vertex format** (all sixteen null).
+- The vertex shader is `core/screenquad`, which builds a full-screen triangle from `gl_VertexID`
+  alone - no vertex buffer is bound for the draw.
+- Each pass is precompiled through the **one-argument** `GpuDevice.precompilePipeline(pipeline)`,
+  which passes a null `ShaderSource` straight through to the backend.
+- The blur is six such passes (`box_blur` ping-ponging between `swap` and `minecraft:main`), and the
+  same space holds `invert`, `creeper`, `spider`, `entity_outline` and `transparency`.
+
+### Cause
+
+`MetalDevice.precompilePipeline` returned early on a null source:
+
+```java
+// The engine announces some pipelines (the blur chain) without a ShaderSource. There is
+// nothing to compile, and those passes are skipped by the draw path.
+if (shaderSource == null) {
+    return new MetalCompiledPipeline(true);
+}
+```
+
+The comment is what made this worth chasing, and it is wrong: the draw path is not skipped.
+`pipelineFor` compiles lazily from the most recent source, so the chain does render. But the
+precompile did nothing, which means:
+
+- a pass that cannot compile is reported at draw time, if at all, instead of when the chain is built;
+- if no source has been seen yet - a post chain built before `ShaderManager` supplies one - then
+  `pipelineFor` returns null and the pass is dropped with no diagnostic anywhere.
+
+### Fix
+
+A null source now resolves to the stored one, so post passes compile eagerly like everything else.
+When there is genuinely no source at all the case is counted through
+`reportResourceFailure`, which the telemetry reports, rather than being treated as ready. Both stale
+comment blocks that described the passes as skipped were corrected.
+
+### What was measured, not assumed
+
+Two suspicions were tested and one was wrong, which is why the check exists:
+
+- A null colour target becomes `MTLPixelFormatInvalid`, and Metal has no dynamic-rendering
+  equivalent, so this looked certain to fail. It does not: Metal accepts the state in a pass whose
+  colour attachment is `RGBA8_UNORM` and writes the target correctly. The check records that, so
+  nobody "fixes" it into a per-target pipeline cache on the strength of the reasoning alone.
+- `tools/render_check` now renders a real post pass: `core/screenquad` plus `post/blit`, three
+  vertices and no vertex buffer, a white input texture and a red `ColorModulate`, into an `RGBA8`
+  target. It asserts the pipeline compiled (eagerly now, as the log line shows) and that the target
+  comes back red.
+
+---
+
 ## BUG-018 — `maxColorAttachments` claimed 8, but the pipeline builds one
 
 **Status:** **FIXED** (Phase 5). Latent for vanilla; would break a multi-target mod or shaderpack.

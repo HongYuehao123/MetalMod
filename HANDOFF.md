@@ -269,15 +269,21 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Eighteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Nineteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
   orientation, mip selection, texture copies (whole and by rectangle), the atlas compositing flip,
   `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, every
-  blend state vanilla uses, depth bias, the depth-stencil state, the reported colour-attachment limit, and 16-bit indices with non-zero
+  blend state vanilla uses, depth bias, the depth-stencil state, the reported colour-attachment limit, post-processing, and 16-bit indices with non-zero
   `firstIndex`/base-vertex offsets. Each
   one is a mechanism one of the open bugs implicates, and the harness has eliminated five BUG-001
   theories.
+- **The post-processing chain is its own shader space, and it is shaped unlike the rest.** It comes
+  from `POST_PROCESSING_SNIPPET` (no colour target, no vertex format), draws a full-screen triangle
+  from `gl_VertexID` with no vertex buffer, and is precompiled through the one-argument
+  `precompilePipeline` that passes a null `ShaderSource`. The blur is six such passes. It is now
+  covered by the render check and compiles eagerly; see BUG-019. Worth knowing before Phase 7, since
+  shaderpacks bring their own post chains.
 - **Reported capabilities are claims, not ceilings.** `DeviceLimits.maxColorAttachments` was Metal's
   own 8 while the pipeline builder covers one target, which removed the only guard the engine has
   (`CommandEncoder.createRenderPass` checks it). Before that, `maxMultiDrawDirectInterleavedDrawCount`
