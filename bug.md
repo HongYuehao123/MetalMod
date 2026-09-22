@@ -314,9 +314,50 @@ cancel for the final image, so that fix is neutral here rather than the cause.
   texture, and `MetalFormat.mtlTextureUsage` grants `ShaderRead | PixelFormatView` unconditionally, with
   a comment explaining that the presentation blit needs it. So the six depth samplers can be read.
 
-### Where to look next
+### Root cause (identified)
 
-The leading hypothesis is now **staleness of the six translucent layers**, not geometry or UVs: a
+"**As long as the player is in the water everything is fine**" is the detail that settles it. It rules
+out anything about how water *looks* and points at **depth-testing the translucent layer against the
+opaque scene**:
+
+- Outside the water, the translucent pass must reject water that is *behind* opaque terrain. Its
+  layer is a separate FBO with its own depth buffer, so that buffer has to be **initialised from the
+  main depth buffer** before the translucent pass runs - otherwise it is empty, and with reversed-Z an
+  empty depth buffer is `0.0`, i.e. *far*, so every water fragment passes the test. Water behind a
+  hill then composites over it: a translucent film wherever water exists, with the water's edge not
+  matching the surface it should be hidden by.
+- Inside the water, the water is in front of everything, so the depth test gives the same answer
+  whether or not that initialisation happened. **Everything looks fine.**
+
+That is exactly the reported asymmetry, and it also explains "for one second the edge is away from the
+surface": the initialisation is not happening at the point in the frame the engine assumes.
+
+And the mechanism is concrete. MC initialises those depth buffers with a **texture-to-texture copy**,
+and `MetalCommandEncoderBackend.copyTextureToTexture` is not a GPU blit - it is a CPU round trip:
+
+```java
+MetalNative.queueSynchronize(this.device.queueHandle());
+MemorySegment temp = arena.allocate(size);
+if (MetalNative.textureReadRegion(src.handle(), ...) == 0) {
+    MetalNative.textureReplaceRegionRaw(dst.handle(), ...);
+}
+```
+
+It commits and waits for an empty command buffer, reads the source back into CPU memory and uploads
+it into the destination. That is a separate, synchronised CPU operation rather than a piece of the
+frame's command buffer, so it cannot be ordered the way the engine assumes it is, and it stalls the
+pipeline for a full-size depth buffer on every frame that uses it.
+
+### The fix
+
+`copyTextureToTexture` should be a `MTLBlitCommandEncoder` texture-to-texture copy
+(`copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:...`). A blit handles
+depth formats, needs no CPU access, joins the frame's command buffer so its ordering is the engine's,
+and removes the stall. The native layer already has a blit encoder for the clear path.
+
+### Superseded: the staleness hypothesis
+
+The leading hypothesis *was* **staleness of the six translucent layers**, not geometry or UVs: a
 layer that still holds the previous frame's contents composites as a ghost, which reads as a film
 where the water is and an edge sitting away from the current surface - and it would last as long as it
 takes for the layer to be overwritten, matching "for one second".
