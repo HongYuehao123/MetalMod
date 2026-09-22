@@ -131,6 +131,11 @@ public final class RenderCheck {
             check("entity pipeline compiled and registered", device.pipelineFor(entity) != null, "");
             if (device.pipelineFor(entity) != null) {
                 entityCheck(device, entity);
+
+                // The same pipeline compiles with ALPHA_CUTOUT=0.1, which is the one place in the
+                // game where a fragment is thrown away. Nothing else here exercises discard, and it
+                // is on the path of text, foliage, cutout blocks and every entity.
+                alphaCutoutCheck(device, entity);
             }
 
             // BUG-002's path. rendertype_lines.vsh expands a line in screen space:
@@ -468,6 +473,74 @@ public final class RenderCheck {
         whiteView.close();
         overlay.close();
         white.close();
+    }
+
+    /**
+     * Probe the alpha cutout on both sides of its exact threshold.
+     *
+     * <p>{@code ENTITY_CUTOUT} compiles with {@code ALPHA_CUTOUT=0.1}, and {@code entity.fsh} tests
+     * the <em>sampled</em> alpha before any modulation:
+     * {@code if (color.a < ALPHA_CUTOUT) discard;}. An RGBA8 texture can land on either side of that
+     * precisely - 25/255 is 0.098 and 26/255 is 0.102 - so this draws the same quad twice, changing
+     * only the texture's alpha, and checks that the clear survives one and not the other.
+     *
+     * <p>Asserting "the clear colour is intact" rather than an exact output colour keeps this
+     * independent of the pipeline's blend state.
+     */
+    private static void alphaCutoutCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture glyph = device.createTexture("cutout glyph", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        GpuTexture neutral = device.createTexture("cutout neutral", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        solid(neutral, 255, 255, 255, 255);
+        GpuTextureView glyphView = device.createTextureView(glyph);
+        GpuTextureView neutralView = device.createTextureView(neutral);
+
+        GpuBuffer vertices = device.createBuffer(() -> "cutout vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, entityVertices());
+        GpuBuffer indices = device.createBuffer(() -> "cutout indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
+        uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f})));
+        uniforms.put("Lighting", device.createBuffer(() -> "Lighting",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, lighting()));
+        uniforms.put("Fog", device.createBuffer(() -> "Fog",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                fog(new float[]{0f, 0f, 0f, 0f}, 0f, 2f, 1000f, 2000f)));
+
+        Map<String, GpuTextureView> textures = new LinkedHashMap<>();
+        textures.put("Sampler0", glyphView);
+        textures.put("Sampler1", neutralView);
+        textures.put("Sampler2", neutralView);
+
+        float[] green = {0.0f, 1.0f, 0.0f, 1.0f};
+        solid(glyph, 255, 255, 255, 25);
+        int[] below = renderQuad(device, pipeline, vertices, indices, uniforms, textures, true,
+                "cutout below", green);
+        solid(glyph, 255, 255, 255, 26);
+        int[] above = renderQuad(device, pipeline, vertices, indices, uniforms, textures, true,
+                "cutout above", green);
+
+        check("ALPHA_CUTOUT discards a fragment at alpha 25/255 -> the clear survives (" + below[0]
+                        + " " + below[1] + " " + below[2] + ")",
+                below[1] > 200 && below[0] < 60 && below[2] < 60, "");
+        check("ALPHA_CUTOUT keeps a fragment at alpha 26/255 -> not the clear (" + above[0] + " "
+                        + above[1] + " " + above[2] + ")",
+                !(above[1] > 200 && above[0] < 60 && above[2] < 60), "");
+
+        for (GpuBuffer buffer : uniforms.values()) {
+            buffer.close();
+        }
+        indices.close();
+        vertices.close();
+        glyphView.close();
+        neutralView.close();
+        glyph.close();
+        neutral.close();
     }
 
     private static Map<String, GpuBuffer> entityUniforms(GpuBuffer projection, GpuBuffer transforms,
