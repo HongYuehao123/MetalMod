@@ -96,20 +96,50 @@ Run all five before trusting a change:
 A green check is only evidence if it can fail: the scissor assertion is a case in point — it passed
 for a long time against the very flip it should have caught.
 
-## Performance (indicative, not final)
+## Performance
 
-Measured by resizing the window at 100% render scale, but **with a menu open, so the world was not
-ticking**:
+In game, 5120×2664, render distance 32, Apple M4 Pro. F3 reports the frame time and the time the
+render thread spent blocked in `nextDrawable` (`GPU wait`), which is the CPU/GPU split: wait ≈ 0
+means CPU-bound, wait ≈ frame means GPU-bound.
 
-| window | pixels | frame time | fps |
+Measured before the first CPU pass:
+
+| scene | draws | frame | GPU wait | read as |
+|---|---|---|---|---|
+| above ground | 6 400 | 17.5 ms | 2–3 ms | CPU-bound |
+| underground (spectator) | 17 965 | 42.4 ms | ~0 ms | CPU-bound |
+
+And after it (`071bdb0`: cached per-pipeline facts, a skip-redundant-bind shadow, the per-draw census
+retired):
+
+| scene | frame | fps | read as |
 |---|---|---|---|
-| 5120×2664 | 13.64 Mpx | 8.85 ms | 113 |
-| 1064×536 | 0.57 Mpx | 3.38 ms | 296 |
+| above ground | ~10 ms | ~100 | mixed — the ~2–3 ms of GPU work is now a real share of the frame |
+| underground | ~17–20 ms | 50–60 | still CPU-bound, but usable |
 
-Fitting `time = CPU + k × megapixels`: a CPU floor of ≈ 3.14 ms (~319 fps ceiling) and
-≈ 0.42 ms/Mpx of GPU cost (~65% of frame time at 5K). The CPU floor is optimistic and the GPU share
-is a lower bound, because the world was not running. Re-measure in play, ideally as a Metal-vs-Vulkan
-A/B.
+For reference, the MoltenVK/Vulkan path reaches 120–200 fps in the same scenes, so per-draw CPU cost
+is still the largest remaining gap; above ground, GPU work now matters too.
+
+Earlier numbers taken by resizing the window with a menu open (world not ticking) are superseded -
+they measured resolution scaling only, and the CPU floor they implied was optimistic.
+
+### Queued, not done
+
+- **Batch utility submissions.** Every `writeToBuffer` allocates a fresh staging `MTLBuffer` and its
+  own command buffer, commits it, and the same is true of the clears, buffer copies and texture
+  copies (`mmm_write_buffer_bytes`, `mmm_copy_buffer_to_buffer`, `mmm_clear_textures*`,
+  `mmm_copy_texture_to_texture`). One per-frame utility command buffer plus a reused staging ring
+  would remove most of that.
+- **Storage-mode split.** Every texture and buffer is `MTLStorageModeShared`, including render
+  targets and the depth buffer (`MetalTexture`, `mmm_buffer_create` both carry a comment saying a
+  private/staging split is a deferred "Phase 3 performance task"). On Apple GPUs private render
+  targets get lossless framebuffer compression; upload/readback paths would need staging blits.
+- **Presentation copy.** The `CAMetalLayer` keeps its default BGRA8 format while the main target is
+  RGBA8, so the present is a full-screen fragment shader; matching the formats would allow a
+  copy-engine blit.
+- **Real GPU timing.** `GPU wait` is a proxy. A per-frame GPU execution time needs
+  `MTLCounterSampleBuffer` timestamps; summing command-buffer `GPUStartTime`/`GPUEndTime` spans does
+  not work (command buffers on one queue overlap execution).
 
 ## Environment specifics that matter
 

@@ -461,15 +461,19 @@ MoltenVK-interop architecture has been deleted (§4).
 
 What is left is one in-game pass to confirm the last fix and, separately, a frame-rate comparison:
 
-1. **Confirm the last GUI fixes in game.** Open Singleplayer → Select World and check that the first
-   entry has its background panel and an unsquashed world-name line (BUG-001), then open the survival
-   inventory and check that the item icons are present and the player preview is the right way up
-   (BUG-025). BUG-002 and BUG-003 are already confirmed fixed. The fixes are the scissor Y
-   conversion and the offscreen-GUI-target flip list in `MetalRenderPassBackend` /
-   `MetalCommandEncoderBackend`.
-2. **Measure parity.** Run the same scene on Metal and on Vulkan/MoltenVK and compare frame rate in
-   normal play (not with a menu open), at both native and reduced resolution.
-3. **Then Phase 5 is done**, and Phase 6 (dynamic lighting) is next.
+1. **Confirm the last GUI fixes in game.** Select World: the first entry should have its background
+   panel and an unsquashed world-name line (BUG-001); survival inventory: item icons present and the
+   player preview the right way up (BUG-025). BUG-002 and BUG-003 are already confirmed fixed. The
+   fixes are the scissor Y conversion and the offscreen-GUI-target flip list in
+   `MetalRenderPassBackend` / `MetalCommandEncoderBackend`. **Confirmed in game** - both are fixed.
+2. **Measure parity.** Done, and it is short of the target: in the same scenes the Metal backend runs
+   at ~100 fps above ground and 50-60 fps underground (5120×2664, render distance 32), against
+   120-200 fps on Vulkan/MoltenVK. The first CPU pass (`071bdb0`) already took the frame from 17.5 ms
+   to ~10 ms and from 42.4 ms to ~17-20 ms by caching per-pipeline facts and skipping redundant
+   binds; the remaining gap is per-draw CPU cost plus the GPU items listed in `HANDOFF.md`
+   ("Queued, not done").
+3. **Then Phase 5 is done**, and Phase 6 (dynamic lighting) is next. Performance parity is the one
+   open exit criterion.
 
 The jar is already installed in the test instance; rebuild and reinstall with:
 
