@@ -299,7 +299,7 @@ public final class MetalShaderCompiler implements AutoCloseable {
                 checkUniqueSlots(stageName, "uniform buffer", buffers);
                 checkUniqueSlots(stageName, "texture", textures);
                 checkUniqueSlots(stageName, "sampler", samplers);
-                verifyMslSlots(name, stageName, msl, buffers, textures);
+                verifyMslSlots(name, stageName, msl, buffers, textures, inputs);
                 return new CompiledShader(msl, buffers, buffers, textures, samplers, inputs);
             } finally {
                 Spvc.spvc_context_destroy(ctx);
@@ -456,15 +456,23 @@ public final class MetalShaderCompiler implements AutoCloseable {
             "constant\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*&\\s*\\w+\\s*\\[\\[buffer\\((\\d+)\\)\\]\\]");
     private static final java.util.regex.Pattern MSL_TEXTURE = java.util.regex.Pattern.compile(
             "texture2d(?:_array|_ms)?\\s*<[^>]+>\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\[\\[texture\\((\\d+)\\)\\]\\]");
+    // "float3 Position [[attribute(0)]]" - the attribute index the shader will read.
+    private static final java.util.regex.Pattern MSL_ATTRIBUTE = java.util.regex.Pattern.compile(
+            "([A-Za-z_][A-Za-z0-9_]*)\\s*\\[\\[attribute\\((\\d+)\\)\\]\\]");
 
     /**
      * Check that what the reflection recorded matches where SPIRV-Cross actually put each resource in
      * the MSL. A disagreement is a silent wrong-slot bind, so it is reported rather than assumed.
      */
     private static void verifyMslSlots(String shader, String stage, String msl,
-                                       Map<String, Integer> buffers, Map<String, Integer> textures) {
+                                       Map<String, Integer> buffers, Map<String, Integer> textures,
+                                       Map<String, Integer> inputs) {
         checkMsl(shader, stage, "uniform buffer", MSL_BUFFER, msl, buffers);
         checkMsl(shader, stage, "texture", MSL_TEXTURE, msl, textures);
+        // The vertex descriptor's attribute indices come from the same map the MSL is compared
+        // against, so a disagreement would mean the shader reads one attribute slot while the
+        // descriptor feeds another - wrong vertex data, silently.
+        checkMsl(shader, stage, "vertex attribute", MSL_ATTRIBUTE, msl, inputs);
     }
 
     private static void checkMsl(String shader, String stage, String kind,

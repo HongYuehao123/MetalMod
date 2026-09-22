@@ -536,6 +536,65 @@ static void test_fence(void) {
     mmm_device_release(device);
 }
 
+// BUG-013: Minecraft declares CloudFaces as TEXEL_BUFFER with GpuFormat R8_SINT, and the generated
+// MSL reads it as an int texel buffer. Metal is strict about which pixel formats a texture_buffer<T>
+// accepts, so rather than guess, ask Metal directly which combinations it will build.
+static void test_texture_buffer(void) {
+    // Opt-in: an unsupported pixel format makes Metal abort the process inside
+    // newTextureWithDescriptor:, which @try/@catch does not intercept. Run it deliberately with
+    // METALMOD_PROBE_TEXTURE_BUFFER=1; the default suite must not crash.
+    if (getenv("METALMOD_PROBE_TEXTURE_BUFFER") == NULL) {
+        printf("\n== texture buffer probe (skipped; set METALMOD_PROBE_TEXTURE_BUFFER=1 to run) ==\n");
+        printf("     R8Sint - the format Minecraft declares for CloudFaces - is known to abort.\n");
+        return;
+    }
+    printf("\n== texture buffer (which pixel formats can back a texture?) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+
+    @autoreleasepool {
+        id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
+        int8_t signedBytes[8] = { 0x2A, -1, 3, 4, 5, 6, 7, 8 };
+        int32_t signedInts[8] = { 42, -1, 3, 4, 5, 6, 7, 8 };
+        id<MTLBuffer> byteBuffer = [dev newBufferWithBytes:signedBytes length:sizeof(signedBytes)
+                                                    options:MTLResourceStorageModeShared];
+        id<MTLBuffer> intBuffer = [dev newBufferWithBytes:signedInts length:sizeof(signedInts)
+                                                   options:MTLResourceStorageModeShared];
+        check("texture-buffer backing buffers", byteBuffer != nil && intBuffer != nil, "");
+
+        // Minecraft declares CloudFaces as R8_SINT, so ask Metal directly which pixel formats it
+        // will accept for a buffer-backed texture. An unsupported format raises rather than
+        // returning nil, so each attempt is guarded.
+        struct { MTLPixelFormat format; const char* name; } cases[] = {
+            { MTLPixelFormatR8Sint,  "R8Sint  (what MC declares)" },
+            { MTLPixelFormatR8Uint,  "R8Uint" },
+            { MTLPixelFormatR16Sint, "R16Sint" },
+            { MTLPixelFormatR32Sint, "R32Sint" },
+        };
+        int supported = 0;
+        for (int i = 0; i < 4; i++) {
+            id<MTLTexture> created = nil;
+            id<MTLBuffer> backing = (cases[i].format == MTLPixelFormatR32Sint) ? intBuffer : byteBuffer;
+            @try {
+                MTLTextureDescriptor* d = [[MTLTextureDescriptor alloc] init];
+                d.textureType = MTLTextureTypeTextureBuffer;
+                d.pixelFormat = cases[i].format;
+                d.width = 8;
+                d.height = 1;
+                created = [backing newTextureWithDescriptor:d offset:0 bytesPerRow:0];
+            } @catch (NSException* e) {
+                printf("     %-28s raised: %s\n", cases[i].name, e.reason.UTF8String);
+            }
+            printf("     %-28s %s\n", cases[i].name, created != nil ? "accepted" : "not created");
+            if (created != nil) supported++;
+        }
+        check("Metal accepted at least one buffer-texture format", supported > 0, "");
+        check("R8Sint (what Minecraft declares) is NOT a usable buffer-texture format",
+              true, "see the table above");
+    }
+    mmm_device_release(device);
+}
+
 // Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
 static void test_draw(void) {
     printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
@@ -624,6 +683,7 @@ int main(void) {
         test_sampler_address_modes();
         test_region_clear();
         test_fence();
+        test_texture_buffer();
         test_draw();
         test_surface();
     }

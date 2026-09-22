@@ -230,16 +230,42 @@ bound and the shader texel-fetches undefined data. That is exactly what the Phas
 reported in-game (`unbound texture 'CloudFaces'`), and it is *not* fixed by BUG-005's name change:
 the name was already right, the binding path does not exist.
 
-### Fix shape
+### The obvious fix does not work — measured, not guessed
 
-Reflect texel buffers as their own kind and bind them as Metal `texture_buffer<T>`, which means an
-`MTLTexture` of type `MTLTextureTypeTextureBuffer` created over the buffer
-(`newTextureWithDescriptor:buffer:offset:bytesPerRow:`), cached per buffer and format. MetalMod's
-`mtlTextureType` never returns `TEXTURE_TYPE_TEXTURE_BUFFER` (9) and `MetalTexture` has no buffer
-constructor, so this is new plumbing on both sides.
+The natural approach is an `MTLTexture` of type `MTLTextureTypeTextureBuffer` created over the buffer
+(`MTLBuffer newTextureWithDescriptor:offset:bytesPerRow:`), which needs no copy. **Metal aborts the
+process** when asked to do that with the format Minecraft declares:
 
-Worth doing beyond clouds: Sodium's `u_SectionTimeInfo` is also an `isamplerBuffer`, so the same
-path is a prerequisite there.
+```
+METALMOD_PROBE_TEXTURE_BUFFER=1 ./native/build/metalmod_smoke
+== texture buffer (which pixel formats can back a texture?) ==
+[PASS] texture-buffer backing buffers
+Abort trap: 6
+```
+
+`R8_SINT` is not a supported buffer-texture format, and the failure is a hard `abort()`, not a
+catchable `NSException` — `@try/@catch` does not intercept it. The probe that establishes this is
+opt-in behind `METALMOD_PROBE_TEXTURE_BUFFER` precisely so the normal suite cannot crash.
+
+### What the fix therefore has to be
+
+SPIRV-Cross already emits the *emulated* path, and the generated MSL shows it:
+
+```metal
+texture2d<int> CloudFaces [[texture(0)]];
+int cellX = CloudFaces.read(spvTexelBufferCoord(index)).x;
+```
+
+so it expects an ordinary **2D texture** whose texels are the buffer's bytes, with
+`spvTexelBufferCoord(i) == int2(i, 0)`. There is no way to view a buffer as a 2D texture in Metal, so
+this needs a real 2D `R8Sint` texture and a buffer→texture copy — cached against the ring-buffer slot
+rather than copied per draw, since `CloudRenderer` streams cloud data through a `MappableRingBuffer`.
+
+Worth confirming first: whether the data really is one byte per texel. `BindGroupLayouts` says
+`GpuFormat.R8_SINT`, but if the buffer actually holds 32-bit values then the declaration and the
+shader disagree and the fix is different again.
+
+Same path is a prerequisite for Sodium's `u_SectionTimeInfo`, which is also an `isamplerBuffer`.
 
 ---
 
