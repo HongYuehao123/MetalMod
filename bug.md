@@ -47,6 +47,28 @@ with a wrong sub-rect or transform, so this is probably a leftover of the Phase 
 - the world-list widget may rely on a clip/scissor or per-entry transform we do not reproduce, or
 - the garbled line may be a second text draw with a stale `ModelViewMat`/`TextureMat`.
 
+### Ruled out (Phase 5)
+
+`tools/render_check` now renders a quad that maps each corner of the screen onto one texel of a 2x2
+texture with four distinct colours, through the real `gui_textured` pipeline:
+
+```
+PASS  texCoord samples top-left     -> R255 G0 B0   (texel 0,0)
+PASS  texCoord samples top-right    -> R0 G255 B0   (texel 1,0)
+PASS  texCoord samples bottom-left  -> R0 G0 B255   (texel 0,1)
+PASS  texCoord samples bottom-right -> R255 G255 B255 (texel 1,1)
+```
+
+So `texCoord0` samples the texel the engine meant, in the right orientation. A Y flip anywhere in
+the path — the obvious explanation for "the wrong sprite is drawn" — would put those colours in the
+wrong quadrants, and it does not. Same for the atlas detection: `TextureAtlas.createTexture` builds
+its label from the atlas identifier, which contains `textures/atlas/…`, so the `/atlas/` test that
+triggers the compositing flip is correctly keyed.
+
+What is left for a runtime look is the *atlas compositing* path itself (`uploadInitialContents`
+renders every sprite into the atlas) and text rendering, neither of which an offscreen harness can
+reach without a full client bootstrap.
+
 ### Workaround
 
 None needed. Use the default (Vulkan/OpenGL) backend if the list is hard to read; select worlds

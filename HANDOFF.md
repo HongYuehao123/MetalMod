@@ -247,7 +247,9 @@ Also for Phase 5:
   pipeline and checks a row 8px away stays untouched, which is BUG-002's mechanism: the line
   expansion divides by `ScreenSize` from `Globals`, the block that collided with `Fog`, so a
   mis-bound `Globals` turned the outline into a screen-filling quad. BUG-002's root cause is
-  therefore BUG-012, confirmed at render level.
+  therefore BUG-012, confirmed at render level. It also maps each corner of the screen onto one
+  texel of a 2x2 texture through `gui_textured`, which confirms `texCoord0` samples the right texel
+  in the right orientation - ruling out a Y flip as the cause of BUG-001's "wrong sprite".
 
 **To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
 BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been

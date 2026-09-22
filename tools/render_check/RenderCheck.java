@@ -120,6 +120,18 @@ public final class RenderCheck {
             if (device.pipelineFor(lines) != null) {
                 linesCheck(device, lines);
             }
+
+            // Sprite and text rendering both come down to "does texCoord0 sample the texel the
+            // engine meant". A texture whose four texels are distinct colours makes an orientation
+            // error - the atlas Y-flip of BUG-001's "wrong sprite" - impossible to miss.
+            RenderPipeline textured = (RenderPipeline) Class
+                    .forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("GUI_TEXTURED").get(null);
+            device.precompilePipeline(textured, source);
+            check("textured pipeline compiled and registered", device.pipelineFor(textured) != null, "");
+            if (device.pipelineFor(textured) != null) {
+                textureOrientationCheck(device, textured);
+            }
         } finally {
             device.close();
         }
@@ -335,6 +347,120 @@ public final class RenderCheck {
         colorView.close();
         color.close();
         return new int[]{centreRow, farRow};
+    }
+
+    /**
+     * Draw a quad that maps each corner of the screen onto one texel of a 2x2 texture and check
+     * which colour lands where.
+     *
+     * <p>Minecraft's UV origin is the texture's top-left, so NDC top-left must sample texel (0,0).
+     * If the Y axis is flipped anywhere along the way - which is what a sprite sampling the wrong
+     * row looks like - the colours come back in the wrong quadrants.
+     */
+    private static void textureOrientationCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture texture = device.createTexture("quadrants", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 2, 2, 1, 1);
+        ByteBuffer texels = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder());
+        texels.put((byte) 255).put((byte) 0).put((byte) 0).put((byte) 255);     // (0,0) red
+        texels.put((byte) 0).put((byte) 255).put((byte) 0).put((byte) 255);     // (1,0) green
+        texels.put((byte) 0).put((byte) 0).put((byte) 255).put((byte) 255);     // (0,1) blue
+        texels.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255); // (1,1) white
+        texels.flip();
+        MetalNative.textureReplaceRegion(((MetalTexture) texture).handle(), 0, 0, 0, 0, 2, 2, texels, 8L);
+        GpuTextureView view = device.createTextureView(texture);
+
+        GpuBuffer vertices = device.createBuffer(() -> "uv vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, uvVertices());
+        GpuBuffer indices = device.createBuffer(() -> "uv indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
+        uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f})));
+        Map<String, GpuTextureView> textures = new LinkedHashMap<>();
+        textures.put("Sampler0", view);
+
+        ByteBuffer pixels = renderQuadPixels(device, pipeline, vertices, indices, uniforms, textures);
+        // The framebuffer's row 0 is the top of the screen.
+        checkQuadrant(pixels, WIDTH / 4, HEIGHT / 4, "top-left", 255, 0, 0);
+        checkQuadrant(pixels, 3 * WIDTH / 4, HEIGHT / 4, "top-right", 0, 255, 0);
+        checkQuadrant(pixels, WIDTH / 4, 3 * HEIGHT / 4, "bottom-left", 0, 0, 255);
+        checkQuadrant(pixels, 3 * WIDTH / 4, 3 * HEIGHT / 4, "bottom-right", 255, 255, 255);
+
+        vertices.close();
+        indices.close();
+        for (GpuBuffer buffer : uniforms.values()) {
+            buffer.close();
+        }
+        view.close();
+        texture.close();
+    }
+
+    private static void checkQuadrant(ByteBuffer pixels, int x, int y, String where,
+                                      int expectR, int expectG, int expectB) {
+        int offset = (y * WIDTH + x) * 4;
+        int r = pixels.get(offset) & 0xFF;
+        int g = pixels.get(offset + 1) & 0xFF;
+        int b = pixels.get(offset + 2) & 0xFF;
+        boolean ok = Math.abs(r - expectR) <= 3 && Math.abs(g - expectG) <= 3 && Math.abs(b - expectB) <= 3;
+        check("texCoord samples " + where + " -> R" + r + " G" + g + " B" + b + " (expected R"
+                + expectR + " G" + expectG + " B" + expectB + ")", ok, "");
+    }
+
+    /** 24-byte position_tex_color vertex: Position RGB32_FLOAT, UV0 RG32_FLOAT, Color RGBA8_UNORM. */
+    private static ByteBuffer uvVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 24).order(ByteOrder.nativeOrder());
+        // NDC corners paired with the UV that should land there: top-left is UV (0,0).
+        float[][] corners = {
+                {-1, -1, 0, 1},   // bottom-left -> v = 1
+                {1, -1, 1, 1},    // bottom-right
+                {1, 1, 1, 0},     // top-right
+                {-1, 1, 0, 0},    // top-left -> v = 0
+        };
+        for (float[] c : corners) {
+            buffer.putFloat(c[0]).putFloat(c[1]).putFloat(0.0f);
+            buffer.putFloat(c[2]).putFloat(c[3]);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /** Render the quad and return the whole colour buffer, for checks that sample several points. */
+    private static ByteBuffer renderQuadPixels(MetalDevice device, RenderPipeline pipeline,
+                                               GpuBuffer vertices, GpuBuffer indices,
+                                               Map<String, GpuBuffer> uniforms,
+                                               Map<String, GpuTextureView> textures) {
+        GpuTexture color = device.createTexture("quad", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, pipeline.getColorTargetState().format(), WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "quad")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        for (Map.Entry<String, GpuBuffer> uniform : uniforms.entrySet()) {
+            pass.setUniform(uniform.getKey(), uniform.getValue().slice());
+        }
+        GpuSampler sampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+                FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.empty());
+        for (Map.Entry<String, GpuTextureView> texture : textures.entrySet()) {
+            pass.bindTexture(texture.getKey(), texture.getValue(), sampler);
+        }
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+        sampler.close();
+        colorView.close();
+        color.close();
+        return ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
     }
 
     /** Shared draw: render the quad and return the centre pixel as {r, g, b}. */
