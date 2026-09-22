@@ -55,6 +55,12 @@ public final class MetalFormat {
     public static final int FILTER_NEAREST = 0;
     public static final int FILTER_LINEAR = 1;
 
+    // MTLSamplerMipFilter, from MTLSampler.h. NotMipmapped is 0 and is MTLSamplerDescriptor's
+    // default, which is why leaving it unset silently disables mipmapping.
+    public static final int MIP_FILTER_NOT_MIPMAPPED = 0;
+    public static final int MIP_FILTER_NEAREST = 1;
+    public static final int MIP_FILTER_LINEAR = 2;
+
     /**
      * Map a Minecraft texture format to an {@code MTLPixelFormat} raw value.
      *
@@ -160,6 +166,27 @@ public final class MetalFormat {
 
     public static int mtlSamplerFilter(FilterMode mode) {
         return mode == FilterMode.NEAREST ? FILTER_NEAREST : FILTER_LINEAR;
+    }
+
+    /**
+     * MTLSamplerMipFilter for a sampler.
+     *
+     * <p>The engine expresses LOD clamping through {@code maxLod}: when it supplies one, it wants
+     * mip selection, and MTLSamplerDescriptor's default of {@code NotMipmapped} silently ignores that
+     * (and {@code lodMaxClamp} with it), so every minified sample read level 0 and aliased.
+     *
+     * <p>{@code -Dmetalmod.mipFilter=off|nearest|linear} overrides the choice, because whether the
+     * multi-level textures in play actually have their levels populated is a data question that only
+     * a run can settle.
+     */
+    public static int mtlSamplerMipFilter(boolean hasMaxLod) {
+        String override = System.getProperty("metalmod.mipFilter", "auto").toLowerCase();
+        return switch (override) {
+            case "off", "none", "notmipmapped" -> MIP_FILTER_NOT_MIPMAPPED;
+            case "nearest" -> MIP_FILTER_NEAREST;
+            case "linear" -> MIP_FILTER_LINEAR;
+            default -> hasMaxLod ? MIP_FILTER_LINEAR : MIP_FILTER_NOT_MIPMAPPED;
+        };
     }
 
     /**

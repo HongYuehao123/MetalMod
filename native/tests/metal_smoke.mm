@@ -192,7 +192,8 @@ static void test_resources(void) {
         check("buffer is CPU-writable", ((unsigned char*)contents)[255] == 0xAB, "");
     }
 
-    void* sampler = mmm_sampler_create(device, 2, 2, 1, 1, 1, false, 0.0);
+    // addressU, addressV, minFilter, magFilter, mipFilter, maxAnisotropy, hasMaxLod, maxLod
+    void* sampler = mmm_sampler_create(device, 2, 2, 1, 1, 2, 1, false, 0.0);
     check("sampler create", sampler != NULL, "");
 
     // Clear a render-target texture and read it back (shared storage, so CPU-readable).

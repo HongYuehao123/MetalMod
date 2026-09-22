@@ -112,7 +112,7 @@ public final class MetalNative {
         mhBufferLength = linker.downcallHandle(symbol(lookup, "mmm_buffer_length"), FunctionDescriptor.of(L, A));
         mhBufferRelease = linker.downcallHandle(symbol(lookup, "mmm_buffer_release"), FunctionDescriptor.ofVoid(A));
         mhSamplerCreate = linker.downcallHandle(symbol(lookup, "mmm_sampler_create"),
-                FunctionDescriptor.of(A, A, I, I, I, I, I, B, D));
+                FunctionDescriptor.of(A, A, I, I, I, I, I, I, B, D));
         mhSamplerRelease = linker.downcallHandle(symbol(lookup, "mmm_sampler_release"), FunctionDescriptor.ofVoid(A));
         mhClearTextures = linker.downcallHandle(symbol(lookup, "mmm_clear_textures"),
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D));
@@ -246,8 +246,8 @@ public final class MetalNative {
     }
     public static long bufferLength(MemorySegment buf) { return l(mhBufferLength, buf); }
     public static void bufferRelease(MemorySegment buf) { v(mhBufferRelease, buf); }
-    public static MemorySegment samplerCreate(MemorySegment dev, int au, int av, int min, int mag, int aniso, boolean hasLod, double lod) {
-        return addr(mhSamplerCreate, dev, au, av, min, mag, aniso, hasLod, lod);
+    public static MemorySegment samplerCreate(MemorySegment dev, int au, int av, int min, int mag, int mip, int aniso, boolean hasLod, double lod) {
+        return addr(mhSamplerCreate, dev, au, av, min, mag, mip, aniso, hasLod, lod);
     }
     public static void samplerRelease(MemorySegment s) { v(mhSamplerRelease, s); }
     public static int clearTextures(MemorySegment queue, MemorySegment color, boolean hasColor, float r, float g, float b, float a, MemorySegment depth, boolean hasDepth, double depthValue) {

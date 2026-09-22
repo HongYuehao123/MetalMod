@@ -110,7 +110,7 @@ MMM_API void    mmm_buffer_release(void* buffer);
 // ---------------------------------------------------------------------------------------------
 
 MMM_API void* mmm_sampler_create(void* device, int32_t addressU, int32_t addressV,
-                                 int32_t minFilter, int32_t magFilter,
+                                 int32_t minFilter, int32_t magFilter, int32_t mipFilter,
                                  int32_t maxAnisotropy, bool hasMaxLod, double maxLod);
 MMM_API void  mmm_sampler_release(void* sampler);
 

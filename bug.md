@@ -160,46 +160,47 @@ Covered by seven assertions in `MetalRenderPassBackendTest` that pin the invaria
 
 ---
 
-## BUG-008 — Mip filtering is disabled by a leftover test hack
+## BUG-008 — Mip filtering was disabled by a leftover test hack
 
-**Status:** open, unfixed. Needs an in-game A/B before changing.
+**Status:** **FIXED** (Phase 5) — the change most worth confirming in-game.
 **Severity:** affects all minification — aliasing/moiré on terrain and atlases.
 **Found by:** auditing the native sampler creation against what the engine asks for.
 
-### Evidence
+### Cause
 
-`mmm_sampler_create` hardcodes:
+`mmm_sampler_create` hardcoded:
 
 ```c
 descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;  // TEST: force mip 0
 ```
 
-so **no sampler ever samples a mip level**, while `lodMaxClamp` is still set from the sampler's
-`maxLod`. This contradicts the Phase 2 work, which uploads and round-trips mip levels.
+so **no sampler ever sampled a mip level**, while `lodMaxClamp` was still set from the sampler's
+`maxLod`. The engine expresses LOD selection by supplying `maxLod`, and `NotMipmapped` — which is
+also `MTLSamplerDescriptor`'s default — silently ignores it. That is a contract violation of the same
+kind as the wrong enum tables, not a tuning choice.
 
-### Impact
+### Fix
 
-Every minified sample reads level 0, so distant terrain and any mip-mapped atlas alias badly. That
-is a visible parity difference, not a subtle one.
+The caller now chooses the filter, and `MetalSampler` derives it from the engine:
 
-### Why it was not changed here
-
-Flipping it changes sampling for every texture in the game at once, and it cannot be verified without
-a game run. If any texture has mip levels allocated but not populated, enabling mip filtering would
-sample uninitialised data — a worse failure than aliasing. MC's `CommandEncoderBackend` has no
-`generateMipmaps`, which suggests the engine supplies every level itself and that flipping is safe,
-but that needs confirming rather than assuming.
-
-### Suggested fix
-
-Derive the filter from what the engine already tells us — it passes `maxLod`:
-
-```c
-descriptor.mipFilter = hasMaxLod ? MTLSamplerMipFilterLinear : MTLSamplerMipFilterNotMipmapped;
+```java
+MetalFormat.mtlSamplerMipFilter(maxLod.isPresent())   // present -> MTLSamplerMipFilterLinear
 ```
 
-and `lodMinClamp = 0`. One line either way, so it is cheap to A/B in a single run: watch distant
-terrain for moiré, and check the F3 counters stay at zero.
+Mipmapping is only enabled for samplers the engine actually asked to clamp LODs on; one with no
+`maxLod` stays `NotMipmapped`, exactly as before. The engine fills its own mip levels — its
+`GpuDeviceBackend` has no mip-generation entry point, so it must populate every level it allocates,
+and the block atlas composites each level explicitly. A single-level texture is unaffected either
+way, because Metal clamps LOD to the texture's level count.
+
+**Override for the in-game A/B:** `-Dmetalmod.mipFilter=off` restores the old behaviour; `nearest`
+or `linear` forces a filter. Five assertions cover the selection logic.
+
+### What to look for in-game
+
+Distant terrain should lose the shimmer it had with level-0 minification; nothing should look newly
+wrong or blocky. If it does, `-Dmetalmod.mipFilter=off` isolates this change with no rebuild. The
+likely reason the hack existed is the atlas bleeding caused by BUG-007, which is now fixed.
 
 ---
 

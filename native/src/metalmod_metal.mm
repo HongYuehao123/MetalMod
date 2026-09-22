@@ -336,7 +336,7 @@ void mmm_buffer_release(void* buffer) {
 // ---------------------------------------------------------------------------------------------
 
 void* mmm_sampler_create(void* device, int32_t addressU, int32_t addressV,
-                         int32_t minFilter, int32_t magFilter,
+                         int32_t minFilter, int32_t magFilter, int32_t mipFilter,
                          int32_t maxAnisotropy, bool hasMaxLod, double maxLod) {
     id<MTLDevice> dev = mmm_device(device);
     if (dev == nil) return NULL;
@@ -347,7 +347,9 @@ void* mmm_sampler_create(void* device, int32_t addressU, int32_t addressV,
         descriptor.tAddressMode = (MTLSamplerAddressMode)addressV;
         descriptor.minFilter = (MTLSamplerMinMagFilter)minFilter;
         descriptor.magFilter = (MTLSamplerMinMagFilter)magFilter;
-        descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;  // TEST: force mip 0
+        // Chosen by the caller. MTLSamplerDescriptor defaults to NotMipmapped, which silently
+        // ignores the engine's lodMaxClamp and makes every minified sample read level 0.
+        descriptor.mipFilter = (MTLSamplerMipFilter)mipFilter;
         descriptor.maxAnisotropy = (NSUInteger)(maxAnisotropy < 1 ? 1 : maxAnisotropy);
         descriptor.lodMinClamp = 0.0f;
         if (hasMaxLod) {

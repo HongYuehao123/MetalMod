@@ -36,9 +36,47 @@ public final class MetalFormatTest {
         testWriteMasks();
         testSamplerAddressModes();
         testSamplerFilters();
+        testMipFilterSelection();
         testTextureTypesAndUsage();
 
         return failures;
+    }
+
+    /**
+     * MTLSamplerMipFilter (NotMipmapped=0, Nearest=1, Linear=2). The engine asks for mip selection by
+     * supplying a maxLod; NotMipmapped silently ignores it, and it is the descriptor default.
+     */
+    private static void testMipFilterSelection() {
+        check("mip filter constants match the header",
+                MetalFormat.MIP_FILTER_NOT_MIPMAPPED == 0 && MetalFormat.MIP_FILTER_NEAREST == 1
+                        && MetalFormat.MIP_FILTER_LINEAR == 2, "");
+
+        String previous = System.getProperty("metalmod.mipFilter");
+        try {
+            System.clearProperty("metalmod.mipFilter");
+            check("a sampler with a maxLod gets mipmapping",
+                    MetalFormat.mtlSamplerMipFilter(true) == MetalFormat.MIP_FILTER_LINEAR,
+                    "got " + MetalFormat.mtlSamplerMipFilter(true));
+            check("a sampler without a maxLod does not",
+                    MetalFormat.mtlSamplerMipFilter(false) == MetalFormat.MIP_FILTER_NOT_MIPMAPPED,
+                    "got " + MetalFormat.mtlSamplerMipFilter(false));
+
+            System.setProperty("metalmod.mipFilter", "off");
+            check("-Dmetalmod.mipFilter=off forces level 0 even with a maxLod",
+                    MetalFormat.mtlSamplerMipFilter(true) == MetalFormat.MIP_FILTER_NOT_MIPMAPPED,
+                    "got " + MetalFormat.mtlSamplerMipFilter(true));
+
+            System.setProperty("metalmod.mipFilter", "nearest");
+            check("-Dmetalmod.mipFilter=nearest selects nearest",
+                    MetalFormat.mtlSamplerMipFilter(false) == MetalFormat.MIP_FILTER_NEAREST,
+                    "got " + MetalFormat.mtlSamplerMipFilter(false));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("metalmod.mipFilter");
+            } else {
+                System.setProperty("metalmod.mipFilter", previous);
+            }
+        }
     }
 
     /**
