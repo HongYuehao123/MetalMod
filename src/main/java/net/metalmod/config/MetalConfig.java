@@ -75,10 +75,10 @@ public class MetalConfig {
     // corruption. See ROADMAP.md, "Memory".
     public volatile boolean enableUnifiedMemoryPool = false;
     public volatile boolean enableMemoryPressureHandler = true; // macOS kernel memory pressure listener
-    // Off by default, and deliberately so: the Metal backend is Phase 1 first light. It selects a
-    // Metal device and presents cleared frames, but every draw is still a no-op, so the game is
-    // unusable while it is on. Enable it only to develop or test the backend; normal play stays on
-    // Vulkan/OpenGL. Also settable with -Dmetalmod.metalBackend=true.
+    // Off by default while visual parity is unfinished; normal play stays on Vulkan/OpenGL. The
+    // backend is selected once at startup (PreferredGraphicsApiMixin), so changing this needs a
+    // restart. Also settable with -Dmetalmod.metalBackend=true. The config screen exposes it as
+    // "Metal Renderer Backend".
     public volatile boolean preferMetalBackend = false;
 
     public void load() {

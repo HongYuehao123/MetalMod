@@ -14,6 +14,7 @@ public class MetalModConfigScreen extends Screen {
     private Button presetButton;
     private Button frameGenButton;
     private Button displayRateButton;
+    private Button metalBackendButton;
 
     public MetalModConfigScreen(Screen parent) {
         super(Component.literal("MetalMod: Apple Silicon Metal 4 Settings"));
@@ -80,10 +81,19 @@ public class MetalModConfigScreen extends Screen {
         }).bounds(centerX - buttonWidth / 2, startY + 96, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(umaButton);
 
-        // 6. Done Button
+        // 6. Metal Renderer Backend Button. The backend is picked once at startup by
+        // PreferredGraphicsApiMixin, so changing this only takes effect after a restart.
+        metalBackendButton = Button.builder(getMetalBackendText(), btn -> {
+            MetalConfig.INSTANCE.preferMetalBackend = !MetalConfig.INSTANCE.preferMetalBackend;
+            MetalConfig.INSTANCE.save();
+            btn.setMessage(getMetalBackendText());
+        }).bounds(centerX - buttonWidth / 2, startY + 120, buttonWidth, buttonHeight).build();
+        this.addRenderableWidget(metalBackendButton);
+
+        // 7. Done Button
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 128, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 152, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
     }
 
@@ -107,6 +117,12 @@ public class MetalModConfigScreen extends Screen {
 
     private Component getUmaText() {
         return Component.literal("Apple Silicon UMA Zero-Copy: " + (MetalConfig.INSTANCE.enableUnifiedMemoryPool ? "ON" : "OFF"));
+    }
+
+    private Component getMetalBackendText() {
+        boolean on = MetalConfig.INSTANCE.preferMetalBackend;
+        return Component.literal("Metal Renderer Backend: " + (on ? "ON" : "OFF")
+                + (on ? " (restart to disable)" : " (restart to enable)"));
     }
 
     @Override
