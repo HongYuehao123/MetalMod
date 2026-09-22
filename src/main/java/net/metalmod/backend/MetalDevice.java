@@ -365,7 +365,9 @@ public final class MetalDevice implements GpuDeviceBackend {
         // buffer reaches six figures, so entering a world aborted on texture creation.
         int width = MetalShaderCompiler.TEXEL_BUFFER_WIDTH;
         int height = (texels + width - 1) / width;
-        long key = buffer.handle().address() * 1_000_003L + texels;
+        // Keyed by handle, texel count and format: two pipelines could present the same buffer with
+        // different formats, and the cached texture would then be the wrong one.
+        long key = buffer.handle().address() * 1_000_003L + texels * 31L + format.ordinal();
         MetalTexture texture = this.texelTextures.get(key);
         if (texture == null) {
             texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING,
