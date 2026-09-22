@@ -227,6 +227,10 @@ public final class RenderCheck {
             // backend cannot render - the pipeline builds state for one target.
             colorTargetLimitCheck();
 
+            // Write masks. WATER_MASK declares WRITE_NONE and is drawn while water is on screen, so
+            // a mask that is ignored paints the whole view with the water pass.
+            writeMaskCheck(device, source);
+
             // Texel buffers, which Metal has no primitive for. This is the regression test for the
             // crash on entering a world: a buffer big enough to need a second row.
             texelBufferTextureCheck(device);
@@ -1496,6 +1500,87 @@ public final class RenderCheck {
         buffer.putFloat(lineWidth);
         buffer.flip();
         return buffer;
+    }
+
+    /**
+     * Draw through pipelines with unusual colour write masks and check which channels move.
+     *
+     * <p>Two vanilla pipelines do not write all four channels: {@code WATER_MASK} declares
+     * {@code WRITE_NONE} (it exists to put depth in the buffer while water is on screen) and
+     * {@code ENTITY_OUTLINE_BLIT} declares {@code WRITE_COLOR}. The table is pinned in
+     * {@code MetalFormatTest}, but nothing checked that the mask reaches Metal and takes effect -
+     * and a {@code WATER_MASK} that ignored its mask would paint the scene with the water pass,
+     * which is the shape of a translucent glaze over everything whenever water is present.
+     *
+     * <p>Both draws are white over a blue clear at a quarter alpha, so the two cases are
+     * distinguishable from each other and from "nothing was drawn".
+     */
+    private static void writeMaskCheck(MetalDevice device, ShaderSource source) throws Exception {
+        RenderPipeline none = writeMaskPipeline("none", ColorTargetState.WRITE_NONE);
+        RenderPipeline color = writeMaskPipeline("color", ColorTargetState.WRITE_COLOR);
+        device.precompilePipeline(none, source);
+        device.precompilePipeline(color, source);
+        if (device.pipelineFor(none) == null || device.pipelineFor(color) == null) {
+            check("write-mask pipelines compiled", false, "");
+            return;
+        }
+
+        GpuBuffer vertices = device.createBuffer(() -> "mask quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, vertexBytes());
+        GpuBuffer indices = device.createBuffer(() -> "mask indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", projection);
+        uniforms.put("DynamicTransforms", transforms);
+        float[] clear = {0.0f, 0.0f, 1.0f, 0.25f};
+
+        ByteBuffer untouched = renderQuadPixels(device, none, vertices, indices, uniforms,
+                new LinkedHashMap<>(), clear);
+        int[] first = centreRgba(untouched);
+        check("WRITE_NONE leaves the target alone -> " + first[0] + " " + first[1] + " " + first[2]
+                        + " " + first[3] + " (expected the blue clear 0 0 255 64)",
+                first[0] < 4 && first[1] < 4 && first[2] > 250 && Math.abs(first[3] - 64) <= 2, "");
+
+        ByteBuffer colored = renderQuadPixels(device, color, vertices, indices, uniforms,
+                new LinkedHashMap<>(), clear);
+        int[] second = centreRgba(colored);
+        check("WRITE_COLOR writes RGB and leaves alpha -> " + second[0] + " " + second[1] + " "
+                        + second[2] + " " + second[3] + " (expected 255 255 255 64)",
+                second[0] > 250 && second[1] > 250 && second[2] > 250
+                        && Math.abs(second[3] - 64) <= 2, "");
+
+        transforms.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+    }
+
+    /** The centre pixel of a readback as RGBA. */
+    private static int[] centreRgba(ByteBuffer pixels) {
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        return new int[]{pixels.get(at) & 0xFF, pixels.get(at + 1) & 0xFF,
+                pixels.get(at + 2) & 0xFF, pixels.get(at + 3) & 0xFF};
+    }
+
+    /** A gui-shaded pipeline with the given colour write mask, no depth state and no blending. */
+    private static RenderPipeline writeMaskPipeline(String name, int writeMask) throws Exception {
+        VertexFormat format = ((RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("GUI").get(null)).getVertexFormatBinding(0);
+        return RenderPipeline.builder()
+                .withLocation("write_mask/" + name)
+                .withVertexShader(Identifier.parse("minecraft:core/gui"))
+                .withFragmentShader(Identifier.parse("minecraft:core/gui"))
+                .withVertexBinding(0, format)
+                .withPrimitiveTopology(PrimitiveTopology.QUADS)
+                .withCull(false)
+                .withColorTargetState(new ColorTargetState(Optional.empty(),
+                        GpuFormat.RGBA8_UNORM, writeMask))
+                .build();
     }
 
     /**

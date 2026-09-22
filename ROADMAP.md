@@ -345,7 +345,7 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 | `scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `scripts/run_smoke.sh` | native device/pipeline/draw/surface, 11 sections |
 | `tools/shader_inventory/run.sh` | `static 87/87` and `post 9/9`, no diagnostics from any pipeline |
-| `tools/render_check/run.sh` | 75 assertions over 24 mechanisms, real vanilla pipelines |
+| `tools/render_check/run.sh` | 77 assertions over 25 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 
 What remains for Phase 5 is the part that needs a running game: BUG-001 (missing GUI sprites),

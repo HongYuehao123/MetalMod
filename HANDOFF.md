@@ -276,7 +276,7 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Twenty-four rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Twenty-five rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
   orientation, mip selection, texture copies (whole and by rectangle), the atlas compositing flip,
@@ -309,6 +309,17 @@ Also for Phase 5:
   and a screenshot showing terrain, sky with fancy clouds, water, HUD, items, legible text and the
   debug axes at 62.9 fps at 5120x2664. Terrain is going through `sampleRGSS` in that session
   (`Filtering: RGSS`), so the RGSS branch added in round 20 is live rather than theoretical.
+- **From the second run: the sky light never reached the ground, and that is fixed.** A bright sky
+  over a dark ground is a specific signature - the lightmap pass was stored vertically mirrored,
+  because `core/screenquad` has no projection matrix to carry Minecraft's Y convention and only
+  `/atlas/` targets were being flipped. `setPipeline` now flips for any `screenquad` pass, which also
+  puts the whole post-processing chain into Vulkan's orientation. See BUG-022.
+- **Still open from the second run, and not yet diagnosed:** water and ice are reported to put a
+  translucent "glaze" over the view, and item textures look wrong in the inventory. `WATER_MASK`
+  declares `WRITE_NONE`, which looked like the obvious candidate for a water pass painting the scene,
+  but a render check now proves the mask is honoured - so that hypothesis is eliminated rather than
+  assumed. Both need a screenshot of the defect to go further; neither is reachable from the offline
+  harness as it stands.
 - **The first in-game run immediately found a crash the offline suites could not.** Entering a world
   aborted Metal on `MTLTextureDescriptor has width (181818) greater than the maximum allowed size of
   16384`. The texel-buffer emulation built its texture `texels x 1`, and SPIRV-Cross bakes a 4096
