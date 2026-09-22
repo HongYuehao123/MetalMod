@@ -59,6 +59,19 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         displayer.addLine("§6[MetalMod]§r Render §a" + oneDecimal(mgr.getRenderFPS()) + " fps"
                 + "§r | Window §a" + mgr.getNativeWidth() + "x" + mgr.getNativeHeight());
 
+        // The backend's health counters. These are the numbers that explain a black or missing
+        // object: a shader sampling something nothing bound, an attribute dropped from the vertex
+        // descriptor, or a pipeline that failed to build and is therefore skipping its draws.
+        int unbound = net.metalmod.backend.MetalDevice.unboundBindingCount();
+        int unmapped = net.metalmod.backend.MetalDevice.unmappedAttributeCount();
+        int failed = net.metalmod.backend.MetalDevice.pipelineFailureCount();
+        String health = "§a0§r";
+        if (unbound != 0 || unmapped != 0 || failed != 0) {
+            health = "§c" + unbound + "/" + unmapped + "/" + failed + "§r";
+        }
+        displayer.addLine("§6[MetalMod]§r unbound/unmapped/failed: " + health
+                + "§7 (0/0/0 = bindings, vertex attrs and pipelines all sound)§r");
+
         if (config.enableUnifiedMemoryPool) {
             UnifiedMemoryManager mem = UnifiedMemoryManager.getInstance();
             displayer.addLine("§6[MetalMod]§r UMA pool §aon§r | footprint §b"

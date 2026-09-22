@@ -126,6 +126,38 @@ Plan, evidence and results: `docs/phase4-plan.md`.
   imports `projection.glsl` twice, so an offline reproduction that does not de-duplicate invents two
   failures that the game does not have.
 
+## Phase 5 status (vanilla render parity) — IN PROGRESS
+
+Working through the known defects in evidence-ranked order. Two root causes for the missing/wrong
+terrain are fixed:
+
+- **BUG-004 — multi-draw uniforms (fixed).** `drawMultipleIndexed` never invoked each draw's
+  `uniformUploaderConsumer`, so the per-draw `ChunkSection` block (`ModelViewMat`, `ChunkPosition`)
+  was never bound and terrain had no transform at all. It now invokes the consumer, honours the
+  per-draw index buffer/type, and diagnoses bindings on that path. Coverage:
+  `MetalRenderPassBackendTest` (7 assertions).
+- **BUG-005 — uniform blocks keyed by the wrong name (fixed).** Blocks were keyed by the GLSL
+  *instance* name; the engine binds by block *type* name (`BindGroupLayouts` declares
+  `LightmapInfo`). `lightmap.fsh` is the only vanilla shader that names its instance, which is why
+  the lightmap was the one thing the diagnostic caught.
+
+Also for Phase 5:
+
+- **New diagnostic:** a `VertexFormat` element with no matching shader input is now reported instead
+  of silently dropped from the vertex descriptor. All 87 vanilla pipelines report none.
+- **F3 now shows `unbound/unmapped/failed`** counters, so a black or missing object can be explained
+  without reading the log.
+- **BUG-002's candidate causes were checked and ruled out** (topology mapping, front-face winding,
+  atlas-only viewport flip, vertex descriptor, missing bindings). What remains is the *values* on the
+  outline draw — most plausibly `LineWidth` vertex data or the `ScreenSize` uniform, since the
+  shader's thickness is `LineWidth / ScreenSize`. That needs runtime inspection.
+- **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
+  is the conservative direction given the paths that are not implemented.
+
+**To make progress past this point, an in-game run is needed.** Every remaining item (BUG-001,
+BUG-002, BUG-003 visual confirmation) is a runtime observation, not something that can be settled by
+reading code.
+
 ## What does not work
 
 - **Vanilla visual parity (Phase 5):** terrain and entities render unlit/flat (BUG-003), some GUI

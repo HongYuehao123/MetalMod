@@ -151,6 +151,10 @@ public final class MetalDevice implements GpuDeviceBackend {
         return unmappedAttributeCount;
     }
 
+    public static synchronized int pipelineFailureCount() {
+        return pipelineFailureCount;
+    }
+
     // The engine clears its main render target with the sky/background colour; capture it so the
     // first-light clear on the drawable is the colour the renderer actually chose, not a constant.
     private final float[] lastClearColor = {0.06f, 0.09f, 0.16f, 1.0f};
