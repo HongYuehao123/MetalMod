@@ -87,6 +87,17 @@ MMM_API int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture
 /// Schedule presentation of a previously acquired drawable and release it.
 MMM_API void mmm_layer_present(void* layer, void* drawable);
 
+/// Build a CAMetalLayer on the content view of an NSWindow (the pointer GLFWNativeCocoa returns).
+/// Used by the renderer backend, which receives a GLFWwindow* and must reach its NSWindow.
+MMM_API void* mmm_layer_create_for_ns_window(void* nsWindow);
+
+/// Clear an acquired drawable and present it from a single command buffer. Encoding the clear and
+/// the present on one queue in one commit is what makes the ordering correct; two queues there is
+/// no ordering and the clear can land after the present. Consumes the retained drawable.
+/// Returns 0 on success, non-zero on failure.
+MMM_API int mmm_layer_present_clear(void* layer, void* drawable,
+                                    float r, float g, float b, float a);
+
 // ---------------------------------------------------------------------------------------------
 // Command buffers and render passes
 // ---------------------------------------------------------------------------------------------

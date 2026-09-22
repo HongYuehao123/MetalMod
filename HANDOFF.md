@@ -6,6 +6,14 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
 
 - **Build:** compiles against the **real Minecraft client jar** (no API stubs).
   `./scripts/build_mod.sh` → `build/libs/metalmod-1.0.0.jar`.
+- **Metal renderer backend (Phase 1 first light):** Minecraft selects `MetalBackend`, creates an
+  `MTLDevice` and attaches a `CAMetalLayer` to the window, and presents cleared frames at display
+  rate (verified 3000 frames in 55 s). Mixin: `PreferredGraphicsApiMixin`. The draw path is inert,
+  so the window shows a pulsing clear colour rather than the game image.
+- **The Metal backend is opt-in and OFF by default** (`preferMetalBackend=false`, also
+  `-Dmetalmod.metalBackend=true`). It must be, because until Phase 3 draws the game the window is a
+  flat colour and the game is unusable; defaulting it on silently broke normal play. With it off,
+  Minecraft runs on Vulkan/OpenGL exactly as before.
 - **Integration:** all mixins apply. Verified in-game:
   `+GameRenderer.render +GameRenderer.resize +Window.onFramebufferResize`,
   `F3 debug entry: registered=true verified=true`.
@@ -13,17 +21,25 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
 - **Config GUI:** opens from Mod Menu; buttons work.
 - **Native library:** `libmetalmod.dylib` loads; MetalFX capability queries and Mach VM telemetry work.
 
-## Phase 1 status (Metal backend)
+## Phase 1 status (Metal backend) — DONE
 
 - **Native Metal substrate: done and verified** (`native/src/metalmod_metal.mm`).
   `./native/build/metalmod_smoke` passes on Apple M4 Pro: device info, exact clear-colour
   round-trip through CPU readback, and `CAMetalLayer` acquire/clear/present.
-- **Not yet written:** the Java backend classes (`MetalBackend`, `MetalDeviceBackend`,
-  `MetalSurfaceBackend`, encoder/render-pass backends, resource types) and the mixin that prefers
-  Metal in `PreferredGraphicsApi.getBackendsToTry()`. Until those exist, Minecraft still runs on
-  Vulkan/MoltenVK.
-- The exact interface contract to implement is generated into `docs/backend-api.md`
-  (`./scripts/dump_backend_api.sh`).
+- **Java backend: done** (`net.metalmod.backend`): `MetalBackend` (GpuBackend),
+  `MetalDevice` (GpuDeviceBackend), `MetalCommandEncoderBackend`, `MetalRenderPassBackend`,
+  `MetalSurfaceBackend`, `MetalTransientMemory`, and the resource types
+  (`MetalTexture/View/Buffer/Sampler/Fence/QueryPool/CompiledPipeline`). `MetalNative` is the
+  Panama FFI binding for the `mmm_*` C surface.
+- **Backend selection: done.** `PreferredGraphicsApiMixin` prepends `MetalBackend` to
+  `getBackendsToTry()`, keeping the vanilla backends as fallback. A `BackendCreationException`
+  from Metal degrades cleanly to Vulkan/OpenGL.
+- **First light: verified.** A throwaway instance booted with `Using graphics backend Metal`,
+  created device + layer, recorded the surface (`1708x960`), and presented 2400+ cleared frames
+  before a clean shutdown. See `docs/phase1-boot-trace.md` for the calibration.
+- **Placeholder by design:** textures, buffers, samplers and pipelines carry no native objects, and
+  every draw is a no-op. That is what Phase 2/3 replace. The interface contract is in
+  `docs/backend-api.md`.
 
 ## What does not work
 

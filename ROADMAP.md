@@ -115,9 +115,9 @@ our own textures, and ray tracing becomes possible at all.
 |---|---|
 | `VulkanFrameManager` | Superseded: no VkImage plumbing needed once we own the device. |
 | `MetalBridge` Vulkan interop (`metalmod_register_vulkan_device`, `metalmod_process_frame`) | Superseded by backend-owned textures. |
-| `metalmod_pacer.mm`, `metalmod_compositor.mm`, spatial/temporal/interpolator wrappers | MetalFX returns in Phase 7, against our own textures, with no interop or pacing hacks. |
+| `metalmod_pacer.mm`, `metalmod_compositor.mm`, spatial/temporal/interpolator wrappers | MetalFX returns in Phase 8, against our own textures, with no interop or pacing hacks. |
 | `RenderTargetMixin` | Already removed — scaling the main render target breaks the GUI (`Scissor ... out of bounds for render area`) and froze input. |
-| `JitterHelper` | Returns in Phase 7 with temporal upscaling. |
+| `JitterHelper` | Returns in Phase 8 with temporal upscaling. |
 | `MetalMemoryAllocator` | **Removed.** LWJGL 3.4 requires native function pointers (`getMalloc`, `getAlignedFree`, …) for its fast allocation path; a Java pool cannot supply them honestly, and mixing libc- and pool-allocated pointers behind one `free()` risks corruption. It was also a measured pessimisation. |
 
 ---
@@ -143,7 +143,7 @@ Compile against the **real client jar** rather than generated API stubs.
 copying a jar into the instance. Loom would give a proper dev loop — desirable but no longer a
 correctness prerequisite.
 
-### Phase 1 — First light: device, surface, clear  · **M**  · *in progress*
+### Phase 1 — First light: device, surface, clear  · **M**  · ✅ **DONE**
 
 **Native substrate: DONE and verified.** `native/src/metalmod_metal.mm` provides device, queue,
 texture create/readback, `CAMetalLayer` surface (acquire/clear/present) and command-buffer/clear-pass
@@ -156,20 +156,19 @@ Two SDK realities worth remembering: Metal exposes **no** max-texture-size query
 derived from `supportsFamily:`), and `[MTLDevice newCommandBuffer]` is the Metal 4 API returning
 `id<MTL4CommandBuffer>` — Metal 3 command buffers must come from a queue.
 
-**Remaining:** the Java side (`MetalBackend`, `MetalDeviceBackend`, `MetalSurfaceBackend`,
-encoder/render-pass backends, resource types) and the `PreferredGraphicsApiMixin`.
+**Java side: DONE** (`net.metalmod.backend`) — the full `GpuDeviceBackend`,
+`CommandEncoderBackend`, `RenderPassBackend` and `GpuSurfaceBackend` surfaces, `MetalNative`
+as the Panama binding, and `PreferredGraphicsApiMixin` prepending Metal while keeping the vanilla
+backends as fallback (a `BackendCreationException` degrades cleanly). Textures, buffers, samplers
+and pipelines are deliberately placeholders and every draw is a no-op; that is Phase 2/3 work.
 
-Prove that Minecraft can run on a Metal device at all.
+**Verified first light.** In a throwaway instance, Minecraft logged `Using graphics backend Metal`,
+created the device and a `CAMetalLayer`, and presented 2400+ cleared frames at ~60 fps before a
+clean shutdown. The full boot sequence — and why a clear-only backend cannot boot — is recorded in
+`docs/phase1-boot-trace.md`.
 
-- `MetalBackend implements GpuBackend` — window hints, `createDevice`.
-- `MetalDeviceBackend implements GpuDeviceBackend` — device/queue creation via `MTLCreateSystemDefaultDevice`, `DeviceInfo`, limits, features.
-- `MetalSurfaceBackend implements GpuSurfaceBackend` — own the `CAMetalLayer`, acquire/present drawables, present modes.
-- Minimal `CommandEncoderBackend` + `RenderPassBackend` — enough to clear the surface to a colour.
-- Mixin `PreferredGraphicsApi.getBackendsToTry()` to prepend Metal.
-- Native side: Objective-C++ bridge (Panama FFI, matching the existing `MetalBridge` style).
-
-**Done when:** Minecraft boots and presents a cleared window on Metal, with the vanilla renderer
-disabled. Expect a black/grey screen and a working window — that is success at this stage.
+**Done when:** Minecraft boots and presents a cleared window on Metal. ✅ Achieved; the window shows
+a pulsing first-light colour because all draws are inert.
 
 **Risks:** window/layer ownership with GLFW; present-mode negotiation; device-loss handling.
 
@@ -202,7 +201,7 @@ disabled. Expect a black/grey screen and a working window — that is success at
 
 **Risk:** MC's `ShaderType` has only `VERTEX` and `FRAGMENT`. Any pack needing compute or geometry
 shaders — common in modern shaderpacks — requires extending the pipeline beyond what the vanilla
-abstraction models. Plan for that in Phase 6.
+abstraction models. Plan for that in Phase 7.
 
 ### Phase 5 — Vanilla render parity  · **L–XL**
 
@@ -218,9 +217,37 @@ frame rate.
 
 **Compatibility risk:** Sodium replaces terrain rendering. It sits on Blaze3D's abstraction in
 modern versions, so it should follow, but its terrain path is the performance-critical one and needs
-dedicated testing. Iris is the shaderpack loader and is a Phase 6 dependency.
+dedicated testing. Iris is the shaderpack loader and is a Phase 7 dependency.
 
-### Phase 6 — Shaderpacks  · **L**
+### Phase 6 — Dynamic lighting  · **M–L**
+
+Vanilla lighting is baked: one block-light and one sky-light value per block, updated on the CPU.
+That gives a shader or a path tracer nothing to work with except a lightmap texture, and nothing that
+moves. Both shaderpacks (Phase 7) and ray tracing (Phase 9) need a real light model, so it is its
+own phase rather than a detail of either.
+
+- **A light-source model.** Point/spot/area lights with colour and intensity, emitted by blocks,
+  entities, held items and the sky, collected per frame into a GPU-readable light buffer.
+- **Movable ("dynamic") lights.** The OptiFine/Iris dynamic-lights behaviour: a held torch, a
+  dropped torch or a glowing entity lights nearby surfaces without a block update. On a native
+  backend this can be a renderer-side additive light pass instead of CPU light propagation.
+- **Scalable evaluation.** Clustered-forward or deferred lighting so many lights stay affordable,
+  with light culling and per-cluster lists.
+- **Expose it downstream.** Publish lights, intensities and shadow-casting flags to shaderpacks as
+  uniforms, and keep the data in a form a BLAS/TLAS path tracer can sample in Phase 9.
+
+**Done when:** emissive and movable sources affect the scene consistently, and a shaderpack can read
+the light set instead of reconstructing lighting from the vanilla lightmap alone.
+
+**Dependencies:** needs Phase 3 (draw calls) plus the lightmap and post-processing passes from
+Phase 5. It is a prerequisite for good shaderpack lighting (Phase 7) and for any ray-traced lighting
+(Phase 9).
+
+**Risks:** many lights is a performance problem before it is a correctness problem — keep the light
+buffer bounded and cull aggressively. Vanilla's own lighting must keep working unchanged, and the
+feature stays user-toggleable so a pack that brings its own lighting is not double-lit.
+
+### Phase 7 — Shaderpacks  · **L**
 
 - A shaderpack-aware `ShaderSource` (packs ship GLSL, so the Phase 4 path applies).
 - Injecting pack-declared passes (shadow, deferred, composite) into the frame graph.
@@ -230,7 +257,7 @@ dedicated testing. Iris is the shaderpack loader and is a Phase 6 dependency.
 **Done when:** a representative set of popular packs loads without errors and produces correct
 output. Feature coverage, not a single pack, is the milestone.
 
-### Phase 7 — MetalFX, natively  · **S–M**
+### Phase 8 — MetalFX, natively  · **S–M**
 
 Now straightforward, because MetalMod owns the device and the swapchain:
 
@@ -242,11 +269,11 @@ Now straightforward, because MetalMod owns the device and the swapchain:
   refresh. This costs about one refresh of input latency (~8 ms at 120 Hz) — a deliberate trade, not
   a free win.
 
-### Phase 8 — Ray tracing  · **XL (research)**
+### Phase 9 — Ray tracing  · **XL (research)**
 
 - Build BLAS/TLAS from chunk meshes; rebuild strategy for chunk edits.
 - Hybrid raster + RT: shadows, reflections, ambient occlusion first; full path tracing later.
-- Denoising and temporal accumulation on top of Phase 7's machinery.
+- Denoising and temporal accumulation on top of Phase 8's machinery.
 
 Apple silicon M3 and later have hardware ray tracing; this is the objective that most justifies a
 native Metal backend, since MoltenVK cannot express it at all.

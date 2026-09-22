@@ -43,6 +43,9 @@ bin/
 # ---------------------------------------------------------------------------
 config/metalmod.properties
 
+# Game/launch logs written to the process working directory by local test runs
+logs/
+
 # ---------------------------------------------------------------------------
 # JVM crash dumps - native code can SIGSEGV, these must never be committed
 # ---------------------------------------------------------------------------

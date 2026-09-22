@@ -75,6 +75,11 @@ public class MetalConfig {
     // corruption. See ROADMAP.md, "Memory".
     public volatile boolean enableUnifiedMemoryPool = false;
     public volatile boolean enableMemoryPressureHandler = true; // macOS kernel memory pressure listener
+    // Off by default, and deliberately so: the Metal backend is Phase 1 first light. It selects a
+    // Metal device and presents cleared frames, but every draw is still a no-op, so the game is
+    // unusable while it is on. Enable it only to develop or test the backend; normal play stays on
+    // Vulkan/OpenGL. Also settable with -Dmetalmod.metalBackend=true.
+    public volatile boolean preferMetalBackend = false;
 
     public void load() {
         if (!CONFIG_FILE.exists()) {
@@ -102,6 +107,7 @@ public class MetalConfig {
             this.targetDisplayFPS = Integer.parseInt(props.getProperty("targetDisplayFPS", "120"));
             this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "false"));
             this.enableMemoryPressureHandler = Boolean.parseBoolean(props.getProperty("enableMemoryPressureHandler", "true"));
+            this.preferMetalBackend = Boolean.parseBoolean(props.getProperty("preferMetalBackend", "false"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());
         }
@@ -124,6 +130,7 @@ public class MetalConfig {
                 props.setProperty("targetDisplayFPS", Integer.toString(this.targetDisplayFPS));
                 props.setProperty("enableUnifiedMemoryPool", Boolean.toString(this.enableUnifiedMemoryPool));
                 props.setProperty("enableMemoryPressureHandler", Boolean.toString(this.enableMemoryPressureHandler));
+                props.setProperty("preferMetalBackend", Boolean.toString(this.preferMetalBackend));
                 props.store(writer, "MetalMod Apple Silicon Configuration");
             }
         } catch (Exception e) {

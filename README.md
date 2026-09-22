@@ -1,17 +1,27 @@
-# MetalMod: Apple Silicon Metal & MetalFX Mod for Minecraft (Fabric / Vulkan backend)
+# MetalMod: native Apple Silicon Metal backend for Minecraft (Fabric)
 
-MetalMod aims to bring **Apple Silicon native graphics acceleration** to Minecraft on macOS using
-Minecraft's Vulkan backend (MoltenVK) and Apple's **MetalFX** upscaling / frame interpolation, plus
-an Apple Silicon unified-memory allocator.
+MetalMod is building a **native Metal graphics backend** for Minecraft on macOS, with Apple's
+**MetalFX** upscaling / frame interpolation and native ray tracing as later goals, plus an Apple
+Silicon unified-memory allocator. It replaces the older "run MetalFX on top of MoltenVK" design,
+which could never own presentation.
 
-> ## ⚠️ Current status: the frame pipeline is INACTIVE
+> ## Current status: Phase 1 (Metal first light) is DONE
 >
-> The native MetalFX layer works — MetalFX Spatial, Temporal and FrameInterpolator objects are
-> created successfully on Apple Silicon — but **no upscaled or interpolated frame currently reaches
-> the display**, and the features are therefore disabled rather than left costing GPU time for an
-> image nobody sees. See [Known limitations](#known-limitations) for exactly what is missing.
+> Minecraft now selects a **Metal backend**, creates the device and a `CAMetalLayer`, and presents
+> cleared frames at display rate (verified ~2400 frames in a minute, clean shutdown). The draw path
+> is deliberately inert, so the window shows a pulsing first-light colour rather than the game image
+> — that is Phase 2/3 work. See `ROADMAP.md` (Phase 1) and `docs/phase1-boot-trace.md`.
 >
-> Frame generation is **off by default** for the same reason.
+> The backend is **opt-in and OFF by default**, because it cannot draw the game yet. Normal play is
+> untouched (Vulkan/OpenGL). To exercise first light, set `preferMetalBackend=true` in
+> `config/metalmod.properties` or launch with `-Dmetalmod.metalBackend=true`; expect a flat
+> pulsing clear colour, not the game.
+>
+> ## ⚠️ The MetalFX frame pipeline is INACTIVE
+>
+> The old MetalFX layer still works natively, but **no upscaled or interpolated frame reaches the
+> display**. MetalFX returns in Phase 8, against the backend's own textures, with no MoltenVK
+> interop. Frame generation is **off by default**.
 
 ---
 

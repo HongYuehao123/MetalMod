@@ -343,3 +343,51 @@ void mmm_end_encoding(void* encoder) {
         (void)released;
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Renderer-backend surface helpers
+// ---------------------------------------------------------------------------------------------
+
+void* mmm_layer_create_for_ns_window(void* nsWindow) {
+    if (nsWindow == NULL) return NULL;
+    @autoreleasepool {
+        NSWindow* window = (__bridge NSWindow*)nsWindow;
+        NSView* view = window.contentView;
+        if (view == nil) return NULL;
+        return mmm_layer_create((__bridge void*)view);
+    }
+}
+
+int mmm_layer_present_clear(void* layer, void* drawable,
+                            float r, float g, float b, float a) {
+    CAMetalLayer* metalLayer = mmm_layer(layer);
+    id<CAMetalDrawable> metalDrawable = (__bridge id<CAMetalDrawable>)drawable;
+    if (metalLayer == nil || metalDrawable == nil) return -1;
+
+    @autoreleasepool {
+        id<MTLDevice> dev = metalLayer.device;
+        if (dev == nil) return -2;
+
+        if (g_PresentQueue == nil) {
+            g_PresentQueue = [dev newCommandQueue];
+            g_PresentQueue.label = @"MetalMod present queue";
+        }
+        id<MTLCommandBuffer> commandBuffer = [g_PresentQueue commandBuffer];
+        commandBuffer.label = @"MetalMod present (clear)";
+
+        MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        descriptor.colorAttachments[0].texture = metalDrawable.texture;
+        descriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+        descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, a);
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        [encoder endEncoding];
+
+        [commandBuffer presentDrawable:metalDrawable];
+        [commandBuffer commit];
+
+        id<CAMetalDrawable> released = (__bridge_transfer id<CAMetalDrawable>)drawable;
+        (void)released;
+    }
+    return 0;
+}
