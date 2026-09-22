@@ -75,6 +75,10 @@ Caveat: with vsync on, a *fast* frame waits for the display too, so only read "G
 frame is also slower than the refresh rate. `render passes` is the per-frame command-buffer count
 for the engine's passes (plus the present blit); a high number is submission overhead.
 
+The `draw 'pipeline' -> target` census and the unbound-binding report run on every draw, so they
+stop themselves after about ten seconds (the log says so). `-Dmetalmod.census=on` keeps them for a
+dedicated debugging run.
+
 > A true per-frame GPU *execution* time is not shown. Summing each command buffer's
 > `GPUStartTime`/`GPUEndTime` looks like it works and does not: command buffers on one queue may
 > overlap execution, so the sum over-counts (measured ~3× in one scene and ~8× in another, and it

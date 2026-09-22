@@ -39,8 +39,19 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final Map<String, GpuTextureView> textures = new HashMap<>();
     private final Map<String, GpuSampler> samplers = new HashMap<>();
 
+    // What this encoder already has bound, by name, so a draw that binds the same objects as the
+    // previous one issues no FFI calls at all. Identity comparison is deliberate and is exactly the
+    // right test: the engine reuses one GpuBufferSlice object for a uniform that did not change
+    // (Globals, Projection, Fog and the lightmap hold for a whole terrain pass) and makes a fresh
+    // one for a uniform that did (ChunkSection, once per section). Cleared whenever the pipeline
+    // changes, because a name resolves to different slots under a different pipeline.
+    private final Map<String, GpuBufferSlice> boundUniforms = new HashMap<>();
+    private final Map<String, GpuTextureView> boundTextures = new HashMap<>();
+    private final Map<String, GpuSampler> boundSamplers = new HashMap<>();
+
     private String pipelineName = "none";
     private MetalRenderPipeline pipeline;
+    private RenderPipeline lastEnginePipeline;
     private int topology = 3;
     private MemorySegment indexBuffer = MemorySegment.NULL;
     private long indexBufferOffset;
@@ -79,18 +90,32 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void setPipeline(RenderPipeline pipeline) {
-        this.pipeline = this.owner.device().pipelineFor(pipeline);
-        this.pipelineName = pipeline.getLocation().toString();
-        if (this.pipeline != null) {
-            this.topology = this.pipeline.topology();
-            MetalNative.renderPassSetPipeline(this.encoder, this.pipeline.handle());
-            MetalDevice.notePipelineTarget(this.owner.currentTargetLabel(), this.pipelineName);
-            flipViewportForScreenquad(pipeline);
+        if (pipeline == this.lastEnginePipeline) {
+            // Same pipeline as the previous draw, so the encoder already holds its state and every
+            // binding was applied under it. Consecutive chunk-section draws hit this path, and
+            // returning here skips the synchronized pipeline lookup, two string allocations, a
+            // synchronized census call and five native state writes per draw. A different pipeline -
+            // even one that resolves to the same Metal state - takes the full path, so the encoder
+            // can never be stale.
+            return;
         }
+        this.lastEnginePipeline = pipeline;
+        MetalRenderPipeline resolved = this.owner.device().pipelineFor(pipeline);
+        this.pipeline = resolved;
+        // Slots differ per pipeline, so the "already bound" shadow is void.
+        this.boundUniforms.clear();
+        this.boundTextures.clear();
+        this.boundSamplers.clear();
+        if (resolved == null) {
+            this.pipelineName = pipeline.getLocation().toString();
+            return;
+        }
+        this.pipelineName = resolved.name();
+        this.topology = resolved.topology();
+        MetalNative.renderPassSetPipeline(this.encoder, resolved.handle());
+        MetalDevice.notePipelineTarget(this.owner.currentTargetLabel(), this.pipelineName);
+        flipViewportForScreenquad(resolved);
     }
-
-    /** The vertex shader whose geometry is built from the vertex id with no projection matrix. */
-    private static final String SCREENQUAD = "minecraft:core/screenquad";
 
     /**
      * Flip the viewport for passes drawn with {@code core/screenquad}.
@@ -107,11 +132,11 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
      * shows it exactly, with every corner swapped.
      *
      * <p>It is the same correction as the atlas path, for the same reason, and the two are kept
-     * exclusive so a pass is never flipped twice.
+     * exclusive so a pass is never flipped twice. The pipeline answers the question itself, so no
+     * string is built per draw.
      */
-    private void flipViewportForScreenquad(RenderPipeline pipeline) {
-        if (this.owner.viewportFlipped()
-                || !SCREENQUAD.equals(pipeline.getVertexShader().toString())) {
+    private void flipViewportForScreenquad(MetalRenderPipeline pipeline) {
+        if (this.owner.viewportFlipped() || !pipeline.isScreenquad()) {
             return;
         }
         MetalNative.renderPassSetViewport(this.encoder, 0.0, (double) this.height,
@@ -124,42 +149,53 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (this.pipeline == null) {
             return;
         }
-        if (reportMissing) {
+        if (reportMissing && MetalDevice.censusEnabled()) {
             reportMissingBindings();
         }
         for (Map.Entry<String, GpuBufferSlice> entry : this.uniforms.entrySet()) {
             String name = entry.getKey();
+            GpuBufferSlice slice = entry.getValue();
+            if (this.boundUniforms.get(name) == slice) {
+                continue;
+            }
             int vb = this.pipeline.vertexBuffer(name);
             int fb = this.pipeline.fragmentBuffer(name);
             if (vb < 0 && fb < 0) {
                 continue;
             }
-            GpuBufferSlice slice = entry.getValue();
             MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
             if (handle.address() == 0) {
                 continue;
             }
-            if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, absoluteOffset(slice), vb);
-            if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, absoluteOffset(slice), fb);
+            long offset = absoluteOffset(slice);
+            if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, offset, vb);
+            if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, offset, fb);
+            this.boundUniforms.put(name, slice);
         }
         for (Map.Entry<String, GpuTextureView> entry : this.textures.entrySet()) {
             String name = entry.getKey();
+            GpuTextureView view = entry.getValue();
+            GpuSampler sampler = this.samplers.get(name);
+            if (this.boundTextures.get(name) == view && this.boundSamplers.get(name) == sampler) {
+                continue;
+            }
             int vt = this.pipeline.vertexTexture(name);
             int ft = this.pipeline.fragmentTexture(name);
             if (vt < 0 && ft < 0) {
                 continue;
             }
-            MemorySegment texture = MetalCommandEncoderBackend.handleOf(entry.getValue());
+            MemorySegment texture = MetalCommandEncoderBackend.handleOf(view);
             if (vt >= 0) MetalNative.renderPassSetVertexTexture(this.encoder, texture, vt);
             if (ft >= 0) MetalNative.renderPassSetFragmentTexture(this.encoder, texture, ft);
 
-            GpuSampler sampler = this.samplers.get(name);
             MemorySegment samplerHandle = sampler instanceof MetalSampler metal
                     ? metal.handle() : MemorySegment.NULL;
             int vs = this.pipeline.vertexSampler(name);
             int fs = this.pipeline.fragmentSampler(name);
             if (vs >= 0) MetalNative.renderPassSetVertexSampler(this.encoder, samplerHandle, vs);
             if (fs >= 0) MetalNative.renderPassSetFragmentSampler(this.encoder, samplerHandle, fs);
+            this.boundTextures.put(name, view);
+            this.boundSamplers.put(name, sampler);
         }
     }
 

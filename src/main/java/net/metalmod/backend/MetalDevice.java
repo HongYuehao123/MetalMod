@@ -176,6 +176,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         commandBuffersSumInWindow += commandBuffersThisFrame;
         commandBuffersThisFrame = 0;
         framesInWindow++;
+        noteCensusFrame();
 
         if (framesInWindow >= TIMING_WINDOW_FRAMES) {
             lastFrameMs = (float) (frameMsSumInWindow / framesInWindow);
@@ -341,9 +342,36 @@ public final class MetalDevice implements GpuDeviceBackend {
     // into which target" is answered by a log rather than by reading the engine. The frame graph
     // maps its named targets onto a pool, so the label alone does not say where translucency is
     // rendered or where the composite reads from.
+    //
+    // It is a bring-up census, not a steady-state diagnostic, and it sits in the hottest path there
+    // is: every draw calls this, and every call builds a key string and takes this monitor. So
+    // collection stops by itself after a few seconds (about 600 frames), by which time every
+    // pipeline the session uses has been seen. `-Dmetalmod.census=on` keeps it running for a
+    // dedicated debugging session, and the same switch governs the unbound-binding report.
     private static final java.util.Set<String> notedPipelineTargets = new java.util.HashSet<>();
 
+    private static final boolean CENSUS_FORCED =
+            "on".equalsIgnoreCase(System.getProperty("metalmod.census", ""));
+    private static volatile boolean censusEnabled = true;
+    private static long censusFrames;
+
+    /** Whether the per-draw bring-up census (target log, unbound-binding report) is still running. */
+    public static boolean censusEnabled() {
+        return censusEnabled;
+    }
+
+    private static void noteCensusFrame() {
+        if (censusEnabled && !CENSUS_FORCED && ++censusFrames > 600) {
+            censusEnabled = false;
+            System.out.println("[MetalMod] pipeline/target census stopped after " + censusFrames
+                    + " frames (it runs per draw; -Dmetalmod.census=on keeps it).");
+        }
+    }
+
     static synchronized void notePipelineTarget(String target, String pipeline) {
+        if (!censusEnabled) {
+            return;
+        }
         if (target == null || pipeline == null || !notedPipelineTargets.add(target + " <- " + pipeline)) {
             return;
         }

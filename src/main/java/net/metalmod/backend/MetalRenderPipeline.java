@@ -54,13 +54,19 @@ public final class MetalRenderPipeline {
     // option: creating one with the declared R8_SINT aborts (BUG-013).
     private final Map<String, TexelBuffer> texelBuffers;
     private final int topology;
+    // Cached per pipeline rather than recomputed per draw. setPipeline runs once per draw, and
+    // getLocation().toString() / getVertexShader().toString() allocate on every call - at 6-18k
+    // draws a frame that is tens of thousands of short-lived strings.
+    private final String name;
+    private final boolean screenquad;
     private boolean closed;
 
     private MetalRenderPipeline(MemorySegment handle, MemorySegment vertexLibrary, MemorySegment fragmentLibrary,
                                 Map<String, Integer> vertexBuffers, Map<String, Integer> fragmentBuffers,
                                 Map<String, Integer> vertexTextures, Map<String, Integer> fragmentTextures,
                                 Map<String, Integer> vertexSamplers, Map<String, Integer> fragmentSamplers,
-                                int topology, Map<String, TexelBuffer> texelBuffers) {
+                                int topology, Map<String, TexelBuffer> texelBuffers,
+                                String name, boolean screenquad) {
         this.handle = handle;
         this.vertexLibrary = vertexLibrary;
         this.fragmentLibrary = fragmentLibrary;
@@ -75,6 +81,8 @@ public final class MetalRenderPipeline {
         this.declaredSamplers = union(vertexSamplers, fragmentSamplers);
         this.topology = topology;
         this.texelBuffers = texelBuffers;
+        this.name = name;
+        this.screenquad = screenquad;
     }
 
     private static java.util.Set<String> union(Map<String, Integer> a, Map<String, Integer> b) {
@@ -220,7 +228,9 @@ public final class MetalRenderPipeline {
                 return new MetalRenderPipeline(pipe, vlib, flib,
                         vs.vertexBuffers(), fs.fragmentBuffers(),
                         vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology,
-                        collectTexelBuffers(pipeline, vs, fs));
+                        collectTexelBuffers(pipeline, vs, fs),
+                        pipeline.getLocation().toString(),
+                        "minecraft:core/screenquad".equals(pipeline.getVertexShader().toString()));
             }
         } catch (Throwable t) {
             System.err.println("[MetalMod] pipeline compile failed for " + pipeline.getLocation() + ": " + t);
@@ -322,6 +332,16 @@ public final class MetalRenderPipeline {
 
     public MemorySegment handle() { return this.handle; }
     public int topology() { return this.topology; }
+
+    /** The pipeline's location, resolved once at compile time. */
+    public String name() { return this.name; }
+
+    /**
+     * Whether this is the full-screen-triangle pipeline ({@code minecraft:core/screenquad}), whose
+     * vertex shader builds its position from the vertex id with no projection matrix, so the pass
+     * needs the Y-flipped viewport. Precomputed because setPipeline runs once per draw.
+     */
+    public boolean isScreenquad() { return this.screenquad; }
     public int vertexBuffer(String name) { return this.vertexBuffers.getOrDefault(name, -1); }
     public int fragmentBuffer(String name) { return this.fragmentBuffers.getOrDefault(name, -1); }
     public int vertexTexture(String name) { return this.vertexTextures.getOrDefault(name, -1); }
