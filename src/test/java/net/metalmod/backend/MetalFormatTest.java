@@ -5,6 +5,8 @@ import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.platform.BlendFactor;
 import com.mojang.blaze3d.platform.BlendOp;
 import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
 
 /**
  * Verifies every Minecraft -> Metal enum mapping against the values in the Metal headers.
@@ -32,8 +34,57 @@ public final class MetalFormatTest {
         testCompareFunctions();
         testPrimitiveTopologies();
         testWriteMasks();
+        testSamplerAddressModes();
+        testSamplerFilters();
+        testTextureTypesAndUsage();
 
         return failures;
+    }
+
+    /**
+     * MTLSamplerAddressMode: ClampToEdge=0, MirrorClampToEdge=1, Repeat=2, MirrorRepeat=3. These
+     * were once swapped, which inverted every sampler's address mode.
+     */
+    private static void testSamplerAddressModes() {
+        check("CLAMP_TO_EDGE -> 0",
+                MetalFormat.mtlSamplerAddress(AddressMode.CLAMP_TO_EDGE) == 0,
+                "got " + MetalFormat.mtlSamplerAddress(AddressMode.CLAMP_TO_EDGE));
+        check("REPEAT -> 2",
+                MetalFormat.mtlSamplerAddress(AddressMode.REPEAT) == 2,
+                "got " + MetalFormat.mtlSamplerAddress(AddressMode.REPEAT));
+        check("address constants match the header",
+                MetalFormat.ADDRESS_CLAMP_TO_EDGE == 0 && MetalFormat.ADDRESS_REPEAT == 2
+                        && MetalFormat.ADDRESS_MIRROR_REPEAT == 3,
+                "clamp=" + MetalFormat.ADDRESS_CLAMP_TO_EDGE + " repeat=" + MetalFormat.ADDRESS_REPEAT
+                        + " mirror=" + MetalFormat.ADDRESS_MIRROR_REPEAT);
+    }
+
+    /** MTLSamplerMinMagFilter: Nearest=0, Linear=1. */
+    private static void testSamplerFilters() {
+        check("NEAREST -> 0", MetalFormat.mtlSamplerFilter(FilterMode.NEAREST) == 0,
+                "got " + MetalFormat.mtlSamplerFilter(FilterMode.NEAREST));
+        check("LINEAR -> 1", MetalFormat.mtlSamplerFilter(FilterMode.LINEAR) == 1,
+                "got " + MetalFormat.mtlSamplerFilter(FilterMode.LINEAR));
+    }
+
+    /**
+     * MTLTextureType and MTLTextureUsage bit values. TextureTypeTextureBuffer is 9 - Metal does
+     * support buffer textures, but nothing creates one yet, which is why Sodium's
+     * {@code isamplerBuffer} has no path.
+     */
+    private static void testTextureTypesAndUsage() {
+        check("MTLTextureType2D == 2", MetalFormat.TEXTURE_TYPE_2D == 2, "");
+        check("MTLTextureType2DArray == 3", MetalFormat.TEXTURE_TYPE_2D_ARRAY == 3, "");
+        check("MTLTextureTypeCube == 5", MetalFormat.TEXTURE_TYPE_CUBE == 5, "");
+        check("MTLTextureType3D == 7", MetalFormat.TEXTURE_TYPE_3D == 7, "");
+        check("MTLTextureTypeTextureBuffer == 9 (unused, needed by Sodium)",
+                MetalFormat.TEXTURE_TYPE_TEXTURE_BUFFER == 9,
+                "got " + MetalFormat.TEXTURE_TYPE_TEXTURE_BUFFER);
+        check("MTLTextureUsage bits (read=1, write=2, render=4, view=16)",
+                MetalFormat.TEXTURE_USAGE_SHADER_READ == 1
+                        && MetalFormat.TEXTURE_USAGE_SHADER_WRITE == 2
+                        && MetalFormat.TEXTURE_USAGE_RENDER_TARGET == 4
+                        && MetalFormat.TEXTURE_USAGE_PIXEL_FORMAT_VIEW == 16, "");
     }
 
     /**

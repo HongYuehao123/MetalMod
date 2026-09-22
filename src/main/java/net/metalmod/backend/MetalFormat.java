@@ -31,6 +31,12 @@ public final class MetalFormat {
     public static final int TEXTURE_TYPE_CUBE = 5;
     public static final int TEXTURE_TYPE_CUBE_ARRAY = 6;
     public static final int TEXTURE_TYPE_3D = 7;
+    /**
+     * MTLTextureTypeTextureBuffer. Declared for completeness and unused: nothing creates a buffer
+     * texture yet, so a shader that declares {@code isamplerBuffer} (Sodium's chunk section info is
+     * one) has no binding path. Recorded here so the gap is visible rather than surprising.
+     */
+    public static final int TEXTURE_TYPE_TEXTURE_BUFFER = 9;
 
     // MTLTextureUsage
     public static final int TEXTURE_USAGE_SHADER_READ = 1;
@@ -38,10 +44,12 @@ public final class MetalFormat {
     public static final int TEXTURE_USAGE_RENDER_TARGET = 4;
     public static final int TEXTURE_USAGE_PIXEL_FORMAT_VIEW = 16;
 
-    // MTLSamplerAddressMode
-    public static final int ADDRESS_REPEAT = 0;
-    public static final int ADDRESS_MIRROR_REPEAT = 1;
-    public static final int ADDRESS_CLAMP_TO_EDGE = 2;
+    // MTLSamplerAddressMode, from MTLSampler.h. Note this is not GL order and not the order you
+    // would guess: ClampToEdge is 0 and Repeat is 2 (MirrorClampToEdge is 1).
+    public static final int ADDRESS_CLAMP_TO_EDGE = 0;
+    public static final int ADDRESS_MIRROR_CLAMP_TO_EDGE = 1;
+    public static final int ADDRESS_REPEAT = 2;
+    public static final int ADDRESS_MIRROR_REPEAT = 3;
 
     // MTLSamplerMinMagFilter
     public static final int FILTER_NEAREST = 0;
@@ -139,6 +147,13 @@ public final class MetalFormat {
         return TEXTURE_TYPE_2D;
     }
 
+    /**
+     * MTLSamplerAddressMode from Minecraft's {@link AddressMode}.
+     *
+     * <p>An earlier revision had the two swapped (Repeat mapped to Metal's ClampToEdge and vice
+     * versa), so every sampler in the game had its address mode inverted: atlases bled into
+     * neighbouring sprites and tiling textures smeared at the edges.
+     */
     public static int mtlSamplerAddress(AddressMode mode) {
         return mode == AddressMode.REPEAT ? ADDRESS_REPEAT : ADDRESS_CLAMP_TO_EDGE;
     }

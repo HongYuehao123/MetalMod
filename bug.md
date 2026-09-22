@@ -105,6 +105,83 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-008 — Mip filtering is disabled by a leftover test hack
+
+**Status:** open, unfixed. Needs an in-game A/B before changing.
+**Severity:** affects all minification — aliasing/moiré on terrain and atlases.
+**Found by:** auditing the native sampler creation against what the engine asks for.
+
+### Evidence
+
+`mmm_sampler_create` hardcodes:
+
+```c
+descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;  // TEST: force mip 0
+```
+
+so **no sampler ever samples a mip level**, while `lodMaxClamp` is still set from the sampler's
+`maxLod`. This contradicts the Phase 2 work, which uploads and round-trips mip levels.
+
+### Impact
+
+Every minified sample reads level 0, so distant terrain and any mip-mapped atlas alias badly. That
+is a visible parity difference, not a subtle one.
+
+### Why it was not changed here
+
+Flipping it changes sampling for every texture in the game at once, and it cannot be verified without
+a game run. If any texture has mip levels allocated but not populated, enabling mip filtering would
+sample uninitialised data — a worse failure than aliasing. MC's `CommandEncoderBackend` has no
+`generateMipmaps`, which suggests the engine supplies every level itself and that flipping is safe,
+but that needs confirming rather than assuming.
+
+### Suggested fix
+
+Derive the filter from what the engine already tells us — it passes `maxLod`:
+
+```c
+descriptor.mipFilter = hasMaxLod ? MTLSamplerMipFilterLinear : MTLSamplerMipFilterNotMipmapped;
+```
+
+and `lodMinClamp = 0`. One line either way, so it is cheap to A/B in a single run: watch distant
+terrain for moiré, and check the F3 counters stay at zero.
+
+---
+
+## BUG-007 — Sampler address modes were swapped (live for vanilla)
+
+**Status:** **FIXED** (Phase 5).
+**Severity:** high — it inverted every sampler in the game.
+**Found by:** auditing every MC → Metal enum table against the macOS SDK headers.
+
+### Cause
+
+`MTLSamplerAddressMode` is not GL order and is not guessable: `ClampToEdge = 0`,
+`MirrorClampToEdge = 1`, `Repeat = 2`, `MirrorRepeat = 3`. `MetalFormat` had
+`ADDRESS_REPEAT = 0`, `ADDRESS_MIRROR_REPEAT = 1`, `ADDRESS_CLAMP_TO_EDGE = 2`, so
+`mtlSamplerAddress` returned the exact opposite of the intended mode for both of Minecraft's values:
+
+| MC `AddressMode` | was | Metal value at that slot | now |
+|---|---|---|---|
+| `CLAMP_TO_EDGE` | 2 | Repeat | **0** (ClampToEdge) |
+| `REPEAT` | 0 | ClampToEdge | **2** (Repeat) |
+
+### Impact
+
+Live for vanilla, not latent. `AddressMode` is referenced by `AbstractTexture`, `ReloadableTexture`,
+`SamplerCache`, `LevelRenderer` and `RenderTypes`. In practice every atlas sampled with **Repeat**, so
+sprites bled into their neighbours at the edges and mip tails smeared across the atlas, and any
+genuinely tiling texture was clamped instead. Likely a contributor to the sprite problems in BUG-001
+and to terrain texture artefacts.
+
+### Fix
+
+Corrected the constants. `MetalFormatTest` now pins the address modes, the min/mag filters and the
+`MTLTextureType`/`MTLTextureUsage` values against the SDK header, so this class of error cannot
+return silently.
+
+---
+
 ## BUG-006 — Five MTLBlendFactor values were wrong (latent for vanilla)
 
 **Status:** **FIXED** (Phase 5). Latent for vanilla; would break shaderpacks and mods.
