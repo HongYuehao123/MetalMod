@@ -34,6 +34,23 @@ static id<MTLDevice> g_Device = nil;
 // and returns id<MTL4CommandBuffer>; command buffers for the Metal 3 path must come from a queue.
 static id<MTLCommandQueue> g_PresentQueue = nil;
 
+// A depth-stencil state that tests nothing and writes nothing, for the pipelines that declare no
+// depth state. MTLRenderCommandEncoder keeps its depth-stencil state between binds, so a pipeline
+// that declares none has to actively reset it - otherwise the 30 vanilla pipelines without one (the
+// GUI and text family, the sky, the blits) inherit the previous pipeline's compare function and
+// depth write.
+static id<MTLDepthStencilState> g_NoDepthState = nil;
+
+static id<MTLDepthStencilState> mmm_no_depth_state(void) {
+    if (g_NoDepthState == nil && g_Device != nil) {
+        MTLDepthStencilDescriptor* descriptor = [[MTLDepthStencilDescriptor alloc] init];
+        descriptor.depthCompareFunction = MTLCompareFunctionAlways;
+        descriptor.depthWriteEnabled = NO;
+        g_NoDepthState = [g_Device newDepthStencilStateWithDescriptor:descriptor];
+    }
+    return g_NoDepthState;
+}
+
 static inline id<MTLDevice> mmm_device(void* handle) {
     return (__bridge id<MTLDevice>)handle;
 }
@@ -646,16 +663,23 @@ void mmm_render_pass_set_pipeline(void* encoder, void* pipeline) {
         if (metalPipeline->pipelineState) {
             [metalEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)metalPipeline->pipelineState];
         }
-        if (metalPipeline->depthStencilState) {
-            [metalEncoder setDepthStencilState:(__bridge id<MTLDepthStencilState>)metalPipeline->depthStencilState];
+        id<MTLDepthStencilState> depthState = metalPipeline->depthStencilState
+                ? (__bridge id<MTLDepthStencilState>)metalPipeline->depthStencilState
+                : mmm_no_depth_state();
+        if (depthState != nil) {
+            [metalEncoder setDepthStencilState:depthState];
         }
         [metalEncoder setCullMode:(MTLCullMode)metalPipeline->cullMode];
         [metalEncoder setTriangleFillMode:(MTLTriangleFillMode)metalPipeline->triangleFill];
-        if (metalPipeline->depthBiasScale != 0.0f || metalPipeline->depthBiasConstant != 0.0f) {
-            [metalEncoder setDepthBias:metalPipeline->depthBiasConstant
-                            slopeScale:metalPipeline->depthBiasScale
-                                 clamp:0.0f];
-        }
+        // Depth bias is *encoder* state, not pipeline state, so it has to be set on every bind -
+        // including the zero case. Setting it only when non-zero leaked the last biased pipeline's
+        // bias into every later draw in the same render encoder, which is most of the frame: five
+        // vanilla pipelines bias (CRUMBLING, both TEXT_POLYGON_OFFSETs, LINES_DEPTH_BIAS and
+        // WORLD_BORDER) and everything drawn after one of them inherited it. Metal's default is the
+        // zero bias this now writes.
+        [metalEncoder setDepthBias:metalPipeline->depthBiasConstant
+                        slopeScale:metalPipeline->depthBiasScale
+                             clamp:0.0f];
     }
 }
 

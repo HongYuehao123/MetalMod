@@ -7,6 +7,8 @@ import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.BlendFactor;
 import com.mojang.blaze3d.platform.BlendOp;
+import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.preprocessor.GlslPreprocessor;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
@@ -212,6 +214,13 @@ public final class RenderCheck {
             // vanilla never uses but a shaderpack would. All fifteen are rendered here and
             // compared against the blend equation evaluated on the CPU.
             blendMatrixCheck(device, source);
+
+            // Depth bias is encoder state in Metal, not pipeline state, so a biased pipeline must
+            // not leave its bias behind for the rest of the pass. Five vanilla pipelines bias.
+            depthBiasLeakCheck(device, source);
+
+            // The depth-stencil state is encoder state too, and 30 vanilla pipelines declare none.
+            depthStateLeakCheck(device, source);
 
             // Index width and draw offsets. Every other check draws 32-bit indices from position 0,
             // but chunk and entity meshes are indexed with IndexType.SHORT and each chunk of a
@@ -1167,6 +1176,254 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Verify that a biased pipeline does not leave its depth bias behind for later draws.
+     *
+     * <p>Metal's depth bias lives on the render command encoder, not on the pipeline state, so it
+     * persists until it is set again - which means a backend that only calls
+     * {@code setDepthBias} for the non-zero case hands every later draw in the same pass the last
+     * biased pipeline's bias. Five vanilla pipelines bias (CRUMBLING, both TEXT_POLYGON_OFFSETs,
+     * LINES_DEPTH_BIAS and WORLD_BORDER), so this is not a corner case.
+     *
+     * <p>Two pipelines are built over the same {@code core/gui} shader, one with a slope-scaled bias
+     * and one without, and both draw the same steeply sloped quad in one render pass. The biased draw
+     * goes first, so it writes a depth pushed toward the viewer. The unbiased draw then covers the
+     * same fragments at the same depth:
+     *
+     * <ul>
+     *   <li>If its bias was reset, its depth is below the stored one and {@code GREATER_THAN_OR_EQUAL}
+     *       rejects it everywhere, so the first colour survives.</li>
+     *   <li>If the bias leaked, the two depths are equal, the test passes, and the second colour
+     *       wins.</li>
+     * </ul>
+     *
+     * <p>A slope-scaled bias is used rather than a constant one because Metal's constant term is in
+     * units of the format's minimum resolvable difference - a constant of 10 shifts the depth by
+     * about ten float epsilons, far too little to tell the two cases apart.
+     */
+    private static void depthBiasLeakCheck(MetalDevice device, ShaderSource source) throws Exception {
+        RenderPipeline biased = depthPipeline("biased", 8.0f);
+        RenderPipeline unbiased = depthPipeline("unbiased", 0.0f);
+        device.precompilePipeline(biased, source);
+        device.precompilePipeline(unbiased, source);
+        if (device.pipelineFor(biased) == null || device.pipelineFor(unbiased) == null) {
+            check("depth-bias pipelines compiled", false, "");
+            return;
+        }
+
+        GpuTexture color = device.createTexture("depth bias", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuTexture depth = device.createTexture("depth bias depth", GpuTexture.USAGE_RENDER_ATTACHMENT,
+                GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView depthView = device.createTextureView(depth);
+        GpuBuffer vertices = device.createBuffer(() -> "sloped quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, slopedQuadVertices());
+        GpuBuffer indices = device.createBuffer(() -> "sloped quad indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer first = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 0.0f, 0.0f, 1.0f}));   // red
+        GpuBuffer second = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.0f, 0.0f, 1.0f, 1.0f}));   // blue
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "depth bias")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withDepthAttachment(depthView, OptionalDouble.of(0.0))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setUniform("Projection", projection.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+
+        pass.setPipeline(biased);
+        pass.setUniform("DynamicTransforms", first.slice());
+        pass.drawIndexed(6, 1, 0, 0, 0);
+
+        pass.setPipeline(unbiased);
+        pass.setUniform("DynamicTransforms", second.slice());
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        int red = pixels.get(at) & 0xFF;
+        int blue = pixels.get(at + 2) & 0xFF;
+        check("a pipeline with no depth bias after a biased one keeps its own depth -> R" + red + " B"
+                        + blue + " (blue means the biased pipeline's bias leaked, which pushes every"
+                        + " later draw toward the viewer)",
+                red > 200 && blue < 60, "");
+
+        readback.close();
+        second.close();
+        first.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        depthView.close();
+        depth.close();
+        colorView.close();
+        color.close();
+    }
+
+    /**
+     * Verify that a pipeline with no depth state does not inherit the previous one's.
+     *
+     * <p>{@code MTLRenderCommandEncoder}'s depth-stencil state is encoder state like the depth bias,
+     * and 30 of the 87 vanilla pipelines declare none - the whole GUI and text family, the sky, the
+     * post-processing blits. Binding one of those without resetting the state leaves it depth-testing
+     * and depth-writing with the previous pipeline's compare function.
+     *
+     * <p>So: draw near (z = 1.0) with depth writing, then draw the same quad further away
+     * (z = 0.5) through a pipeline that declares no depth state. If the second pipeline is genuinely
+     * depth-free its colour wins; if it inherited {@code GREATER_THAN_OR_EQUAL} it is rejected and
+     * the first colour survives.
+     */
+    private static void depthStateLeakCheck(MetalDevice device, ShaderSource source) throws Exception {
+        RenderPipeline withDepth = depthPipeline("with_depth", 0.0f);
+        RenderPipeline noDepth = noDepthPipeline("no_depth");
+        device.precompilePipeline(withDepth, source);
+        device.precompilePipeline(noDepth, source);
+        if (device.pipelineFor(withDepth) == null || device.pipelineFor(noDepth) == null) {
+            check("depth-state leak pipelines compiled", false, "");
+            return;
+        }
+
+        GpuTexture color = device.createTexture("depth state", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuTexture depth = device.createTexture("depth state depth",
+                GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView depthView = device.createTextureView(depth);
+        GpuBuffer near = device.createBuffer(() -> "near quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(1.0f));
+        GpuBuffer far = device.createBuffer(() -> "far quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(0.5f));
+        GpuBuffer indices = device.createBuffer(() -> "i", GpuBuffer.USAGE_INDEX
+                | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer first = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 0.0f, 0.0f, 1.0f}));
+        GpuBuffer second = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.0f, 0.0f, 1.0f, 1.0f}));
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "depth state")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withDepthAttachment(depthView, OptionalDouble.of(0.0))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setUniform("Projection", projection.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+
+        pass.setPipeline(withDepth);
+        pass.setUniform("DynamicTransforms", first.slice());
+        pass.setVertexBuffer(0, near.slice());
+        pass.drawIndexed(6, 1, 0, 0, 0);
+
+        pass.setPipeline(noDepth);
+        pass.setUniform("DynamicTransforms", second.slice());
+        pass.setVertexBuffer(0, far.slice());
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        int red = pixels.get(at) & 0xFF;
+        int blue = pixels.get(at + 2) & 0xFF;
+        check("a pipeline that declares no depth state is not depth-tested by the previous one's"
+                        + " -> R" + red + " B" + blue + " (red means it inherited"
+                        + " GREATER_THAN_OR_EQUAL and was rejected)",
+                red < 60 && blue > 200, "");
+
+        readback.close();
+        second.close();
+        first.close();
+        projection.close();
+        indices.close();
+        far.close();
+        near.close();
+        depthView.close();
+        depth.close();
+        colorView.close();
+        color.close();
+    }
+
+    /** A gui-shaded pipeline declaring no depth state at all, as MC's GUI and blit pipelines do. */
+    private static RenderPipeline noDepthPipeline(String name) throws Exception {
+        VertexFormat format = ((RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("GUI").get(null)).getVertexFormatBinding(0);
+        return RenderPipeline.builder()
+                .withLocation("depth_check/" + name)
+                .withVertexShader(Identifier.parse("minecraft:core/gui"))
+                .withFragmentShader(Identifier.parse("minecraft:core/gui"))
+                .withVertexBinding(0, format)
+                .withPrimitiveTopology(PrimitiveTopology.QUADS)
+                .withCull(false)
+                .withColorTargetState(new ColorTargetState(Optional.empty(),
+                        GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+                .build();
+    }
+
+    /** A gui-layout quad at one flat depth, for depth-state checks. */
+    private static ByteBuffer quadAtDepth(float z) {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(z);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /** A gui-shaded pipeline with a depth test and the given slope-scaled depth bias. */
+    private static RenderPipeline depthPipeline(String name, float slopeScale) throws Exception {
+        VertexFormat format = ((RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("GUI").get(null)).getVertexFormatBinding(0);
+        return RenderPipeline.builder()
+                .withLocation("depth_check/" + name)
+                .withVertexShader(Identifier.parse("minecraft:core/gui"))
+                .withFragmentShader(Identifier.parse("minecraft:core/gui"))
+                .withVertexBinding(0, format)
+                .withPrimitiveTopology(PrimitiveTopology.QUADS)
+                .withCull(false)
+                .withColorTargetState(new ColorTargetState(Optional.empty(),
+                        GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+                .withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL,
+                        true, slopeScale, 0.0f))
+                .build();
+    }
+
+    /**
+     * GUI-layout vertices whose depth slopes steeply from 0.4 to 0.6 across the screen, so a
+     * slope-scaled bias produces an offset large enough to see. Depth is the near plane at the left
+     * and further away at the right; the check only needs the two draws to agree with each other.
+     */
+    private static ByteBuffer slopedQuadVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1, 0.6f}, {1, -1, 0.4f}, {1, 1, 0.4f}, {-1, 1, 0.6f}};
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(p[2]);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /**

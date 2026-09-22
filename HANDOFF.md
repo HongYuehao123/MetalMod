@@ -269,14 +269,22 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Fifteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Seventeen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
   orientation, mip selection, texture copies (whole and by rectangle), the atlas compositing flip,
   `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, every
-  blend state vanilla uses, and 16-bit indices with non-zero `firstIndex`/base-vertex offsets. Each
+  blend state vanilla uses, depth bias, the depth-stencil state, and 16-bit indices with non-zero
+  `firstIndex`/base-vertex offsets. Each
   one is a mechanism one of the open bugs implicates, and the harness has eliminated five BUG-001
   theories.
+- **Ask of every pipeline value: is it pipeline state or encoder state?** Metal stores depth bias and
+  the depth-stencil state on the render command encoder, where they persist until reset, so a backend
+  that sets them only for the non-default case leaks them into every later draw in the same pass.
+  That is BUG-016 and BUG-017, both found by auditing a dimension the census had already tabulated
+  and both invisible in code review because each mapping value was individually correct. The
+  generalisation is worth keeping: for anything the backend forwards to the encoder rather than the
+  pipeline descriptor, the reset path matters as much as the set path.
 - **Mip selection is verified, which BUG-008 had no evidence for.** The terrain shader minifies the
   block atlas and samples it with `textureGrad`/`textureLod`, so mips are on the hottest path in the
   game - and every other check used a 1x1 texture with mipmapping off, so none of them touched that

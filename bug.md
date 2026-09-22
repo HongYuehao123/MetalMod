@@ -206,6 +206,96 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-017 — A pipeline with no depth state inherited the previous one's
+
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Severity:** high; 30 of the 87 vanilla pipelines declare no depth state.
+**Found by:** asking what *else* is encoder state after finding BUG-016.
+
+### Cause
+
+`MMLRenderCommandEncoder`'s depth-stencil state persists between binds, exactly like the depth bias,
+and `mmm_render_pass_set_pipeline` only called `setDepthStencilState` when the pipeline had one:
+
+```objc
+if (metalPipeline->depthStencilState) {
+    [metalEncoder setDepthStencilState:...];
+}
+```
+
+A pipeline that declares no depth state therefore kept the previously bound pipeline's compare
+function *and its depth write*. Thirty of the 87 vanilla pipelines declare none - the whole GUI and
+text family, the sky, the post-processing blits - so this is not a corner case. A no-depth pipeline
+drawn after a depth-writing one would depth-test against geometry that should not occlude it, and
+write depth that later draws should not see.
+
+### Fix
+
+The native side now owns a single `MTLDepthStencilState` with `MTLCompareFunctionAlways` and depth
+writes off, and binds it for every pipeline that declares no depth state - so the state is always
+explicit rather than inherited.
+
+Binding that state in a render pass with no depth attachment is safe: the check below draws a
+no-depth pipeline into a pass *with* depth, and all the GUI checks (which run in passes without one)
+still pass, so Metal accepts both arrangements.
+
+### Verified
+
+`tools/render_check` now draws a full-screen quad at z = 1.0 with depth writing, then the same quad at
+z = 0.5 through a pipeline that declares no depth state, into one pass with a D32_FLOAT attachment. If
+the second pipeline is genuinely depth-free its colour wins; before the fix it inherited
+`GREATER_THAN_OR_EQUAL`, was rejected, and the first colour survived. Confirmed failing before and
+passing after.
+
+---
+
+## BUG-016 — Depth bias leaked from one pipeline to every later draw
+
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Severity:** high; five vanilla pipelines set a depth bias and they are mixed into the world pass.
+**Found by:** auditing every pipeline state dimension against how Metal actually stores each one.
+
+### Cause
+
+Metal's depth bias lives on the **render command encoder**, not on the pipeline state, and
+`mmm_render_pass_set_pipeline` only called `setDepthBias` for the non-zero case:
+
+```objc
+if (metalPipeline->depthBiasScale != 0.0f || metalPipeline->depthBiasConstant != 0.0f) {
+    [metalEncoder setDepthBias:... slopeScale:... clamp:0.0f];
+}
+```
+
+So the last biased pipeline's bias stayed in force for the rest of the pass. Five vanilla pipelines
+bias - `CRUMBLING`, `TEXT_POLYGON_OFFSET`, `TEXT_GRAYSCALE_POLYGON_OFFSET`, `LINES_DEPTH_BIAS` and
+`WORLD_BORDER` - and they are drawn among ordinary geometry, so everything after one of them was
+pushed toward the viewer. That is the shape of a subtle full-scene depth error rather than an obvious
+failure, which is why nothing had caught it.
+
+### Fix
+
+`setDepthBias` is now called unconditionally on every pipeline bind, including the zero case, which
+restores Metal's default. The values themselves were already correct; only the reset was missing.
+
+### Verified
+
+Two pipelines are built over the same `core/gui` shader, one with an 8x slope-scaled bias and one
+without, and both draw the same steeply sloped quad in one pass with the biased draw first. The
+biased draw writes a depth pushed toward the viewer, so:
+
+- if the second pipeline's bias was reset, its depth is below the stored one,
+  `GREATER_THAN_OR_EQUAL` rejects it, and the first colour survives;
+- if the bias leaked, the depths are equal, the test passes, and the second colour wins.
+
+A **slope-scaled** bias is used rather than a constant one because Metal's constant term is in units
+of the format's minimum resolvable difference: a constant of 10 - what vanilla uses - shifts the depth
+by about ten float epsilons, far too little to tell the two cases apart. Confirmed failing before the
+native fix and passing after.
+
+---
+
+---
+
 ## BUG-015 — `TRIANGLE_FAN` had no Metal primitive, so the sky disc was truncated
 
 **Status:** **FIXED** (Phase 5) — pending in-game confirmation.
