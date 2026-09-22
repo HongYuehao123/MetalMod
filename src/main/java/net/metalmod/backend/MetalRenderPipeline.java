@@ -48,6 +48,11 @@ public final class MetalRenderPipeline {
     private final java.util.Set<String> declaredBuffers;
     private final java.util.Set<String> declaredTextures;
     private final java.util.Set<String> declaredSamplers;
+    // Uniforms the pipeline declares TEXEL_BUFFER. The engine binds those with a GpuBuffer, but
+    // SPIRV-Cross emits the emulated path (texture2d<T> + spvTexelBufferCoord), so the buffer's
+    // bytes have to be presented as an ordinary 2D texture. Metal's native buffer texture is not an
+    // option: creating one with the declared R8_SINT aborts (BUG-013).
+    private final Map<String, TexelBuffer> texelBuffers;
     private final int topology;
     private boolean closed;
 
@@ -55,7 +60,7 @@ public final class MetalRenderPipeline {
                                 Map<String, Integer> vertexBuffers, Map<String, Integer> fragmentBuffers,
                                 Map<String, Integer> vertexTextures, Map<String, Integer> fragmentTextures,
                                 Map<String, Integer> vertexSamplers, Map<String, Integer> fragmentSamplers,
-                                int topology) {
+                                int topology, Map<String, TexelBuffer> texelBuffers) {
         this.handle = handle;
         this.vertexLibrary = vertexLibrary;
         this.fragmentLibrary = fragmentLibrary;
@@ -69,6 +74,7 @@ public final class MetalRenderPipeline {
         this.declaredTextures = union(vertexTextures, fragmentTextures);
         this.declaredSamplers = union(vertexSamplers, fragmentSamplers);
         this.topology = topology;
+        this.texelBuffers = texelBuffers;
     }
 
     private static java.util.Set<String> union(Map<String, Integer> a, Map<String, Integer> b) {
@@ -209,12 +215,35 @@ public final class MetalRenderPipeline {
                 }
                 return new MetalRenderPipeline(pipe, vlib, flib,
                         vs.vertexBuffers(), fs.fragmentBuffers(),
-                        vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology);
+                        vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology,
+                        collectTexelBuffers(pipeline, vs, fs));
             }
         } catch (Throwable t) {
             System.err.println("[MetalMod] pipeline compile failed for " + pipeline.getLocation() + ": " + t);
             return null;
         }
+    }
+
+    /** Describe every uniform the pipeline declares TEXEL_BUFFER, with the slot the shader reads it at. */
+    private static Map<String, TexelBuffer> collectTexelBuffers(RenderPipeline pipeline,
+                                                               MetalShaderCompiler.CompiledShader vs,
+                                                               MetalShaderCompiler.CompiledShader fs) {
+        Map<String, TexelBuffer> found = new java.util.HashMap<>();
+        for (BindGroupLayout layout : pipeline.getBindGroupLayouts()) {
+            for (BindGroupLayout.UniformDescription uniform : layout.getUniforms()) {
+                if (uniform.type() != UniformType.TEXEL_BUFFER || uniform.gpuFormat() == null) {
+                    continue;
+                }
+                Integer vertexSlot = vs.textures().get(uniform.name());
+                Integer fragmentSlot = fs.textures().get(uniform.name());
+                if (vertexSlot != null) {
+                    found.put(uniform.name(), new TexelBuffer(uniform.gpuFormat(), vertexSlot, true));
+                } else if (fragmentSlot != null) {
+                    found.put(uniform.name(), new TexelBuffer(uniform.gpuFormat(), fragmentSlot, false));
+                }
+            }
+        }
+        return found;
     }
 
     /**
@@ -238,20 +267,25 @@ public final class MetalRenderPipeline {
                         || fs.fragmentBuffers().containsKey(name);
                 boolean asTexture = vs.textures().containsKey(name)
                         || fs.textures().containsKey(name);
-                if (asBuffer) {
-                    continue;
-                }
                 // A BindGroupLayout is a superset: it lists every uniform the pipeline *may* use, and
                 // SPIRV-Cross drops the ones a given shader does not reference. "Not reflected at
                 // all" therefore means unused, which is fine - Metal does not require an argument
-                // for a block the shader never reads. Only a resource reflected as the *wrong kind*
-                // is a real mismatch.
-                if (!asTexture && !vs.samplers().containsKey(name)
-                        && !fs.samplers().containsKey(name)) {
+                // for a block the shader never reads.
+                if (uniform.type() == UniformType.UNIFORM_BUFFER) {
+                    // The engine binds these with a GpuBufferSlice, so they must be uniform buffers.
+                    if (!asBuffer && asTexture) {
+                        MetalDevice.reportBindingKindMismatch(location, name, "UNIFORM_BUFFER",
+                                "a texture/sampler");
+                    }
                     continue;
                 }
-                MetalDevice.reportBindingKindMismatch(location, name, uniform.type().name(),
-                        "a texture/sampler");
+                // TEXEL_BUFFER: SPIRV-Cross emits texture2d<T> + spvTexelBufferCoord and MetalMod
+                // presents the buffer's bytes as a 2D texture, so a texture reflection is exactly
+                // what the binding path expects. A *buffer* reflection would be the wrong one.
+                if (asBuffer) {
+                    MetalDevice.reportBindingKindMismatch(location, name, "TEXEL_BUFFER",
+                            "a uniform buffer");
+                }
             }
             for (String sampler : layout.getSamplers()) {
                 if (!vs.samplers().containsKey(sampler) && !fs.samplers().containsKey(sampler)) {
@@ -259,6 +293,18 @@ public final class MetalRenderPipeline {
                 }
             }
         }
+    }
+
+    /**
+     * A uniform declared {@code TEXEL_BUFFER}: the engine hands us a {@link com.mojang.blaze3d.buffers.GpuBuffer}
+     * and the shader reads it through a 2D integer texture.
+     */
+    public record TexelBuffer(GpuFormat format, int textureSlot, boolean vertexStage) {
+    }
+
+    /** How to present a texel-buffer uniform, or null when the pipeline does not use one. */
+    public TexelBuffer texelBuffer(String name) {
+        return this.texelBuffers == null ? null : this.texelBuffers.get(name);
     }
 
     public MemorySegment handle() { return this.handle; }

@@ -199,6 +199,173 @@ corrupting uniforms. It reports nothing for the 87 vanilla pipelines.
 
 ---
 
+## BUG-013 — Texel buffers had no binding path (vanilla clouds)
+
+**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Severity:** clouds rendered with undefined data; also a Sodium prerequisite.
+**Found by:** chasing the `CloudFaces` half of BUG-005.
+
+### Cause
+
+`rendertype_clouds.vsh` declares a **buffer texture**:
+
+```glsl
+uniform isamplerBuffer CloudFaces;
+... texelFetch(CloudFaces, index).r ...
+```
+
+and `BindGroupLayouts` declares it as `UniformType.TEXEL_BUFFER` with `GpuFormat.R8_SINT`. The engine
+binds it through **`RenderPass.setUniform("CloudFaces", GpuBuffer)`** — a *buffer*, not a texture
+(`CloudRenderer` passes its `utb` ring buffer, "uniform texel buffer").
+
+MetalMod reflected it as a sampled image, so it landed in the texture/sampler maps, while
+`setUniform` recorded it under `uniforms` where `applyBindings` looked for it with
+`pipeline.vertexBuffer("CloudFaces")` — which is -1, because it is in the texture map. Nothing was
+bound and the shader texel-fetched undefined data. That is what the Phase 4 diagnostic reported
+in-game (`unbound texture 'CloudFaces'`).
+
+### What the data looks like (measured)
+
+`CloudRenderer` allocates `utb` at **258 bytes** and sets `quadCount = data.position() / 3`, so the
+buffer holds **three bytes per quad, one byte per texel** — the `R8_SINT` declaration is right and the
+shader sign-extends.
+
+### The obvious fix does not work (measured)
+
+Presenting the buffer as an `MTLTextureTypeTextureBuffer` would need no copy, but Metal **aborts the
+process** for `R8_SINT`:
+
+```
+METALMOD_PROBE_TEXTURE_BUFFER=1 ./native/build/metalmod_smoke
+== texture buffer (which pixel formats can back a texture?) ==
+[PASS] texture-buffer backing buffers
+Abort trap: 6
+```
+
+and the failure is a hard `abort()`, not a catchable `NSException`. The probe is opt-in behind that
+environment variable so the normal suite cannot crash.
+
+### Fix
+
+SPIRV-Cross already emits the emulated path and the generated MSL shows it:
+
+```metal
+texture2d<int> CloudFaces [[texture(0)]];
+int cellX = CloudFaces.read(spvTexelBufferCoord(index)).x;
+```
+
+so it wants an ordinary 2D texture of `width = byteCount, height = 1`. `MetalRenderPipeline` now
+records every uniform the pipeline declares `TEXEL_BUFFER` together with the format and the slot the
+shader reads it at, and `MetalRenderPassBackend.setUniform` presents a texel-buffer slice as a 2D
+texture instead of a uniform buffer — cached per backing buffer, with the bytes re-uploaded each use
+because the cloud faces are rebuilt every frame.
+
+The unbound-sampler diagnostic skips texel buffers: `read()` takes no sampler, so the MSL has no
+sampler argument and the engine correctly never supplies one.
+
+### Verified
+
+`metalmod_smoke` reads a 2D `R8Sint` texture through `texture2d<int>` and gets the stored texel back
+(`R42` for the value 42), so the mechanism the fix relies on works. With the fix in place the shader
+inventory reports **no diagnostics from any of the 87 pipelines** — no slot collisions, no
+reflection/MSL mismatches, no binding-kind mismatches.
+
+---
+
+## BUG-012 — Two uniform blocks shared one Metal slot, so one overwrote the other
+
+**Status:** **FIXED** (Phase 5). Was live for vanilla, in nearly every shader.
+**Severity:** critical — the shader read another block's data.
+**Found by:** dumping the SPIR-V descriptor bindings instead of assuming they were unique.
+
+### Cause
+
+`MetalShaderCompiler.collect` derived each resource's Metal slot from its SPIR-V
+`binding` decoration:
+
+```java
+int mslBuffer = stage == 0 ? binding + VERTEX_BUFFER_INDEX_OFFSET : binding;
+```
+
+**glslang emits duplicate bindings.** Every shader that imports `fog.glsl` gets its `Fog` block at
+binding 0, alongside another block also at binding 0:
+
+```
+core/terrain.vsh     Globals binding=0, Fog binding=0   -> both msl_buffer 16
+core/entity.vsh      Lighting binding=0, Fog binding=0  -> both msl_buffer 16
+core/rendertype_clouds.vsh  DynamicTransforms binding=0, Fog binding=0 -> both 16
+```
+
+Two blocks in one Metal buffer index means the second bind overwrites the first, and the shader reads
+the wrong uniform data. `Fog` is imported by almost every vanilla shader, so this was not an edge
+case. Sampled images happened to get unique bindings, which is why only buffers were affected.
+
+For terrain this is severe: `terrain.vsh` computes
+
+```glsl
+vec3 pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset;
+```
+
+from `Globals`, which shared slot 16 with `Fog`. Terrain would be positioned using fog data, so the
+geometry lands in the wrong place — a direct, mechanical explanation for the broken world in
+BUG-003, and one that a "missing binding" diagnosis would never have found because nothing was
+missing: both were bound, to the same place.
+
+### Fix
+
+MetalMod binds by name, so the Metal slots only have to be **unique per stage** — they do not have to
+match Vulkan's numbering. `collect` now assigns slots from a per-stage counter (`Slots`): uniform
+buffers from 16 in the vertex stage (0..15 stay reserved for vertex attributes) and from 0 in the
+fragment stage, with independent texture and sampler counters. The descriptor set/binding
+decorations are still read, because they identify *which* SPIR-V resource a binding applies to.
+
+Verified for the three worst shaders:
+
+```
+terrain  buffers = {ChunkSection=16, Globals=17, Projection=18, Fog=19}
+entity   buffers = {Projection=16, DynamicTransforms=17, Lighting=18, Fog=19}
+clouds   buffers = {CloudInfo=16, Projection=17, DynamicTransforms=18, Fog=19}
+```
+
+and by compiling all 87 vanilla pipelines: **zero collisions** reported.
+
+### The first fix was incomplete, and the MSL proved it
+
+Assigning slots from a counter fixed what `MetalShaderCompiler` *recorded*, but not the underlying
+problem. SPIRV-Cross keys `spvc_compiler_msl_add_resource_binding` on `(descriptor set, binding)`, and
+with `Globals` and `Fog` both on binding 0 it could not tell them apart — it applied one block's
+binding to the other. So the MSL disagreed with the map, which is worse than the original collision
+because it looks fixed:
+
+```
+terrain   map: {ChunkSection=16, Globals=17, Projection=18, Fog=19}
+          MSL:  ChunkSection[16], Projection[18], Globals[19]      <- Globals bound at 17, read at 19
+entity    map: {Projection=16, DynamicTransforms=17, Lighting=18, Fog=19}
+          MSL:  Projection[16], DynamicTransforms[17], Lighting[19] <- Lighting bound at 18, read at 19
+```
+
+The real fix is `normalizeBindings`: rewrite every SPIR-V `Binding` decoration to a unique number
+before SPIRV-Cross sees the module, so each resource is identifiable. The numbers are arbitrary,
+because MetalMod binds by name. With that, the map and the MSL agree exactly:
+
+```
+terrain  buffers = {ChunkSection=16, Globals=17, Projection=18, Fog=19}
+         MSL     ChunkSection[16], Globals[17], Projection[18]
+entity   buffers = {Lighting=18, Projection=16, DynamicTransforms=17}
+         MSL     Projection[16], DynamicTransforms[17], Lighting[18]
+```
+
+### Guard
+
+`verifyMslSlots` parses the generated MSL for `[[buffer(N)]]` / `[[texture(N)]]` and checks each
+against the reflection map, reporting any disagreement — this is the check that would have caught the
+incomplete first fix immediately, and it is silent across all 87 pipelines. `checkUniqueSlots` runs
+after each stage is collected and reports any two resources sharing a slot
+(`MetalDevice.reportSlotCollision`), so a regression is named in the log instead of silently
+corrupting uniforms. It reports nothing for the 87 vanilla pipelines.
+
+---
+
 ## BUG-013 — Texel buffers have no binding path (vanilla clouds)
 
 **Status:** open, unfixed. Affects vanilla cloud rendering; also needed for Sodium.

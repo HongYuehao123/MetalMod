@@ -146,6 +146,11 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             }
         }
         for (String name : this.pipeline.declaredSamplers()) {
+            if (this.pipeline.texelBuffer(name) != null) {
+                // A buffer texture is read with texelFetch/read and has no sampler argument in the
+                // MSL, so the engine never supplies one and there is nothing missing.
+                continue;
+            }
             if (!this.samplers.containsKey(name)) {
                 MetalDevice.reportUnboundBinding(this.pipelineName, "sampler", name);
             }
@@ -172,9 +177,22 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void setUniform(String name, GpuBufferSlice slice) {
-        if (slice != null) {
-            this.uniforms.put(name, slice);
+        if (slice == null) {
+            return;
         }
+        // A texel-buffer uniform arrives as a GpuBuffer but the shader reads it as a 2D integer
+        // texture, so present its bytes that way rather than as a uniform buffer.
+        MetalRenderPipeline.TexelBuffer texel =
+                this.pipeline == null ? null : this.pipeline.texelBuffer(name);
+        if (texel != null && slice.buffer() instanceof MetalBuffer buffer) {
+            MetalTexture texture = this.owner.device().texelTexture(buffer, slice.offset(),
+                    slice.length(), texel.format(), Math.max(1, texel.format().blockSize()));
+            if (texture != null) {
+                this.textures.put(name, new MetalTextureView(texture, 0, texture.getMipLevels()));
+                return;
+            }
+        }
+        this.uniforms.put(name, slice);
     }
 
     @Override

@@ -278,6 +278,41 @@ public final class MetalDevice implements GpuDeviceBackend {
         return new MetalDevice(device, queue, info);
     }
 
+    // One 2D texture per texel-buffer backing buffer, keyed by handle and size. The data changes
+    // every frame (the cloud faces are rebuilt), so the bytes are re-uploaded on each use while the
+    // texture itself is reused.
+    private final Map<Long, MetalTexture> texelTextures = new HashMap<>();
+
+    /**
+     * Present a texel-buffer uniform's bytes as a 2D texture the shader can read.
+     *
+     * <p>SPIRV-Cross emits {@code texture2d<T>} plus {@code spvTexelBufferCoord()} for these, not a
+     * native {@code texture_buffer<T>} — and Metal cannot view a buffer as a 2D texture anyway, so
+     * the bytes are copied in. Cached per backing buffer to avoid a texture allocation per frame.
+     */
+    public synchronized MetalTexture texelTexture(MetalBuffer buffer, long offset, long length,
+                                                  GpuFormat format, int bytesPerTexel) {
+        int texels = (int) Math.max(1L, length / Math.max(1, bytesPerTexel));
+        long needed = (long) texels * Math.max(1, bytesPerTexel);
+        if (buffer == null || !buffer.isMapped() || offset < 0
+                || offset + needed > buffer.data().byteSize()) {
+            return null;
+        }
+        long key = buffer.handle().address() * 1_000_003L + texels;
+        MetalTexture texture = this.texelTextures.get(key);
+        if (texture == null) {
+            texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING,
+                    "texel buffer", format, texels, 1, 1, 1);
+            if (!texture.isValid()) {
+                return null;
+            }
+            this.texelTextures.put(key, texture);
+        }
+        MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, 0, texels, 1,
+                buffer.dataSlice(offset, needed), needed);
+        return texture;
+    }
+
     public MemorySegment deviceHandle() {
         return this.device;
     }
@@ -498,6 +533,10 @@ public final class MetalDevice implements GpuDeviceBackend {
             MetalNative.queueRelease(this.queue);
         }
         this.clearPipelineCache();
+        for (MetalTexture texture : this.texelTextures.values()) {
+            texture.close();
+        }
+        this.texelTextures.clear();
         this.shaderCompiler.close();
         this.transientMemory.close();
         if (this.device != null && this.device.address() != 0) {
