@@ -264,6 +264,11 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
+- **Nine rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+  reaching a shader as colour, uniform blocks placing geometry, screen-space line expansion, UV
+  orientation, texture copies (whole and by rectangle), the atlas compositing flip, `multiDrawIndexed`
+  through Minecraft's own `RenderPass`, scissor clipping, and alpha blending. Each one is a mechanism
+  one of the open bugs implicates, and the harness has eliminated five BUG-001 theories.
 - **Rendering is now verified offline, not just compilation.** `tools/render_check` drives the real
   backend — device, command encoder, render pass, uniform and vertex binding, depth, draw, readback —
   with two actual vanilla pipelines and asserts the pixels. `minecraft:pipeline/gui` is rendered with

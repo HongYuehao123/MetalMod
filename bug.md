@@ -91,6 +91,18 @@ PASS  atlas target: NDC y=-1 lands in framebuffer row 0 (red at the top, was gre
 so the flip does what it claims — and because the pipeline used culls, that also proves the winding
 flip a negative viewport requires.
 
+GUI clipping and blending are ruled out too. `RenderPass.enableScissor` is what stops a sprite or a
+line of text spilling outside its panel, and a scissor landing in the wrong place — or flipped
+vertically, since Metal's scissor origin is top-left like Minecraft's — would corrupt a panel exactly
+as described here. The render check draws a full-screen quad with `enableScissor(0, 0, 32, 32)`:
+
+```
+PASS  scissor(0,0,32,32) draws the top-left quadrant (B255) and nothing else (opposite quadrant B0)
+```
+
+and separately blends 50%-alpha white over black, which lands at exactly `R128` — so blend state
+(enabled, factors, op) is plumbed correctly too.
+
 ### Most likely already fixed
 
 This was reported against build `ab30f94` (Phase 3), before any of the Phase 5 work. Three of the

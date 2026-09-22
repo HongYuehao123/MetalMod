@@ -151,6 +151,15 @@ public final class RenderCheck {
             // Minecraft's own RenderPass wrapper - not just our backend - to prove the path is now
             // usable and that it actually draws every entry.
             multiDrawCheck(device, pipeline);
+
+            // GUI clipping. A scissor that lands in the wrong place - or is flipped vertically -
+            // would clip panels and text to the wrong region, which is the shape of BUG-001's
+            // corrupted world-list entry. Metal's scissor origin is top-left, like Minecraft's.
+            scissorCheck(device, pipeline);
+
+            // Blend state. Half-alpha white over black must land halfway between the two, which
+            // exercises blendEnabled, the factors and the op together.
+            blendCheck(device, pipeline);
         } finally {
             device.close();
         }
@@ -679,6 +688,111 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Draw a full-screen quad with the scissor set to one quadrant and check that only it is drawn.
+     *
+     * <p>The scissor is the top-left quadrant in the render area's coordinates. If the rect were
+     * translated or flipped on the way to Metal, the coloured quadrant would move with it.
+     */
+    private static void scissorCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture target = device.createTexture("scissor", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuBuffer vertices = device.createBuffer(() -> "scissor quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, vertexBytes());
+        GpuBuffer indices = device.createBuffer(() -> "scissor indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.0f, 0.0f, 1.0f, 1.0f}));   // blue
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        Optional<Vector4fc> clear = Optional.of((Vector4fc) new Vector4f(0.0f, 0.0f, 0.0f, 1.0f));
+        java.util.List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> attachments =
+                new java.util.ArrayList<>();
+        attachments.add(new RenderPassDescriptor.Attachment<>(view, clear));
+
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "scissor")
+                .withColorAttachment(view, clear)
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        RenderPassBackend backend = encoder.createRenderPass(descriptor);
+        RenderPass pass = new RenderPass(backend, device, attachments, () -> {
+        }, new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.enableScissor(0, 0, WIDTH / 2, HEIGHT / 2);
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        pass.close();
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int inside = pixels.get(((HEIGHT / 4) * WIDTH + (WIDTH / 4)) * 4 + 2) & 0xFF;
+        int outside = pixels.get(((3 * HEIGHT / 4) * WIDTH + (3 * WIDTH / 4)) * 4 + 2) & 0xFF;
+        check("scissor(0,0,32,32) draws the top-left quadrant (B" + inside
+                + ") and nothing else (opposite quadrant B" + outside + ")",
+                inside > 200 && outside < 60, "");
+
+        readback.close();
+        transforms.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        view.close();
+        target.close();
+    }
+
+    /**
+     * Draw 50%-alpha white over black and check the result is midway.
+     *
+     * <p>A wrong blend factor or op moves the answer: ONE/ONE would be white, ZERO would leave black.
+     */
+    private static void blendCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture target = device.createTexture("blend", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuBuffer vertices = device.createBuffer(() -> "half-alpha quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, halfAlphaVertices());
+        GpuBuffer indices = device.createBuffer(() -> "blend indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
+        uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f})));
+        Map<String, GpuTextureView> textures = new LinkedHashMap<>();
+
+        ByteBuffer pixels = renderQuadPixels(device, pipeline, vertices, indices, uniforms, textures);
+        int centre = pixels.get(((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4) & 0xFF;
+        check("50%-alpha white over black blends to mid grey -> R" + centre + " (expected ~128)",
+                centre > 120 && centre < 136, "");
+
+        indices.close();
+        vertices.close();
+        view.close();
+        target.close();
+    }
+
+    /** GUI-layout vertices, white at half alpha, so the blend factor decides the result. */
+    private static ByteBuffer halfAlphaVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(0.0f);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 128);
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /** Two GUI-layout quads side by side: 8 vertices covering the left and right halves. */
