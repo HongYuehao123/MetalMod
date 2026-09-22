@@ -166,7 +166,13 @@ $JAVA --enable-native-access=ALL-UNNAMED \
 ./tools/shader_inventory/run.sh        # total=87 ok=87 failed=0
 
 # render real vanilla pipelines offscreen and check the pixels
+# (gui, gui_textured, solid_terrain, entity_cutout, lines, blits, multi-draw, scissor, atlas, blend,
+#  index width/offsets; 26 assertions)
 ./tools/render_check/run.sh            # RENDER CHECK PASSED
+
+# print the generated MSL for the shader pairs whose name contains the substring, or for all of them
+# (add to any of the commands above)
+-Dmetalmod.dumpMsl=entity     # or =all
 ```
 
 ---

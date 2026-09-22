@@ -1,10 +1,18 @@
 #!/bin/bash
-# Render a real vanilla pipeline through MetalMod's backend, offscreen, and check the pixels.
+# Render real vanilla pipelines through MetalMod's backend, offscreen, and check the pixels.
 #
 # Everything else here verifies that shaders compile and that reflection agrees with the generated
 # MSL. None of it proves a frame comes out right. This drives the actual path - device, command
-# encoder, render pass, uniform and vertex binding, draw, readback - with minecraft:pipeline/gui,
-# whose fragment shader multiplies by a uniform, so a wrong binding shows up as the wrong colour.
+# encoder, render pass, uniform and vertex binding, draw, readback - with pipelines whose output is
+# a known colour, so a wrong binding or a wrong vertex layout shows up as the wrong pixel:
+#
+#   gui, gui_textured      ColorModulator and texCoord0 orientation
+#   solid_terrain          Globals vs Fog slot collision, the 28-byte terrain vertex
+#   entity_cutout          the 36-byte entity vertex, per-face lighting, four uniform blocks
+#   lines                  the screen-space line expansion behind BUG-002
+#   copy/blit/multidraw/   the non-draw paths BUG-001 implicates
+#   scissor/atlas/blend
+#   short indices          16-bit indices with firstIndex and base-vertex offsets
 #
 #   tools/render_check/run.sh [instance-dir]
 #

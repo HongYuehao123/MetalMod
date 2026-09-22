@@ -849,7 +849,7 @@ None. Use the default (Vulkan/OpenGL) backend for normal play.
 > entities that are being drawn, but without their textures/lighting. They only look unrecognisable
 > because entity rendering is unfinished. Filed so the missing entity/world shading is tracked.
 
-**Status:** open, unfixed. **Scheduled for Phase 5 (vanilla render parity)** — not Phase 4.
+**Status:** **both paths verified offline** (Phase 5) — pending in-game confirmation.
 **Severity:** low / cosmetic, but it is the most visible sign that Phase 5 shading work is unfinished.
 **Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native.
 **Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)
@@ -869,6 +869,35 @@ for them. Both were bound; the second overwrote the first, so terrain was positi
 That fits the symptom far better than "a binding was missing", which is what the original note
 guessed — nothing was missing. BUG-012 is fixed; this entry stays open until a run confirms the
 world looks right.
+
+### Verified offline (Phase 5)
+
+Both halves of this bug now render correctly through the real pipelines in
+[`tools/render_check`](tools/render_check/RenderCheck.java), so there is no remaining *known* defect
+behind the black silhouettes:
+
+- **Terrain.** A full-screen quad through `SOLID_TERRAIN` comes out white, which requires `Globals`,
+  `ChunkSection`, `Projection` and `Fog` to all reach the shader with the values they were given.
+  Before BUG-012 was fixed this is exactly what failed.
+- **Entities.** A full-screen quad through `ENTITY_CUTOUT` uses the real 36-byte entity vertex format
+  — `Position`, `Color`, `UV0`, `UV1`, `UV2` and the `Normal` attribute no other pipeline uses — and
+  comes out white, with a second draw proving the `Fog` block and a third proving the fragment stage
+  of the shared `DynamicTransforms` block. `ENTITY_CUTOUT` is compiled with `PER_FACE_LIGHTING`, so
+  `gl_FrontFacing` selects between the front light colour and the back one (`Color * 0.4` = 102), and
+  the check asserts 255 rather than 102: a winding regression cannot pass it.
+
+One trap is worth recording, because it produced a *black* entity in the harness and looked exactly
+like this bug. `entity.fsh` blends the opposite way round from what the name suggests:
+
+```glsl
+color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a);
+```
+
+so alpha **1** keeps the entity's own colour and alpha **0** paints the overlay colour straight on.
+`OverlayTexture`'s generation loop confirms that the texel `NO_OVERLAY` points at (u = 0, v = 10) is
+white with alpha 255 — the texture is white in RGB everywhere and only alpha varies — so a
+"transparent" overlay is the *full-black-overlay* case. The harness's first version uploaded
+`(0,0,0,0)` and got black; the fault was in the test, not the backend.
 
 ### Workaround
 

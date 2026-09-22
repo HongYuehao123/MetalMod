@@ -264,11 +264,18 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Nine rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
-  reaching a shader as colour, uniform blocks placing geometry, screen-space line expansion, UV
-  orientation, texture copies (whole and by rectangle), the atlas compositing flip, `multiDrawIndexed`
-  through Minecraft's own `RenderPass`, scissor clipping, and alpha blending. Each one is a mechanism
-  one of the open bugs implicates, and the harness has eliminated five BUG-001 theories.
+- **Eleven rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+  reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
+  per-face lighting and four uniform blocks, screen-space line expansion, UV orientation, texture
+  copies (whole and by rectangle), the atlas compositing flip, `multiDrawIndexed` through Minecraft's
+  own `RenderPass`, scissor clipping, alpha blending, and 16-bit indices with non-zero
+  `firstIndex`/base-vertex offsets. Each one is a mechanism one of the open bugs implicates, and the
+  harness has eliminated five BUG-001 theories.
+- **A wrong pixel can now be diagnosed without a debugger.** `-Dmetalmod.dumpMsl=<substring>` prints
+  the generated MSL for the matching shader pairs, with `all` for every pair. The MSL is where the
+  varyings, their interpolation and the `[[attribute(N)]]` / `[[buffer(N)]]` indices are decided, and
+  none of that survives into the GLSL. It is what located the entity overlay-semantics mistake in the
+  test harness itself rather than in the backend.
 - **Rendering is now verified offline, not just compilation.** `tools/render_check` drives the real
   backend — device, command encoder, render pass, uniform and vertex binding, depth, draw, readback —
   with two actual vanilla pipelines and asserts the pixels. `minecraft:pipeline/gui` is rendered with
@@ -291,15 +298,43 @@ Also for Phase 5:
   therefore that it is already fixed by BUG-007 (atlas samplers bleeding), BUG-010 (region clears)
   or BUG-012 (uniform slots) - all reported against a build predating them.
 
+- **Entity rendering is verified offline, and that is what closed BUG-003's entity half.** It draws a
+  full-screen quad through the real `ENTITY_CUTOUT` pipeline with its real 36-byte vertex format -
+  `Position`, `Color`, `UV0`, `UV1`, `UV2` and the `Normal` attribute no other pipeline uses - and
+  asserts white with both light directions along the normal. `ENTITY_CUTOUT` is compiled with
+  `PER_FACE_LIGHTING`, so `gl_FrontFacing` selects the front or the back light colour; the back colour
+  is `Color * 0.4` = 102, which means a winding regression fails the check rather than passing quietly.
+  A second draw turns fog on: every corner of the quad is at `length((1,1,1)) = 1.732` and
+  `sphericalVertexDistance` is `length(Position)` evaluated *per vertex*, so the varying is the
+  constant 1.732 across the whole quad - not the 1.0 that interpolating the position would suggest -
+  which with environmental fog from 0 to 2 is a fog value of exactly 0.866 and puts a blue FogColor at
+  34 34 255. That draw is what proves `Lighting` and `Fog` have separate Metal slots (BUG-012). A
+  third draw uses a non-white `ColorModulator`, because `DynamicTransforms` is the one block the vertex
+  and fragment stages *share* and it is bound at a different Metal slot in each, so this proves the
+  fragment stage's copy is bound too. `Sampler1` is read with `texelFetch` in the vertex stage, so that
+  path is covered as well.
+
+  The neutral overlay texel matters and was worth checking rather than assuming. The shader blends the
+  opposite way round from what the name suggests:
+  `color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)`, so alpha 1 keeps the entity colour and
+  alpha 0 paints the overlay colour straight on. `OverlayTexture`'s generation loop confirms the texel
+  `NO_OVERLAY` points at (u = 0, v = 10) is white with alpha 255, and its grid is white in RGB
+  everywhere with only alpha varying (178 for the hurt rows, 255 down to 63 across the rest). The
+  harness's first version used a transparent overlay, which is the *full-black-overlay* case, and the
+  resulting black pixel was a mistake in the test rather than in MetalMod.
+
 **To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
 BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been
 audited end to end and no further defect can be settled by reading code.
 
 ## What does not work
 
-- **Vanilla visual parity (Phase 5):** terrain and entities render unlit/flat (BUG-003), some GUI
-  screens are missing sprites (BUG-001), and the block-selection outline is wrong (BUG-002).
-  All three are recorded in `bug.md` for Phase 5.
+- **Vanilla visual parity (Phase 5):** some GUI screens are missing sprites (BUG-001) and the
+  block-selection outline is wrong (BUG-002). Both mechanisms are now reproduced and pass offline, so
+  the leading hypothesis for each is that it is already fixed by BUG-007/010/012 and simply has not
+  been looked at since. Terrain and entity rendering (BUG-003) both now render correctly offline —
+  terrain through `SOLID_TERRAIN` and entities through `ENTITY_CUTOUT` with the real 36-byte vertex
+  format — so what is left there is in-game confirmation, not a known defect.
 - **Upscaling / frame generation:** inactive until the mod owns presentation and the later phases.
 - **Shaderpacks, MetalFX, ray tracing:** not started.
 

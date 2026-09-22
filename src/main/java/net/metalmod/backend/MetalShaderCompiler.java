@@ -100,8 +100,32 @@ public final class MetalShaderCompiler implements AutoCloseable {
         int[] vertexWords = toSpirv(vertexName, vertexSource, ShaderType.VERTEX);
         int[] fragmentWords = toSpirv(fragmentName, fragmentSource, ShaderType.FRAGMENT);
         alignVaryings(vertexWords, fragmentWords);
-        return new CompiledPair(translate(vertexName, vertexWords, ShaderType.VERTEX),
+        CompiledPair compiled = new CompiledPair(
+                translate(vertexName, vertexWords, ShaderType.VERTEX),
                 translate(fragmentName, fragmentWords, ShaderType.FRAGMENT));
+        dumpIfRequested(vertexName, fragmentName, compiled);
+        return compiled;
+    }
+
+    /**
+     * Print the generated MSL when {@code -Dmetalmod.dumpMsl=<substring>} is set.
+     *
+     * <p>Diagnosing a wrong pixel means reading the MSL the way Metal sees it - the varyings, their
+     * interpolation qualifiers and the {@code [[attribute(N)]]} indices are all decided here, and
+     * none of them survive into the GLSL. {@code all} matches every pair.
+     */
+    private static void dumpIfRequested(String vertexName, String fragmentName, CompiledPair compiled) {
+        String wanted = System.getProperty("metalmod.dumpMsl");
+        if (wanted == null || wanted.isBlank()) {
+            return;
+        }
+        if (!wanted.equals("all")
+                && !vertexName.contains(wanted)
+                && !fragmentName.contains(wanted)) {
+            return;
+        }
+        System.out.println("################ VS MSL " + vertexName + "\n" + compiled.vertex().msl());
+        System.out.println("################ FS MSL " + fragmentName + "\n" + compiled.fragment().msl());
     }
 
     /** One-line cache accounting, so the saving is observable rather than assumed. */

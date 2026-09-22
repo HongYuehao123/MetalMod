@@ -107,6 +107,20 @@ public final class RenderCheck {
                 terrainCheck(device, terrain);
             }
 
+            // Entities. ENTITY_CUTOUT is compiled with PER_FACE_LIGHTING, so gl_FrontFacing picks
+            // between the front and the back light colour - which makes a winding regression visible
+            // as the dim back colour rather than as nothing. It also carries four uniform blocks
+            // (Projection, DynamicTransforms, Lighting, Fog), three more chances for BUG-012's slot
+            // collision to reappear, and the only vertex format in the game with a Normal attribute.
+            RenderPipeline entity = (RenderPipeline) Class
+                    .forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("ENTITY_CUTOUT").get(null);
+            device.precompilePipeline(entity, source);
+            check("entity pipeline compiled and registered", device.pipelineFor(entity) != null, "");
+            if (device.pipelineFor(entity) != null) {
+                entityCheck(device, entity);
+            }
+
             // BUG-002's path. rendertype_lines.vsh expands a line in screen space:
             //   lineOffset = perpendicular * LineWidth / ScreenSize
             // and ScreenSize lives in Globals. If Globals were mis-bound (it shared a SPIR-V binding
@@ -160,6 +174,11 @@ public final class RenderCheck {
             // Blend state. Half-alpha white over black must land halfway between the two, which
             // exercises blendEnabled, the factors and the op together.
             blendCheck(device, pipeline);
+
+            // Index width and draw offsets. Every other check draws 32-bit indices from position 0,
+            // but chunk and entity meshes are indexed with IndexType.SHORT and each chunk of a
+            // shared vertex buffer is drawn by offsetting into it.
+            shortIndexCheck(device, pipeline);
         } finally {
             device.close();
         }
@@ -204,10 +223,7 @@ public final class RenderCheck {
     private static void terrainCheck(MetalDevice device, RenderPipeline pipeline) {
         GpuTexture white = device.createTexture("white", GpuTexture.USAGE_TEXTURE_BINDING
                 | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
-        ByteBuffer whitePixel = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder());
-        whitePixel.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255).flip();
-        MetalNative.textureReplaceRegion(((MetalTexture) white).handle(), 0, 0, 0, 0, 1, 1,
-                whitePixel, 4L);
+        solid(white, 255, 255, 255, 255);
         GpuTextureView whiteView = device.createTextureView(white);
 
         GpuBuffer vertices = device.createBuffer(() -> "terrain vertices",
@@ -255,6 +271,157 @@ public final class RenderCheck {
         return buffer;
     }
 
+    /**
+     * Draw a full-screen quad with the real entity pipeline and check the colour three times.
+     *
+     * <p>Everything is set so the maths is trivial: identity matrices, a white entity texture, a
+     * white lightmap, and both light directions along the vertex normal, so
+     * {@code minecraft_mix_light} saturates at 1. White out therefore means the 36-byte entity
+     * vertex format - including the {@code Normal} attribute no other pipeline uses - and the
+     * {@code Lighting} and {@code DynamicTransforms} blocks all arrived intact.
+     *
+     * <p>The overlay texel is opaque white because the shader blends the other way round from what
+     * the name suggests: {@code color.rgb = mix(overlayColor.rgb, color.rgb, overlayColor.a)}, so
+     * alpha 1 keeps the entity's own colour and alpha 0 paints the overlay colour straight on.
+     *
+     * <p>{@code ENTITY_CUTOUT} is compiled with {@code PER_FACE_LIGHTING}, so the fragment shader
+     * chooses the front or the back light colour from {@code gl_FrontFacing}. The back colour is
+     * {@code Color * MINECRAFT_AMBIENT_LIGHT} = 102, so a winding regression cannot pass as white.
+     *
+     * <p>The second draw turns fog on. Every corner of the quad is at {@code length((1,1,1)) = 1.732},
+     * and {@code sphericalVertexDistance} is {@code length(Position)} evaluated <em>per vertex</em>,
+     * so the varying is the constant 1.732 across the whole quad rather than the 1.0 that the
+     * interpolated position would suggest. With environmental fog from 0 to 2 that is a fog value of
+     * exactly 0.866, and a blue FogColor therefore lands at 34 34 255. This is the draw that proves
+     * the {@code Lighting} and {@code Fog} blocks got separate Metal slots (BUG-012): read the
+     * Lighting bytes as Fog and FogColor's alpha becomes 0, which leaves the entity white.
+     *
+     * <p>The third draw uses a non-white ColorModulator, which is the only one of the four uniform
+     * blocks the vertex and fragment stages <em>share</em> - it is bound at a different Metal slot in
+     * each stage, so this proves the fragment stage's copy is bound too.
+     */
+    private static void entityCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture white = device.createTexture("entity white", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        GpuTexture overlay = device.createTexture("entity overlay", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        solid(white, 255, 255, 255, 255);
+        solid(overlay, 255, 255, 255, 255);
+        GpuTextureView whiteView = device.createTextureView(white);
+        GpuTextureView overlayView = device.createTextureView(overlay);
+
+        GpuBuffer vertices = device.createBuffer(() -> "entity vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, entityVertices());
+        GpuBuffer indices = device.createBuffer(() -> "entity indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer whiteModulator = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+        GpuBuffer tintedModulator = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.5f, 0.25f, 1.0f, 1.0f}));
+        // Both light directions point along +Z, which is the normal every vertex carries, so the
+        // light sum is 1.2 and clamps to full brightness in both the front and the back colour.
+        GpuBuffer lighting = device.createBuffer(() -> "Lighting",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, lighting());
+        GpuBuffer noFog = device.createBuffer(() -> "Fog",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                fog(new float[]{0f, 0f, 0f, 0f}, 0f, 2f, 1000f, 2000f));
+        GpuBuffer halfFog = device.createBuffer(() -> "Fog",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                fog(new float[]{0f, 0f, 1f, 1f}, 0f, 2f, 1000f, 2000f));
+
+        Map<String, GpuTextureView> textures = new LinkedHashMap<>();
+        textures.put("Sampler0", whiteView);      // entity texture
+        textures.put("Sampler1", overlayView);    // overlay
+        textures.put("Sampler2", whiteView);      // lightmap
+
+        int[] lit = renderQuad(device, pipeline, vertices, indices,
+                entityUniforms(projection, whiteModulator, lighting, noFog), textures, true,
+                "entity", new float[]{0.0f, 1.0f, 0.0f, 1.0f});
+        check("entity quad renders fully lit white, not the 102 back-face colour"
+                        + " -> R" + lit[0] + " G" + lit[1] + " B" + lit[2],
+                lit[0] > 250 && lit[1] > 250 && lit[2] > 250, "");
+
+        int[] fogged = renderQuad(device, pipeline, vertices, indices,
+                entityUniforms(projection, whiteModulator, lighting, halfFog), textures, true,
+                "entity fog", new float[]{0.0f, 1.0f, 0.0f, 1.0f});
+        check("entity fog mixes 86.6% of the FogColor over the whole quad -> R" + fogged[0]
+                        + " G" + fogged[1] + " B" + fogged[2] + " (expected 34 34 255; white would"
+                        + " mean the Fog block was bound to something else)",
+                Math.abs(fogged[0] - 34) <= 3 && Math.abs(fogged[1] - 34) <= 3 && fogged[2] > 250, "");
+
+        int[] tinted = renderQuad(device, pipeline, vertices, indices,
+                entityUniforms(projection, tintedModulator, lighting, noFog), textures, true,
+                "entity tint", new float[]{0.0f, 1.0f, 0.0f, 1.0f});
+        check("entity ColorModulator reaches the fragment stage of the shared block -> R" + tinted[0]
+                        + " G" + tinted[1] + " B" + tinted[2] + " (expected 128 64 255)",
+                Math.abs(tinted[0] - 128) <= 3 && Math.abs(tinted[1] - 64) <= 3 && tinted[2] > 250, "");
+
+        halfFog.close();
+        noFog.close();
+        lighting.close();
+        tintedModulator.close();
+        whiteModulator.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        overlayView.close();
+        whiteView.close();
+        overlay.close();
+        white.close();
+    }
+
+    private static Map<String, GpuBuffer> entityUniforms(GpuBuffer projection, GpuBuffer transforms,
+                                                         GpuBuffer lighting, GpuBuffer fog) {
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", projection);
+        uniforms.put("DynamicTransforms", transforms);
+        uniforms.put("Lighting", lighting);
+        uniforms.put("Fog", fog);
+        return uniforms;
+    }
+
+    /** Write one RGBA8 texel into a 1x1 texture, for checks that need a known sampled constant. */
+    private static void solid(GpuTexture texture, int r, int g, int b, int a) {
+        ByteBuffer pixel = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder());
+        pixel.put((byte) r).put((byte) g).put((byte) b).put((byte) a).flip();
+        MetalNative.textureReplaceRegion(((MetalTexture) texture).handle(), 0, 0, 0, 0, 1, 1,
+                pixel, 4L);
+    }
+
+    /**
+     * 36-byte entity vertex: Position RGB32_FLOAT, Color RGBA8_UNORM, UV0 RG32_FLOAT,
+     * UV1 RG16_SINT, UV2 RG16_SINT, Normal RGBA8_SNORM.
+     */
+    private static ByteBuffer entityVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 36).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+        for (float[] p : positions) {
+            // Reversed-Z, so the near plane is 1. The corner order is the one the culling terrain
+            // pipeline accepts as front-facing, so gl_FrontFacing must agree here too.
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(1.0f);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);   // Color
+            buffer.putFloat(0.0f).putFloat(0.0f);                      // UV0
+            buffer.putShort((short) 0).putShort((short) 0);            // UV1: overlay
+            buffer.putShort((short) 0).putShort((short) 0);            // UV2: lightmap
+            buffer.put((byte) 0).put((byte) 0).put((byte) 127).put((byte) 0);   // Normal (0, 0, 1)
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /** std140 Lighting: vec3 Light0_Direction, vec3 Light1_Direction, both along +Z. */
+    private static ByteBuffer lighting() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder());
+        buffer.putFloat(0).putFloat(0).putFloat(1).putFloat(0);   // Light0_Direction + padding
+        buffer.putFloat(0).putFloat(0).putFloat(1).putFloat(0);   // Light1_Direction + padding
+        buffer.flip();
+        return buffer;
+    }
+
     /** std140: mat4 ModelViewMat, float ChunkVisibility, ivec2 TextureSize, ivec3 ChunkPosition. */
     private static ByteBuffer chunkSection() {
         ByteBuffer buffer = ByteBuffer.allocateDirect(96).order(ByteOrder.nativeOrder());
@@ -282,10 +449,16 @@ public final class RenderCheck {
 
     /** std140 Fog: vec4 FogColor then six floats; the distances are far away so fog contributes nothing. */
     private static ByteBuffer fog() {
+        return fog(new float[]{1f, 1f, 1f, 1f}, 1000f, 2000f, 1000f, 2000f);
+    }
+
+    /** std140 Fog with explicit values, for checks where fog has to contribute a known amount. */
+    private static ByteBuffer fog(float[] color, float environmentalStart, float environmentalEnd,
+                                  float renderDistanceStart, float renderDistanceEnd) {
         ByteBuffer buffer = ByteBuffer.allocateDirect(48).order(ByteOrder.nativeOrder());
-        buffer.putFloat(1).putFloat(1).putFloat(1).putFloat(1);   // FogColor
-        buffer.putFloat(1000).putFloat(2000);                     // environmental start/end
-        buffer.putFloat(1000).putFloat(2000);                     // render distance start/end
+        buffer.putFloat(color[0]).putFloat(color[1]).putFloat(color[2]).putFloat(color[3]);
+        buffer.putFloat(environmentalStart).putFloat(environmentalEnd);
+        buffer.putFloat(renderDistanceStart).putFloat(renderDistanceEnd);
         buffer.putFloat(2000).putFloat(2000);                     // sky end, clouds end
         buffer.flip();
         return buffer;
@@ -781,6 +954,80 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Draw both halves of a shared vertex buffer with 16-bit indices, a non-zero {@code firstIndex}
+     * and a non-zero base vertex.
+     *
+     * <p>{@code IndexType.least} picks {@code SHORT} for anything under 65 536 vertices, so chunk and
+     * entity meshes are indexed 16 bits wide, and each chunk of a shared vertex buffer is drawn by
+     * offsetting into it. Neither the index width nor either offset appears in any other check - they
+     * all use 32-bit indices from position 0 - and both offsets are easy to get wrong, since
+     * {@code firstIndex} has to be scaled by the index size on the way to Metal.
+     *
+     * <p>The left half is drawn from index 0 and the right half from index 6 - byte 12 in a 16-bit
+     * buffer - with a base vertex of 4. A mis-scaled {@code firstIndex} reads past the end and leaves
+     * the right half black; a dropped base vertex draws the left half twice and leaves it black too.
+     * Both assertions were confirmed to fail when those were deliberately broken.
+     */
+    private static void shortIndexCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuTexture target = device.createTexture("short index", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuBuffer vertices = device.createBuffer(() -> "short index vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, twoQuadVertices());
+        GpuBuffer indices = device.createBuffer(() -> "short indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, shortIndexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.0f, 0.0f, 1.0f, 1.0f}));   // blue
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        Optional<Vector4fc> clear = Optional.of((Vector4fc) new Vector4f(0.0f, 0.0f, 0.0f, 1.0f));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "short index")
+                .withColorAttachment(view, clear)
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.SHORT);
+        pass.drawIndexed(6, 1, 0, 0, 0);    // left half from index 0
+        pass.drawIndexed(6, 1, 6, 4, 0);    // right half: firstIndex 6 is byte 12, base vertex 4
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int left = pixels.get((HEIGHT / 2 * WIDTH + WIDTH / 4) * 4 + 2) & 0xFF;
+        int right = pixels.get((HEIGHT / 2 * WIDTH + 3 * WIDTH / 4) * 4 + 2) & 0xFF;
+        check("16-bit indices at firstIndex=6 draw the left half (B" + left
+                + ") and baseVertex=4 draws the right half (B" + right + ")",
+                left > 200 && right > 200, "");
+
+        readback.close();
+        transforms.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        view.close();
+        target.close();
+    }
+
+    /** 12 unsigned shorts: the left quad's indices, then the same indices for the right quad. */
+    private static ByteBuffer shortIndexBytes() {
+        int[] values = {0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3};
+        ByteBuffer buffer = ByteBuffer.allocateDirect(values.length * 2).order(ByteOrder.nativeOrder());
+        for (int value : values) {
+            buffer.putShort((short) value);
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /** GUI-layout vertices, white at half alpha, so the blend factor decides the result. */
