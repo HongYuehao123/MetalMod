@@ -1,4 +1,8 @@
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.mojang.blaze3d.preprocessor.GlslPreprocessor;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
@@ -17,8 +21,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -64,9 +70,9 @@ public final class ShaderInventory {
 
         List<RenderPipeline> pipelines = vanillaPipelines();
         System.out.println("  pipelines: " + pipelines.size());
-        System.out.println();
 
         List<Result> results = new ArrayList<>();
+        List<Result> postResults = new ArrayList<>();
         MetalDevice device = MetalDevice.create();
         if (device == null) {
             System.err.println("ERROR: could not create a Metal device");
@@ -75,9 +81,16 @@ public final class ShaderInventory {
         try (ZipFile zip = new ZipFile(jar.toFile());
              MetalShaderCompiler compiler = new MetalShaderCompiler()) {
 
+            List<RenderPipeline> postPipelines = postPipelines(zip);
+            System.out.println("  post    : " + postPipelines.size());
+            System.out.println();
+
             Map<String, String> shaderCache = new LinkedHashMap<>();
             for (RenderPipeline pipeline : pipelines) {
                 results.add(compileOne(device, compiler, zip, shaderCache, pipeline));
+            }
+            for (RenderPipeline pipeline : postPipelines) {
+                postResults.add(compileOne(device, compiler, zip, shaderCache, pipeline));
             }
             // The 87 pipelines share shader pairs, so the pair cache must report reuse here. This is
             // how the cache is verified without a game run.
@@ -86,7 +99,7 @@ public final class ShaderInventory {
             device.close();
         }
 
-        report(results);
+        report(results, postResults);
     }
 
     private static Result compileOne(MetalDevice device, MetalShaderCompiler compiler, ZipFile zip,
@@ -133,7 +146,25 @@ public final class ShaderInventory {
         return new Result(location, Status.FAILED, detail.isEmpty() ? "(no message)" : detail);
     }
 
-    private static void report(List<Result> results) {
+    private static void report(List<Result> results, List<Result> postResults) {
+        reportOne("static pipelines", results);
+        reportOne("post-processing", postResults);
+        System.exit(Math.min(countFailed(results) + countFailed(postResults), 125));
+    }
+
+    private static int countFailed(List<Result> results) {
+        int failed = 0;
+        for (Result result : results) {
+            if (result.status() == Status.FAILED) {
+                failed++;
+            }
+        }
+        return failed;
+    }
+
+    private static void reportOne(String label, List<Result> results) {
+        System.out.println();
+        System.out.println("=========== " + label + " ===========");
         List<Result> failed = new ArrayList<>();
         List<Result> noSource = new ArrayList<>();
         for (Result result : results) {
@@ -144,7 +175,6 @@ public final class ShaderInventory {
             }
         }
 
-        System.out.println("=========== results ===========");
         int diagnostics = 0;
         for (Result result : results) {
             boolean flagged = result.status() != Status.OK || !result.detail().isBlank();
@@ -163,14 +193,66 @@ public final class ShaderInventory {
             System.out.println("(no diagnostics from any pipeline)");
         }
         System.out.println();
-        System.out.printf("total=%d ok=%d failed=%d no-source=%d%n",
+        System.out.printf("%s: total=%d ok=%d failed=%d no-source=%d%n", label,
                 results.size(), results.size() - failed.size() - noSource.size(),
                 failed.size(), noSource.size());
-        if (!noSource.isEmpty()) {
-            System.out.println("no-source pipelines are announced by the engine without a shader to");
-            System.out.println("compile (the post-processing chain); the game skips them too.");
+    }
+
+    /**
+     * The post-processing chain's shader pairs, built the way {@code PostChain} builds them.
+     *
+     * <p>These are a separate space from {@code RenderPipelines}. {@code PostChain} reads each
+     * {@code post_effect} JSON at runtime and constructs a pipeline from
+     * {@code POST_PROCESSING_SNIPPET} plus the pass's two shaders, so nothing in this space is a
+     * static field and nothing else compiles it. The menu blur is six passes of {@code post/box_blur},
+     * so a compile failure here is a visible one - and the earlier note in this file claiming the
+     * engine "skips them too" was simply wrong; see BUG-019.
+     */
+    private static List<RenderPipeline> postPipelines(ZipFile zip) {
+        List<RenderPipeline> out = new ArrayList<>();
+        Object snippet;
+        try {
+            snippet = Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("POST_PROCESSING_SNIPPET").get(null);
+        } catch (ReflectiveOperationException e) {
+            return out;
         }
-        System.exit(Math.min(failed.size(), 125));
+        List<String> names = new ArrayList<>();
+        zip.stream().map(java.util.zip.ZipEntry::getName)
+                .filter(name -> name.startsWith("assets/minecraft/post_effect/") && name.endsWith(".json"))
+                .sorted()
+                .forEach(names::add);
+        Set<String> seen = new LinkedHashSet<>();
+        for (String name : names) {
+            String json = readEntry(zip, name);
+            if (json == null) {
+                continue;
+            }
+            JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+            JsonArray passes = root.getAsJsonArray("passes");
+            if (passes == null) {
+                continue;
+            }
+            String chain = name.substring(name.lastIndexOf('/') + 1, name.length() - ".json".length());
+            int index = 0;
+            for (JsonElement element : passes) {
+                JsonObject pass = element.getAsJsonObject();
+                if (!pass.has("vertex_shader") || !pass.has("fragment_shader")) {
+                    continue;
+                }
+                String vertex = pass.get("vertex_shader").getAsString();
+                String fragment = pass.get("fragment_shader").getAsString();
+                if (!seen.add(vertex + "+" + fragment)) {
+                    continue;
+                }
+                out.add(RenderPipeline.builder((RenderPipeline.Snippet) snippet)
+                        .withVertexShader(net.minecraft.resources.Identifier.parse(vertex))
+                        .withFragmentShader(net.minecraft.resources.Identifier.parse(fragment))
+                        .withLocation("post/" + chain + "/" + index++)
+                        .build());
+            }
+        }
+        return out;
     }
 
     /** Every RenderPipeline declared by the engine, in a stable order. */

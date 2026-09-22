@@ -162,8 +162,8 @@ $JAVA --enable-native-access=ALL-UNNAMED \
     assets/minecraft/shaders/core/animate_sprite.vsh \
     assets/minecraft/shaders/core/animate_sprite_interpolate.fsh
 
-# every vanilla pipeline: exits 0 only when all of them compile
-./tools/shader_inventory/run.sh        # total=87 ok=87 failed=0
+# every vanilla pipeline and every post-processing pass: exits 0 only when all compile
+./tools/shader_inventory/run.sh        # static 87/87, post 9/9
 
 # render real vanilla pipelines offscreen and check the pixels
 # (gui, gui_textured, solid_terrain, entity_cutout, lines, sky fan, blits, multi-draw, scissor,

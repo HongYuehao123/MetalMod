@@ -304,6 +304,13 @@ pipeline declaring no depth state inherited the previous one's compare function 
 (thirty vanilla pipelines declare none). Neither throws; both are the kind of full-scene depth error
 that reads as "not quite right". Both are now set unconditionally on every bind.
 
+The same round found the post-processing chain: a **separate shader space** from the 87 pipelines,
+built at runtime by `PostChain` from the `post_effect` JSONs, shaped unlike anything else in the
+pipeline space (no colour target, no vertex format, a full-screen triangle from `gl_VertexID`, and a
+one-argument precompile that passes a null shader source), and compiled by no tool at all. All nine
+of its shader pairs now compile in the inventory, and one pass renders in the render check. See
+BUG-019.
+
 The census also drove the opposite conclusion for blending. Vanilla uses ten distinct blend
 functions, and the harness exercised exactly one of them, so all eight factors vanilla actually
 blends with rested on an SDK-header table and nothing else - the same kind of evidence that let
@@ -320,7 +327,7 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 |---|---|
 | `scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `scripts/run_smoke.sh` | native device/pipeline/draw/surface, 11 sections |
-| `tools/shader_inventory/run.sh` | `total=87 ok=87 failed=0`, no diagnostics from any pipeline |
+| `tools/shader_inventory/run.sh` | `static 87/87` and `post 9/9`, no diagnostics from any pipeline |
 | `tools/render_check/run.sh` | 54 assertions over 19 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 

@@ -184,6 +184,12 @@ terrain are fixed:
   indirect and multi-draw-indirect paths are unimplemented no-ops, `shaderDrawParameters` has no
   vanilla consumer, and `persistentMapping` is correctly false because buffers are shared storage
   written directly.
+- **The post-processing chain is now compiled by a tool, not just by the game.** It is a separate
+  shader space from the 87 pipelines - `PostChain` builds it at runtime from the `post_effect` JSONs
+  and `POST_PROCESSING_SNIPPET` - so no static field declares it and nothing had ever compiled it.
+  `tools/shader_inventory` now enumerates the JSONs, rebuilds each pass's pipeline the way the engine
+  does, and compiles all nine pairs: `post 9/9`, no diagnostics. `tools/render_check` renders one of
+  them end to end. See BUG-019.
 - **The shader binding layer now reports clean.** With BUG-012 and BUG-013 fixed, the inventory
   compiles all 87 pipelines and reports **no diagnostics at all** — no slot collisions, no
   reflection/MSL mismatches for uniform buffers, textures or vertex attributes, and no binding-kind
