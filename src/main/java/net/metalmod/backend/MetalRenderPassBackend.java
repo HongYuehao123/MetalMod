@@ -43,6 +43,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private MetalRenderPipeline pipeline;
     private int topology = 3;
     private MemorySegment indexBuffer = MemorySegment.NULL;
+    private long indexBufferOffset;
     private int indexType = 1;
 
     public MetalRenderPassBackend(MetalCommandEncoderBackend owner, MemorySegment encoder,
@@ -106,8 +107,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             if (handle.address() == 0) {
                 continue;
             }
-            if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, slice.offset(), vb);
-            if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, slice.offset(), fb);
+            if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, absoluteOffset(slice), vb);
+            if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, absoluteOffset(slice), fb);
         }
         for (Map.Entry<String, GpuTextureView> entry : this.textures.entrySet()) {
             String name = entry.getKey();
@@ -186,18 +187,30 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         MetalNative.renderPassSetScissor(this.encoder, 0, 0, this.width, this.height);
     }
 
+    /**
+     * Byte offset to hand Metal for a slice, i.e. the slice's own offset plus the sub-buffer's base
+     * inside the shared MTLBuffer. {@code GpuBufferSlice} offsets are relative to the buffer object,
+     * but a sub-buffer shares its parent's handle - so without the base, a transient arena
+     * allocation would bind the arena's start (BUG-009). Zero for every buffer that owns its handle.
+     */
+    static long absoluteOffset(GpuBufferSlice slice) {
+        long base = slice.buffer() instanceof MetalBuffer metal ? metal.baseOffset() : 0L;
+        return base + slice.offset();
+    }
+
     @Override
     public void setVertexBuffer(int index, GpuBufferSlice slice) {
         if (slice == null) {
             return;
         }
         MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
-        MetalNative.renderPassSetVertexBuffer(this.encoder, handle, slice.offset(), index);
+        MetalNative.renderPassSetVertexBuffer(this.encoder, handle, absoluteOffset(slice), index);
     }
 
     @Override
     public void setIndexBuffer(GpuBuffer buffer, IndexType type) {
         this.indexBuffer = MetalCommandEncoderBackend.handleOf(buffer);
+        this.indexBufferOffset = buffer instanceof MetalBuffer metal ? metal.baseOffset() : 0L;
         this.indexType = type == IndexType.INT ? 1 : 0;
     }
 
@@ -208,7 +221,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         applyBindings(true);
-        MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+        MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
                 this.indexType, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
@@ -220,7 +233,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         for (int i = 0; i < firstIndices.remaining(); i++) {
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
                     this.indexType, indexCount, instanceCount,
                     firstIndices.get(firstIndices.position() + i), 0, firstInstance);
         }
@@ -235,7 +248,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         int draws = Math.min(firstIndices.remaining(), Math.min(indexCounts.remaining(), vertexOffsets.remaining()));
         for (int i = 0; i < draws; i++) {
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
                     this.indexType, indexCounts.get(indexCounts.position() + i), instanceCount,
                     (int) firstIndices.get(firstIndices.position() + i),
                     vertexOffsets.get(vertexOffsets.position() + i), 0);
@@ -266,7 +279,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             }
             // Safe to diagnose here now that the consumer has supplied its uniforms.
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, this.indexBufferOffset,
                     this.indexType, draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
     }

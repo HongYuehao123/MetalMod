@@ -38,8 +38,41 @@ public final class MetalRenderPassBackendTest {
         testDrawWithoutConsumerIsHarmless();
         testPerDrawIndexBufferAndTypeWin();
         testPerDrawIndexFallsBackToPassLevel();
+        testSubBufferOffsetsAreAbsolute();
 
         return failures;
+    }
+
+    /**
+     * BUG-009: a sub-buffer shares its parent's MTLBuffer handle, so a slice over it must be bound at
+     * the sub-buffer's own base inside that handle. Before this was handled, every transient-arena
+     * allocation bound the arena's start instead of its own data.
+     */
+    private static void testSubBufferOffsetsAreAbsolute() {
+        MetalBuffer arena = new MetalBuffer(0, 4096L, MemorySegment.NULL, MemorySegment.NULL, false, null);
+        check("a root buffer has base offset 0", arena.baseOffset() == 0L,
+                "got " + arena.baseOffset());
+
+        MetalBuffer first = MetalBuffer.sub(0, 256L, arena, 0L);
+        MetalBuffer second = MetalBuffer.sub(0, 256L, arena, 256L);
+        MetalBuffer third = MetalBuffer.sub(0, 256L, arena, 512L);
+
+        check("second allocation sits at 256, not 0", second.baseOffset() == 256L,
+                "got " + second.baseOffset());
+        check("third allocation sits at 512", third.baseOffset() == 512L,
+                "got " + third.baseOffset());
+        check("a slice over the second allocation binds at 256",
+                MetalRenderPassBackend.absoluteOffset(second.slice()) == 256L,
+                "got " + MetalRenderPassBackend.absoluteOffset(second.slice()));
+        MetalBuffer nested = MetalBuffer.sub(0, 64L, second, 64L);
+        check("a nested sub-buffer accumulates its parent's base", nested.baseOffset() == 320L,
+                "got " + nested.baseOffset());
+        check("an offset inside a slice is added to the base",
+                MetalRenderPassBackend.absoluteOffset(third.slice(64L, 64L)) == 576L,
+                "got " + MetalRenderPassBackend.absoluteOffset(third.slice(64L, 64L)));
+        check("the first allocation still binds at 0",
+                MetalRenderPassBackend.absoluteOffset(first.slice()) == 0L,
+                "got " + MetalRenderPassBackend.absoluteOffset(first.slice()));
     }
 
     /** The payload must reach the consumer, and the consumer's uploads must reach the sink. */

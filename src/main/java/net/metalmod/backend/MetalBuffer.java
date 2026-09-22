@@ -18,16 +18,23 @@ public final class MetalBuffer extends GpuBuffer {
     private final MemorySegment handle;
     private final MemorySegment data;
     private final boolean ownsHandle;
+    private final long baseOffset;
     @SuppressWarnings("unused")
     private final Object owner;
     private boolean closed;
 
     public MetalBuffer(int usage, long size, MemorySegment handle, MemorySegment data,
                        boolean ownsHandle, Object owner) {
+        this(usage, size, handle, data, ownsHandle, owner, 0L);
+    }
+
+    public MetalBuffer(int usage, long size, MemorySegment handle, MemorySegment data,
+                       boolean ownsHandle, Object owner, long baseOffset) {
         super(usage, size);
         this.handle = handle == null ? MemorySegment.NULL : handle;
         this.data = data == null ? MemorySegment.NULL : data;
         this.ownsHandle = ownsHandle;
+        this.baseOffset = baseOffset;
         this.owner = owner;
     }
 
@@ -35,7 +42,20 @@ public final class MetalBuffer extends GpuBuffer {
         MemorySegment slice = (parent.data.address() == 0)
                 ? MemorySegment.NULL
                 : parent.data.asSlice(offset, size);
-        return new MetalBuffer(usage, size, parent.handle, slice, false, parent);
+        return new MetalBuffer(usage, size, parent.handle, slice, false, parent,
+                parent.baseOffset + offset);
+    }
+
+    /**
+     * Byte offset of this buffer inside the MTLBuffer that {@link #handle()} refers to.
+     *
+     * <p>A sub-buffer shares its parent's handle, so a {@code GpuBufferSlice} over it reports an
+     * offset relative to the sub-buffer while the handle points at the parent. Anything that binds
+     * the handle on the GPU must add this, or it binds the parent's start instead. The CPU paths do
+     * not need it: they read through {@link #data()}, which is already offset.
+     */
+    public long baseOffset() {
+        return this.baseOffset;
     }
 
     public MemorySegment handle() {

@@ -105,11 +105,11 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
-## BUG-009 — Transient-arena slices bind the wrong GPU offset (latent for vanilla)
+## BUG-009 — Transient-arena slices bound the wrong GPU offset
 
-**Status:** open, unfixed. Latent for vanilla; would break any streaming vertex/uniform use.
-**Severity:** latent today, high if hit — a shader would read the start of the 64 MB arena instead of
-its own data.
+**Status:** **FIXED** (Phase 5). Was latent for vanilla; would have broken any streaming use.
+**Severity:** latent until hit, then high — a shader would read the start of the 64 MB arena instead
+of its own data.
 **Found by:** auditing the arena's offset handling against `GpuBuffer`/`GpuBufferSlice` semantics.
 
 ### Cause
@@ -125,40 +125,38 @@ public static MetalBuffer sub(int usage, long size, MetalBuffer parent, long off
 ```
 
 Minecraft's `GpuBuffer.slice(offset, length)` returns `new GpuBufferSlice(this, offset, length)`, so
-`sub.slice(0, size)` yields **offset 0** — while the handle is the whole parent arena.
+`sub.slice(0, size)` reported **offset 0** while the handle pointed at the whole parent arena.
 
-That is consistent for the CPU paths, because they read through the sub-buffer's already-offset
-`data` segment (`dataSlice`, `map`, `copyBufferToTexture`, `writeToBuffer`). It is wrong for the GPU
-binding paths, which combine the handle with the slice offset:
+That was consistent for the CPU paths, which read through the sub-buffer's already-offset `data`
+segment (`dataSlice`, `map`, `copyBufferToTexture`, `writeToBuffer`), and wrong for the GPU binding
+paths, which combine the handle with the slice offset:
 
 ```java
-MemorySegment handle = handleOf(slice.buffer());          // the parent arena
-MetalNative.renderPassSetVertexBuffer(encoder, handle, slice.offset(), index);   // ... at 0
+MetalNative.renderPassSetVertexBuffer(encoder, handleOf(slice.buffer()), slice.offset(), index);
 ```
 
-So every transient allocation binds the arena at byte 0. Any draw or uniform read through one would
-sample another allocation's data.
+So every transient allocation bound the arena at byte 0.
 
-### Why it is latent
+### Why it never showed
 
 `TransientMemory` is used by exactly two vanilla classes — `SpriteContents$AnimatedTexture` and
-`CubeMapTexture` — and both only *upload* through it, which goes down the CPU path that is correct.
-Terrain and GUI vertex data come from dedicated `GpuBuffer`s. So nothing in vanilla binds a transient
-buffer on the GPU, which is why this has never shown up. It is a trap for anything that does stream
-vertices or uniforms through it (Sodium and Iris both do).
+`CubeMapTexture` — and both only *upload* through it, which takes the correct CPU path. Terrain and
+GUI vertex data come from dedicated `GpuBuffer`s. It was a trap for anything that streams vertices or
+uniforms through the arena (Sodium and Iris both do).
 
-### Suggested fix
+### Fix
 
-Make the offset absolute and keep one source of truth. Either:
+`MetalBuffer` now records a `baseOffset` (the sub-buffer's byte offset inside the handle it shares),
+`MetalBuffer.sub` accumulates it, and the GPU binding paths add it:
 
-- override `MetalBuffer.slice(long, long)` to add the sub-buffer's base offset, and have the CPU
-  paths use `dataSlice(offset - baseOffset, …)`; or
-- give a sub-buffer its own `MTLBuffer`-relative base and subtract it wherever `slice.offset()` is
-  currently fed to `dataSlice`.
+- `MetalRenderPassBackend.absoluteOffset(GpuBufferSlice)` = base + slice offset, used for vertex and
+  fragment uniform buffers and for `setVertexBuffer`.
+- `setIndexBuffer` records the buffer's base, and the four indexed-draw call sites pass it instead of
+  a hardcoded `0`.
 
-Whichever is chosen wants a test asserting the invariant *"a slice's (handle, offset) pair addresses
-the same bytes as the buffer's `data` segment"* — allocating twice from the arena and checking the
-second slice's offset is non-zero would have caught this immediately.
+Every buffer that owns its handle has base 0, so this is a no-op for all existing non-arena paths.
+Covered by seven assertions in `MetalRenderPassBackendTest` that pin the invariant *"a slice's
+(handle, offset) pair addresses the bytes the buffer's `data` segment does"*.
 
 ---
 
