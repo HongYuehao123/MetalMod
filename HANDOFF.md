@@ -269,14 +269,21 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Fourteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Fifteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
-  orientation, texture copies (whole and by rectangle), the atlas compositing flip,
+  orientation, mip selection, texture copies (whole and by rectangle), the atlas compositing flip,
   `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, every
   blend state vanilla uses, and 16-bit indices with non-zero `firstIndex`/base-vertex offsets. Each
   one is a mechanism one of the open bugs implicates, and the harness has eliminated five BUG-001
   theories.
+- **Mip selection is verified, which BUG-008 had no evidence for.** The terrain shader minifies the
+  block atlas and samples it with `textureGrad`/`textureLod`, so mips are on the hottest path in the
+  game - and every other check used a 1x1 texture with mipmapping off, so none of them touched that
+  code. A 64x64 texture with a solid colour per level, drawn onto a quarter of the target so each
+  pixel covers sixteen texels, now comes back blue (level 2) with a `maxLod` present and red (level 0)
+  without. Forcing `-Dmetalmod.mipFilter=off` reproduces BUG-008 exactly: the minified draw stays on
+  level 0, which is the aliasing that fix removed.
 - **Blending is verified by equation, not by inspection.** The blend matrix renders all ten blend
   functions vanilla uses - the pipeline for each is read from a real vanilla pipeline, so it cannot
   drift - plus the five factors BUG-006 corrected, which nothing in vanilla uses and which are

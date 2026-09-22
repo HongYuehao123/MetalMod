@@ -171,6 +171,13 @@ public final class RenderCheck {
             check("textured pipeline compiled and registered", device.pipelineFor(textured) != null, "");
             if (device.pipelineFor(textured) != null) {
                 textureOrientationCheck(device, textured);
+
+                // Mip selection. The terrain shader minifies the block atlas and samples it with
+                // textureGrad/textureLod, so mips are on the hottest path in the game - and every
+                // other check here uses a 1x1 texture with mipmapping off, so none of them touches
+                // that code. BUG-008 was a hardcoded MTLSamplerMipFilterNotMipmapped, which nothing
+                // at render level noticed.
+                mipCheck(device, textured);
             }
 
             // copyTextureToTexture feeds the post-processing chain - the blur behind the menu is a
@@ -1129,6 +1136,136 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Sample a mipmapped texture under minification, with and without mip filtering.
+     *
+     * <p>The texture's four levels are solid red, green, blue and white. The quad covers a quarter of
+     * the target while mapping the whole of a 64x64 texture onto it, so each output pixel covers
+     * sixteen texels and the level of detail is around 2 - the result must be blue, not red.
+     *
+     * <p>That is what makes this a test of mip <em>filtering</em> and not just of the mip chain: with
+     * {@code maxLod} absent the sampler is {@code MTLSamplerMipFilterNotMipmapped} (BUG-008's
+     * hardcoded value), every sample comes from level 0, and the same draw comes back red. The pair
+     * of assertions pins both directions.
+     */
+    private static void mipCheck(MetalDevice device, RenderPipeline pipeline) {
+        final int SIZE = 64;
+        // Every level down to 1x1, because Metal will not sample a texture whose mip chain is
+        // incomplete - it returns black, which is what the first version of this check saw.
+        final int LEVELS = 7;
+        GpuTexture texture = device.createTexture("mips", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, LEVELS);
+        int[][] levelColours = {
+                {255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255},
+                {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255},
+        };
+        for (int level = 0; level < LEVELS; level++) {
+            int extent = SIZE >> level;
+            ByteBuffer texels = ByteBuffer.allocateDirect(extent * extent * 4).order(ByteOrder.nativeOrder());
+            for (int i = 0; i < extent * extent; i++) {
+                texels.put((byte) levelColours[level][0]).put((byte) levelColours[level][1])
+                        .put((byte) levelColours[level][2]).put((byte) levelColours[level][3]);
+            }
+            texels.flip();
+            MetalNative.textureReplaceRegion(((MetalTexture) texture).handle(), level, 0, 0, 0,
+                    extent, extent, texels, (long) extent * 4);
+        }
+        GpuTextureView view = device.createTextureView(texture);
+
+        GpuBuffer vertices = device.createBuffer(() -> "mip vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, mipVertices());
+        GpuBuffer indices = device.createBuffer(() -> "mip indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
+        uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f})));
+        Map<String, GpuTextureView> textures = new LinkedHashMap<>();
+        textures.put("Sampler0", view);
+
+        int[] filtered = renderMipQuad(device, pipeline, vertices, indices, uniforms, textures, 4.0);
+        check("a minified mipmapped texture samples a higher mip -> R" + filtered[0] + " G" + filtered[1]
+                        + " B" + filtered[2] + " (level 0 alone would be red)",
+                filtered[2] > 200 && filtered[0] < 60, "");
+
+        int[] unfiltered = renderMipQuad(device, pipeline, vertices, indices, uniforms, textures, Double.NaN);
+        check("the same draw with no maxLod stays on level 0 -> R" + unfiltered[0] + " G" + unfiltered[1]
+                        + " B" + unfiltered[2],
+                unfiltered[0] > 200 && unfiltered[2] < 60, "");
+
+        view.close();
+        indices.close();
+        vertices.close();
+        for (GpuBuffer buffer : uniforms.values()) {
+            buffer.close();
+        }
+        texture.close();
+    }
+
+    /**
+     * Draw a quarter-screen quad mapping the whole texture onto 16x16 pixels, so the texture is
+     * minified four-to-one per axis, and return the centre pixel.
+     */
+    private static int[] renderMipQuad(MetalDevice device, RenderPipeline pipeline, GpuBuffer vertices,
+                                       GpuBuffer indices, Map<String, GpuBuffer> uniforms,
+                                       Map<String, GpuTextureView> textures, double maxLod) {
+        GpuTexture color = device.createTexture("mip target", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "mips")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        for (Map.Entry<String, GpuBuffer> uniform : uniforms.entrySet()) {
+            pass.setUniform(uniform.getKey(), uniform.getValue().slice());
+        }
+        // A present maxLod is what turns mip filtering on; it is also how the engine asks for it.
+        OptionalDouble lod = Double.isNaN(maxLod) ? OptionalDouble.empty() : OptionalDouble.of(maxLod);
+        GpuSampler sampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+                FilterMode.NEAREST, FilterMode.NEAREST, 1, lod);
+        for (Map.Entry<String, GpuTextureView> texture : textures.entrySet()) {
+            pass.bindTexture(texture.getKey(), texture.getValue(), sampler);
+        }
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        int[] rgb = {pixels.get(at) & 0xFF, pixels.get(at + 1) & 0xFF, pixels.get(at + 2) & 0xFF};
+        readback.close();
+        sampler.close();
+        colorView.close();
+        color.close();
+        return rgb;
+    }
+
+    /** 24-byte position_tex_color vertices covering NDC [-0.25, 0.25], mapping UV 0..1 across it. */
+    private static ByteBuffer mipVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 24).order(ByteOrder.nativeOrder());
+        float[][] corners = {
+                {-0.25f, -0.25f, 0, 1},
+                {0.25f, -0.25f, 1, 1},
+                {0.25f, 0.25f, 1, 0},
+                {-0.25f, 0.25f, 0, 0},
+        };
+        for (float[] c : corners) {
+            buffer.putFloat(c[0]).putFloat(c[1]).putFloat(0.0f);
+            buffer.putFloat(c[2]).putFloat(c[3]);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /**
