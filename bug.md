@@ -429,6 +429,8 @@ pattern.
 
 ---
 
+## BUG-013 — Texel buffers had no binding path (vanilla clouds)
+
 **Status:** **FIXED** (Phase 5) — pending in-game confirmation.
 **Severity:** clouds rendered with undefined data; also a Sodium prerequisite.
 **Found by:** chasing the `CloudFaces` half of BUG-005.
