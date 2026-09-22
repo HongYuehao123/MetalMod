@@ -90,6 +90,9 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
         if (this.drawable == null || this.drawable.address() == 0) {
             return;
         }
+        // Frame boundary: publishes the frame interval, the GPU time accumulated since the previous
+        // present and the draw count for F3, then resets the counters.
+        MetalDevice.endFrame();
         float[] color = this.clearColor;
         int rc;
         if (this.sourceTexture.address() != 0) {

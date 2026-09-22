@@ -27,8 +27,8 @@ Groundwork and the backend architecture are in `ROADMAP.md` §2; the interface c
   particles, sky/weather, clouds, water), the HUD, items and text all draw, with every telemetry
   counter at zero. BUG-002 (selection outline) and BUG-003 (flat black terrain/entities) are
   confirmed fixed in game.
-- **F3 section** renders MetalMod status: backend in use, resolution, `unbound/missingAttr/failed`
-  health counters, optional UMA telemetry, and the mixin hook summary.
+- **F3 section** renders MetalMod status: backend in use, resolution, frame/GPU time and draw count,
+  `unbound/missingAttr/failed` health counters, optional UMA telemetry, and the mixin hook summary.
 - **Config GUI** opens from Mod Menu; it exposes the Metal backend toggle and the UMA memory option.
 - **Native library** (`libmetalmod.dylib`) now contains only the Metal backend (`mmm_*`) and the UMA
   memory pool; the retired MoltenVK-interop/MetalFX code is gone (see below).

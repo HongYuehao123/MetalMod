@@ -35,6 +35,9 @@ public final class MetalNative {
     private static MethodHandle mhFenceCreate, mhFenceWait, mhFenceRelease;
     private static MethodHandle mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
             mhCommandBufferRelease;
+    // Frame-timing readout. Resolved optionally: they are diagnostics, and a stale dylib without
+    // them must not stop the backend from loading.
+    private static MethodHandle mhGpuFrameTimeMs, mhGpuBufferCount, mhResetGpuFrameTime;
     private static MethodHandle mhLibraryCreate, mhLibraryRelease, mhRenderPipelineCreate,
             mhRenderPipelineRelease, mhLastError;
     private static MethodHandle mhRenderPassBegin, mhRenderPassEnd, mhRenderPassSetPipeline,
@@ -135,6 +138,13 @@ public final class MetalNative {
         mhCommandBufferCommit = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_commit"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferWait = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_wait"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferRelease = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_release"), FunctionDescriptor.ofVoid(A));
+
+        mhGpuFrameTimeMs = lookup.find("mmm_gpu_frame_time_ms")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(D))).orElse(null);
+        mhGpuBufferCount = lookup.find("mmm_gpu_buffer_count")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(L))).orElse(null);
+        mhResetGpuFrameTime = lookup.find("mmm_reset_gpu_frame_time")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid())).orElse(null);
 
         mhLibraryCreate = linker.downcallHandle(symbol(lookup, "mmm_library_create"), FunctionDescriptor.of(A, A, A, L));
         mhLibraryRelease = linker.downcallHandle(symbol(lookup, "mmm_library_release"), FunctionDescriptor.ofVoid(A));
@@ -321,6 +331,36 @@ public final class MetalNative {
     public static void commandBufferCommit(MemorySegment cb) { v(mhCommandBufferCommit, cb); }
     public static void commandBufferWait(MemorySegment cb) { v(mhCommandBufferWait, cb); }
     public static void commandBufferRelease(MemorySegment cb) { v(mhCommandBufferRelease, cb); }
+
+    // Frame timing --------------------------------------------------------------------------------
+
+    /** GPU time accumulated since the last reset, in milliseconds. */
+    public static double gpuFrameTimeMs() {
+        if (mhGpuFrameTimeMs == null) return 0.0;
+        try {
+            return (double) mhGpuFrameTimeMs.invokeExact();
+        } catch (Throwable t) {
+            return 0.0;
+        }
+    }
+
+    /** How many command buffers went into that accumulated GPU time. */
+    public static long gpuBufferCount() {
+        if (mhGpuBufferCount == null) return 0L;
+        try {
+            return (long) mhGpuBufferCount.invokeExact();
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    public static void resetGpuFrameTime() {
+        if (mhResetGpuFrameTime == null) return;
+        try {
+            mhResetGpuFrameTime.invokeExact();
+        } catch (Throwable ignored) {
+        }
+    }
 
     // Shader libraries and pipelines -------------------------------------------------------------
 

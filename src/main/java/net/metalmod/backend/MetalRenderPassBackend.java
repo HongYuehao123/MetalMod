@@ -285,8 +285,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         applyBindings(true);
-        MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
-                this.indexType, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+        encodeIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
     @Override
@@ -297,8 +296,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         for (int i = 0; i < firstIndices.remaining(); i++) {
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
-                    this.indexType, indexCount, instanceCount,
+            encodeIndexed(indexCount, instanceCount,
                     firstIndices.get(firstIndices.position() + i), 0, firstInstance);
         }
     }
@@ -312,8 +310,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         int draws = Math.min(firstIndices.remaining(), Math.min(indexCounts.remaining(), vertexOffsets.remaining()));
         for (int i = 0; i < draws; i++) {
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
-                    this.indexType, indexCounts.get(indexCounts.position() + i), instanceCount,
+            encodeIndexed(indexCounts.get(indexCounts.position() + i), instanceCount,
                     (int) firstIndices.get(firstIndices.position() + i),
                     vertexOffsets.get(vertexOffsets.position() + i), 0);
         }
@@ -343,8 +340,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             }
             // Safe to diagnose here now that the consumer has supplied its uniforms.
             applyBindings(true);
-            MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer, this.indexBufferOffset,
-                    this.indexType, draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
+            encodeIndexed(draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
     }
 
@@ -387,12 +383,10 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             // from a cached pattern that is prefix-stable, so one buffer serves every vertex count
             // without ever being rewritten between draws. Vanilla fans are the sky disc (10
             // vertices, 1 non-indexed draw) and sunrise/sunset.
-            MetalNative.renderPassDrawFan(this.encoder, firstVertex, vertexCount, instanceCount,
-                    firstInstance);
+            encodeFan(firstVertex, vertexCount, instanceCount, firstInstance);
             return;
         }
-        MetalNative.renderPassDraw(this.encoder, this.topology, firstVertex, vertexCount,
-                instanceCount, firstInstance);
+        encodeDraw(this.topology, firstVertex, vertexCount, instanceCount, firstInstance);
     }
 
     /**
@@ -418,8 +412,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         for (int i = 0; i < firstVertices.remaining(); i++) {
             applyBindings(true);
-            MetalNative.renderPassDraw(this.encoder, this.topology,
-                    firstVertices.get(firstVertices.position() + i), vertexCount, instanceCount, firstInstance);
+            encodeDraw(this.topology, firstVertices.get(firstVertices.position() + i), vertexCount,
+                    instanceCount, firstInstance);
         }
     }
 
@@ -431,10 +425,39 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         int draws = Math.min(firstVertices.remaining(), vertexCounts.remaining());
         for (int i = 0; i < draws; i++) {
             applyBindings(true);
-            MetalNative.renderPassDraw(this.encoder, this.topology,
-                    firstVertices.get(firstVertices.position() + i),
+            encodeDraw(this.topology, firstVertices.get(firstVertices.position() + i),
                     vertexCounts.get(vertexCounts.position() + i), instanceCount, 0);
         }
+    }
+
+    /**
+     * Encode one indexed draw and count it.
+     *
+     * <p>Every draw funnels through here (or {@link #encodeDraw}/{@link #encodeFan}), so the frame's
+     * draw count - the number F3 reports and the one that grows underground, where far more sections
+     * are visible - has a single source.
+     */
+    private void encodeIndexed(int indexCount, int instanceCount, int firstIndex,
+                               int baseVertex, int firstInstance) {
+        MetalDevice.countDraw();
+        MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer,
+                this.indexBufferOffset, this.indexType, indexCount, instanceCount, firstIndex,
+                baseVertex, firstInstance);
+    }
+
+    /** Encode one non-indexed draw and count it. */
+    private void encodeDraw(int topology, int firstVertex, int vertexCount, int instanceCount,
+                            int firstInstance) {
+        MetalDevice.countDraw();
+        MetalNative.renderPassDraw(this.encoder, topology, firstVertex, vertexCount, instanceCount,
+                firstInstance);
+    }
+
+    /** Encode one expanded triangle fan and count it. */
+    private void encodeFan(int firstVertex, int vertexCount, int instanceCount, int firstInstance) {
+        MetalDevice.countDraw();
+        MetalNative.renderPassDrawFan(this.encoder, firstVertex, vertexCount, instanceCount,
+                firstInstance);
     }
 
     @Override

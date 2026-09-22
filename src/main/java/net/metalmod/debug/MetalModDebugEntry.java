@@ -56,6 +56,21 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         }
         displayer.addLine("§6[MetalMod]§r Resolution: §b" + resolution);
 
+        // Frame timing and draw census. This is the line that answers "why is this slow?": when GPU
+        // time is close to the frame time the frame is GPU-bound (fill/overdraw), and when it is
+        // small next to it the frame is CPU-bound (per-draw work). The draw count is the number that
+        // grows underground, where far more sections are visible. GPU time is measured from the
+        // command buffers' own GPUStartTime/GPUEndTime and lags about a frame.
+        float frameMs = net.metalmod.backend.MetalDevice.lastFrameMs();
+        float gpuMs = net.metalmod.backend.MetalDevice.lastGpuMs();
+        String bound = frameMs <= 0.0f ? ""
+                : gpuMs >= frameMs * 0.8f ? " §7(GPU-bound)§r"
+                : gpuMs <= frameMs * 0.5f ? " §7(CPU-bound)§r" : " §7(mixed)§r";
+        displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms§r | GPU §b"
+                + oneDecimal(gpuMs) + " ms§r | §b" + net.metalmod.backend.MetalDevice.lastFrameDraws()
+                + "§r draws §7(" + net.metalmod.backend.MetalDevice.lastGpuBuffers() + " cmd buffers)§r"
+                + bound);
+
         // The backend's health counters. These are the numbers that explain a black or missing
         // object: a shader sampling something nothing bound, an attribute dropped from the vertex
         // descriptor, or a pipeline that failed to build and is therefore skipping its draws.
@@ -91,5 +106,9 @@ public class MetalModDebugEntry implements DebugScreenEntry {
     @Override
     public boolean isAllowed(boolean reducedDebugInfo) {
         return true;
+    }
+
+    private static String oneDecimal(float value) {
+        return String.format("%.1f", value);
     }
 }

@@ -212,6 +212,11 @@ public final class RenderCheck {
             // corrupted world-list entry. Metal's scissor origin is top-left, like Minecraft's.
             scissorCheck(device, pipeline);
 
+            // The frame census F3 reports. Every draw funnels through one counter that present()
+            // closes out; the checks above have encoded many draws by now, so a zero here means the
+            // counter was never wired - which would make "why is it slow?" unanswerable.
+            frameStatsCheck();
+
             // Blend state. Half-alpha white over black must land halfway between the two, which
             // exercises blendEnabled, the factors and the op together.
             blendCheck(device, pipeline);
@@ -1298,6 +1303,19 @@ public final class RenderCheck {
      * <p>The scissor is the top-left quadrant in the render area's coordinates. If the rect were
      * translated or flipped on the way to Metal, the coloured quadrant would move with it.
      */
+    /**
+     * The frame census: draws counted by the render pass backend, published at present.
+     *
+     * <p>F3's "N draws" line is the number that grows underground, where far more sections are
+     * visible - it is the first datum for deciding whether a slow frame is CPU- or GPU-bound. This
+     * asserts the wiring, not a pixel.
+     */
+    private static void frameStatsCheck() {
+        MetalDevice.endFrame();
+        int draws = MetalDevice.lastFrameDraws();
+        check("draw census counts the frame's draws (" + draws + " encoded)", draws > 0, "");
+    }
+
     private static void scissorCheck(MetalDevice device, RenderPipeline pipeline) {
         GpuTexture target = device.createTexture("scissor", GpuTexture.USAGE_RENDER_ATTACHMENT
                 | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);

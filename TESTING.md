@@ -56,8 +56,17 @@ Launch with the backend on, load a world, press **F3**, and let it run at least 
 ```
 [MetalMod] Backend: Metal (active)
 [MetalMod] Resolution: <framebuffer width>x<height>
+[MetalMod] Frame 16.7 ms | GPU 9.2 ms | 1234 draws (18 cmd buffers) (GPU-bound)
 [MetalMod] unbound/missingAttr/failed: 0 (0/0/0 = bindings, missing vertex attributes, pipeline builds)
 ```
+
+The **Frame** line is the performance indicator. `GPU` is the sum of the command buffers' own
+`GPUStartTime`/`GPUEndTime` since the previous present, so it lags about a frame. Read it as:
+
+- GPU ≈ Frame → **GPU-bound** (fill rate / overdraw); CPU work will not move the frame rate.
+- GPU ≪ Frame → **CPU-bound** (per-draw work); `draws` says how much of it scales with the scene.
+- `cmd buffers` is the per-frame submission count; a high number means utility work
+  (uniform writes, mesh copies, clears, texture copies) is not being batched.
 
 plus `UMA pool ...` when `enableUnifiedMemoryPool=true`, and a `hooks:` line only if a hook failed to
 apply. `Backend: Metal (active)` is read from the engine's own `DeviceInfo`, so it answers whether

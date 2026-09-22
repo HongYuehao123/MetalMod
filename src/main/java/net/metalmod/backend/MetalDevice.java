@@ -104,6 +104,64 @@ public final class MetalDevice implements GpuDeviceBackend {
         return resourceFailureCount;
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Frame timing and draw census
+    //
+    // The 30 s telemetry line reports health counters; these answer the performance question the
+    // health counters cannot: is a frame CPU-bound or GPU-bound, and how many draws does it encode?
+    // The render thread writes them and F3 reads them, so volatile publication is enough. GPU time
+    // is accumulated natively (see mmm_gpu_frame_time_ms) and lags about a frame.
+    // ---------------------------------------------------------------------------------------------
+
+    private static int drawsThisFrame;
+    private static volatile int lastFrameDraws;
+    private static volatile float lastFrameMs;
+    private static volatile float lastGpuMs;
+    private static volatile long lastGpuBuffers;
+    private static long lastFrameNanos;
+
+    /** Count one encoded draw. Called from the render pass backend, on the render thread. */
+    static void countDraw() {
+        drawsThisFrame++;
+    }
+
+    /**
+     * Close out a frame at present: publish the CPU frame interval, the GPU time accumulated since
+     * the previous present, and the draw count, then reset the counters for the next frame.
+     */
+    public static void endFrame() {
+        long now = System.nanoTime();
+        if (lastFrameNanos != 0L) {
+            lastFrameMs = (float) ((now - lastFrameNanos) / 1_000_000.0);
+        }
+        lastFrameNanos = now;
+        lastGpuMs = (float) MetalNative.gpuFrameTimeMs();
+        lastGpuBuffers = MetalNative.gpuBufferCount();
+        MetalNative.resetGpuFrameTime();
+        lastFrameDraws = drawsThisFrame;
+        drawsThisFrame = 0;
+    }
+
+    /** Wall-clock interval between the last two presents, in milliseconds. */
+    public static float lastFrameMs() {
+        return lastFrameMs;
+    }
+
+    /** GPU busy time accumulated for the previous frame, in milliseconds. */
+    public static float lastGpuMs() {
+        return lastGpuMs;
+    }
+
+    /** How many command buffers that GPU time covered; a high count is submission overhead. */
+    public static long lastGpuBuffers() {
+        return lastGpuBuffers;
+    }
+
+    /** Draw calls encoded in the last completed frame. */
+    public static int lastFrameDraws() {
+        return lastFrameDraws;
+    }
+
     // A shader that samples a texture the engine never bound reads garbage - usually black, which
     // looks like a rendering bug rather than a binding bug. Count the distinct (pipeline, kind, name)
     // combinations once each so the failure is visible instead of silent. Report-only: binding

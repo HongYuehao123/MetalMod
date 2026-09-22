@@ -313,6 +313,13 @@ MMM_API void  mmm_command_buffer_commit(void* commandBuffer);
 MMM_API void  mmm_command_buffer_wait(void* commandBuffer);
 MMM_API void  mmm_command_buffer_release(void* commandBuffer);
 
+/// Frame timing: sum of the GPU execution span of every command buffer committed since the last
+/// reset, in milliseconds, plus how many buffers that was. Read at present and then reset. The
+/// value lags by about a frame because a buffer's GPU times are only valid once it completes.
+MMM_API double   mmm_gpu_frame_time_ms(void);
+MMM_API uint64_t mmm_gpu_buffer_count(void);
+MMM_API void     mmm_reset_gpu_frame_time(void);
+
 /// Begin a render pass whose single colour attachment is `texture`, cleared to the given colour.
 /// Returns an encoder handle, or NULL on failure.
 MMM_API void* mmm_begin_clear_pass(void* commandBuffer, void* texture,
