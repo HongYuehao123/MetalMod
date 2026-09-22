@@ -164,6 +164,9 @@ $JAVA --enable-native-access=ALL-UNNAMED \
 
 # every vanilla pipeline: exits 0 only when all of them compile
 ./tools/shader_inventory/run.sh        # total=87 ok=87 failed=0
+
+# render real vanilla pipelines offscreen and check the pixels
+./tools/render_check/run.sh            # RENDER CHECK PASSED
 ```
 
 ---
@@ -197,7 +200,8 @@ MetalMod/
 │   └── run_smoke.sh                    # Runs the native smoke test
 ├── tools/
 │   ├── shader_repro/run.sh             # Reproduce one shader pair's Metal pipeline offline
-│   └── shader_inventory/run.sh         # Compile all 87 vanilla pipelines and report pass/fail
+│   ├── shader_inventory/run.sh         # Compile all 87 vanilla pipelines and report pass/fail
+│   └── render_check/run.sh             # Render real pipelines offscreen and check the pixels
 ├── src/main/java/net/metalmod/
 │   ├── backend/                        # Metal GpuBackend implementation (Phases 1–4)
 │   ├── client/                         # Fabric entrypoint + Mod Menu config screen

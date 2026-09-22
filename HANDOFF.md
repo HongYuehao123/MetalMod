@@ -235,6 +235,16 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
+- **Rendering is now verified offline, not just compilation.** `tools/render_check` drives the real
+  backend — device, command encoder, render pass, uniform and vertex binding, depth, draw, readback —
+  with two actual vanilla pipelines and asserts the pixels. `minecraft:pipeline/gui` is rendered with
+  three different `ColorModulator` values and comes back blue, red and grey exactly as expected, and
+  `minecraft:pipeline/solid_terrain` renders a full-screen quad white, which requires `Globals`,
+  `ChunkSection`, `Projection` and `Fog` to all be bound correctly. That terrain case is precisely
+  what BUG-012 broke, so the harness would have caught it. It also caught a mistake in my own test
+  first: the terrain pipeline uses reversed-Z, so the quad was correctly depth-rejected until the
+  test used near = 1.0 and cleared depth to 0.0.
+
 **To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
 BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been
 audited end to end and no further defect can be settled by reading code.
