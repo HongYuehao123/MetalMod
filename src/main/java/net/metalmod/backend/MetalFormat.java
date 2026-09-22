@@ -195,24 +195,33 @@ public final class MetalFormat {
         };
     }
 
-    /** MTLBlendFactor. */
+    /**
+     * MTLBlendFactor, verified against MTLRenderPipeline.h.
+     *
+     * <p>Order matters and is not the GL order: Metal places
+     * {@code MTLBlendFactorSourceAlphaSaturated} at 10 and only then the "blend colour/alpha"
+     * (constant) factors at 11..14. An earlier revision put {@code SRC_ALPHA_SATURATE} at 14 and the
+     * constant factors at 10..13, which silently selected the wrong four factors. No vanilla pipeline
+     * uses any of these five, so it was latent for vanilla parity but would break any shaderpack or
+     * mod that blends with a constant alpha.
+     */
     public static int mtlBlendFactor(BlendFactor factor) {
         return switch (factor) {
-            case ZERO -> 0;
-            case ONE -> 1;
-            case SRC_COLOR -> 2;
-            case ONE_MINUS_SRC_COLOR -> 3;
-            case SRC_ALPHA -> 4;
-            case ONE_MINUS_SRC_ALPHA -> 5;
-            case DST_COLOR -> 6;
-            case ONE_MINUS_DST_COLOR -> 7;
-            case DST_ALPHA -> 8;
-            case ONE_MINUS_DST_ALPHA -> 9;
-            case CONSTANT_COLOR -> 10;
-            case ONE_MINUS_CONSTANT_COLOR -> 11;
-            case CONSTANT_ALPHA -> 12;
-            case ONE_MINUS_CONSTANT_ALPHA -> 13;
-            case SRC_ALPHA_SATURATE -> 14;
+            case ZERO -> 0;                        // MTLBlendFactorZero
+            case ONE -> 1;                         // MTLBlendFactorOne
+            case SRC_COLOR -> 2;                   // MTLBlendFactorSourceColor
+            case ONE_MINUS_SRC_COLOR -> 3;         // MTLBlendFactorOneMinusSourceColor
+            case SRC_ALPHA -> 4;                   // MTLBlendFactorSourceAlpha
+            case ONE_MINUS_SRC_ALPHA -> 5;         // MTLBlendFactorOneMinusSourceAlpha
+            case DST_COLOR -> 6;                   // MTLBlendFactorDestinationColor
+            case ONE_MINUS_DST_COLOR -> 7;         // MTLBlendFactorOneMinusDestinationColor
+            case DST_ALPHA -> 8;                   // MTLBlendFactorDestinationAlpha
+            case ONE_MINUS_DST_ALPHA -> 9;         // MTLBlendFactorOneMinusDestinationAlpha
+            case SRC_ALPHA_SATURATE -> 10;         // MTLBlendFactorSourceAlphaSaturated
+            case CONSTANT_COLOR -> 11;             // MTLBlendFactorBlendColor
+            case ONE_MINUS_CONSTANT_COLOR -> 12;   // MTLBlendFactorOneMinusBlendColor
+            case CONSTANT_ALPHA -> 13;             // MTLBlendFactorBlendAlpha
+            case ONE_MINUS_CONSTANT_ALPHA -> 14;   // MTLBlendFactorOneMinusBlendAlpha
         };
     }
 

@@ -105,6 +105,48 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-006 — Five MTLBlendFactor values were wrong (latent for vanilla)
+
+**Status:** **FIXED** (Phase 5). Latent for vanilla; would break shaderpacks and mods.
+**Found by:** auditing every MC → Metal enum table against the macOS SDK headers.
+
+### Symptoms
+
+Any pipeline blending with a constant colour/alpha, or with source-alpha-saturate, selected the
+wrong Metal blend factor — silently. Wrong blending does not throw and is hard to spot in a still
+frame, which is why a test pins this now.
+
+### Cause
+
+`MTLBlendFactor` is **not** in GL order. The SDK header has
+`MTLBlendFactorSourceAlphaSaturated = 10` and only then the blend-colour/alpha (constant) factors at
+11..14. `MetalFormat.mtlBlendFactor` had `SRC_ALPHA_SATURATE` at 14 and the four constant factors at
+10..13:
+
+| MC factor | was | Metal value at that slot | now |
+|---|---|---|---|
+| `SRC_ALPHA_SATURATE` | 14 | OneMinusBlendAlpha | **10** |
+| `CONSTANT_COLOR` | 10 | SourceAlphaSaturated | **11** |
+| `ONE_MINUS_CONSTANT_COLOR` | 11 | BlendColor | **12** |
+| `CONSTANT_ALPHA` | 12 | OneMinusBlendColor | **13** |
+| `ONE_MINUS_CONSTANT_ALPHA` | 13 | BlendAlpha | **14** |
+
+### Impact
+
+Checked by enumerating all 87 vanilla pipelines: none of the five is used (vanilla blends only with
+`ZERO`, `ONE`, `SRC_COLOR`, `ONE_MINUS_SRC_COLOR`, `SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`, `DST_COLOR`
+and `ONE_MINUS_DST_COLOR`, which were already correct). Vanilla parity was therefore never affected,
+but a shaderpack using constant-alpha blending would have blended wrongly with no error anywhere.
+
+### Fix
+
+Corrected the table. `MetalFormatTest` now pins all 15 blend factors, the 5 blend operations, the 8
+compare functions, the 8 primitive topologies and the write-mask bits against the SDK header values.
+The build also compiles every standalone test under `src/test/java` automatically, so a new test file
+no longer needs `build_mod.sh` edited.
+
+---
+
 ## BUG-005 — Two pipelines draw with bindings that were never set
 
 **Status:** **FIXED** (Phase 5) — pending in-game confirmation.

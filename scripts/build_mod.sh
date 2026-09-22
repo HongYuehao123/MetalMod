@@ -63,12 +63,16 @@ MOD_JAR="${DIST_DIR}/metalmod-1.0.0.jar"
 echo "==> Step 5: Creating mod jar: ${MOD_JAR}..."
 "${JAR}" cf "${MOD_JAR}" -C "${MOD_BIN}" .
 
-# Step 7: Compile the standalone verification suite
+# Step 7: Compile the standalone verification suite. Every source under src/test/java is compiled,
+# so adding a test file does not also require editing this script. Files that need JUnit are skipped:
+# JUnit is not on this classpath (build.gradle is not a working mod build), so those cannot compile
+# and are not run by the standalone runner anyway.
 echo "==> Step 6: Compiling standalone verification suite..."
+find "${ROOT_DIR}/src/test/java" -name "*.java" | while read -r file; do
+  grep -q "org\.junit" "$file" || echo "$file"
+done > "${ROOT_DIR}/build/test_sources.txt"
 "${JAVAC}" --release 22 -nowarn -cp "${MOD_BIN}:${CLASSPATH}" -d "${TEST_BIN}" \
-  "${ROOT_DIR}/src/test/java/net/metalmod/StandaloneTestRunner.java" \
-  "${ROOT_DIR}/src/test/java/net/metalmod/UnifiedMemoryTest.java" \
-  "${ROOT_DIR}/src/test/java/net/metalmod/backend/MetalRenderPassBackendTest.java"
+  @"${ROOT_DIR}/build/test_sources.txt"
 
 echo "=================================================="
 echo "SUCCESS -> ${MOD_JAR}"
