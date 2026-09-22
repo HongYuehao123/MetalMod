@@ -105,32 +105,42 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Frame timing and draw census
+    // Frame timing: the CPU/GPU split
     //
-    // The 30 s telemetry line reports health counters; these answer the performance question the
-    // health counters cannot: is a frame CPU-bound or GPU-bound, and how many draws does it encode?
-    // The render thread writes them and F3 reads them, so volatile publication is enough.
+    // Two GPU figures were tried first and both were wrong: summing each committed command buffer's
+    // GPUStartTime->GPUEndTime span. Command buffers on one queue may overlap execution, so the sum
+    // is a union-sized number, not a busy time - it read ~3x the frame time in one scene and ~8x in
+    // another, and it went *down* when the scene got heavier.
     //
-    // Everything here is a *window average* (about a second), not a per-frame sample, and that is
-    // deliberate. The native side accumulates the GPU execution span of every committed command
-    // buffer, but those completions land asynchronously while the CPU runs a few frames ahead of the
-    // GPU (three drawables). Sampling that accumulator at one present therefore sums several frames
-    // of command buffers and reads roughly 3x too high - it is a busy-time total, not a frame time.
-    // Over a window, the totals match the frames that produced them, so dividing the window's GPU
-    // busy time by the window's frame count gives a figure that is directly comparable to the frame
-    // time. Averaging the frame time over the same window keeps the two consistent.
+    // This uses a signal that cannot lie. Minecraft submits a frame, then calls
+    // acquireNextTexture() for the next one, which blocks in CAMetalLayer.nextDrawable() until the
+    // GPU (or the display) releases a drawable. The time spent inside that call is therefore time
+    // the frame spent waiting for the GPU; everything else in the interval is CPU work.
+    //
+    //   wait ~ 0            -> CPU-bound: the GPU keeps up, the interval is CPU work
+    //   wait ~ frame time   -> GPU-bound: the CPU finishes early and then waits
+    //
+    // Caveat: with vsync on, a *fast* frame also waits for the display, so a large wait only means
+    // "GPU-bound" when the frame is also slower than the refresh rate - which the frame time shows.
+    // A real per-frame GPU time needs MTLCounterSampleBuffer timestamps, not command-buffer spans.
+    //
+    // All figures are window averages (~1s). The draw count is instantaneous: it describes the frame
+    // just encoded, and averaging it would only hide a spike.
     // ---------------------------------------------------------------------------------------------
 
     private static final int TIMING_WINDOW_FRAMES = 60;
 
     private static int drawsThisFrame;
+    private static int commandBuffersThisFrame;
     private static int framesInWindow;
     private static double frameMsSumInWindow;
+    private static double acquireWaitMsSumInWindow;
+    private static long commandBuffersSumInWindow;
 
     private static volatile int lastFrameDraws;
     private static volatile float lastFrameMs;
-    private static volatile float lastGpuMs;
-    private static volatile long lastGpuBuffers;
+    private static volatile float lastAcquireWaitMs;
+    private static volatile long lastCommandBuffers;
     private static long lastFrameNanos;
 
     /** Count one encoded draw. Called from the render pass backend, on the render thread. */
@@ -138,11 +148,22 @@ public final class MetalDevice implements GpuDeviceBackend {
         drawsThisFrame++;
     }
 
+    /** Count one committed command buffer, so F3 shows how much submission work a frame does. */
+    static void countCommandBuffer() {
+        commandBuffersThisFrame++;
+    }
+
     /**
-     * Close out a frame at present. Accumulates the frame interval into the current timing window
-     * and, once the window is full, publishes the per-frame averages and resets the native GPU
-     * accumulator. The draw count is instantaneous - it is a property of the frame just encoded, and
-     * averaging it would only hide a spike.
+     * Record how long acquireNextTexture() blocked, in milliseconds. That call is the render thread
+     * waiting for the GPU to hand back a drawable, so it is the CPU/GPU split signal.
+     */
+    static void noteAcquireWait(double millis) {
+        acquireWaitMsSumInWindow += Math.max(0.0, millis);
+    }
+
+    /**
+     * Close out a frame at present: accumulate the interval, the acquire wait and the command-buffer
+     * count into the current timing window and, once the window is full, publish the averages.
      */
     public static void endFrame() {
         long now = System.nanoTime();
@@ -152,15 +173,18 @@ public final class MetalDevice implements GpuDeviceBackend {
         lastFrameNanos = now;
         lastFrameDraws = drawsThisFrame;
         drawsThisFrame = 0;
+        commandBuffersSumInWindow += commandBuffersThisFrame;
+        commandBuffersThisFrame = 0;
         framesInWindow++;
 
         if (framesInWindow >= TIMING_WINDOW_FRAMES) {
             lastFrameMs = (float) (frameMsSumInWindow / framesInWindow);
-            lastGpuMs = (float) (MetalNative.gpuFrameTimeMs() / framesInWindow);
-            lastGpuBuffers = MetalNative.gpuBufferCount() / framesInWindow;
-            MetalNative.resetGpuFrameTime();
+            lastAcquireWaitMs = (float) (acquireWaitMsSumInWindow / framesInWindow);
+            lastCommandBuffers = commandBuffersSumInWindow / framesInWindow;
             framesInWindow = 0;
             frameMsSumInWindow = 0.0;
+            acquireWaitMsSumInWindow = 0.0;
+            commandBuffersSumInWindow = 0L;
         }
     }
 
@@ -169,17 +193,20 @@ public final class MetalDevice implements GpuDeviceBackend {
         return lastFrameMs;
     }
 
-    /** Average GPU busy time per frame over the last timing window, in milliseconds. */
-    public static float lastGpuMs() {
-        return lastGpuMs;
+    /**
+     * Average time per frame the render thread spent blocked in acquireNextTexture(), i.e. waiting
+     * for a drawable. Compared with {@link #lastFrameMs()} this is the CPU/GPU split.
+     */
+    public static float lastAcquireWaitMs() {
+        return lastAcquireWaitMs;
     }
 
-    /** Average command buffers per frame; a high count is submission overhead. */
-    public static long lastGpuBuffers() {
-        return lastGpuBuffers;
+    /** Average render-pass command buffers per frame; a high count is submission overhead. */
+    public static long lastCommandBuffers() {
+        return lastCommandBuffers;
     }
 
-    /** Average draw calls per frame; this is the number that grows underground. */
+    /** Draw calls encoded in the frame just presented; this is the number that grows underground. */
     public static int lastFrameDraws() {
         return lastFrameDraws;
     }

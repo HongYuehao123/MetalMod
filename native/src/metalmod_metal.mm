@@ -8,28 +8,15 @@
 #include "metalmod/metalmod_metal.h"
 
 #include <string.h>
-#include <atomic>
 
-// Frame timing.
-//
-// GPU time is the sum of every committed command buffer's GPU execution span since the last reset.
-// The device queue serialises its buffers, so the sum is the GPU busy time for the frame rather
-// than an overlap-inflated figure. GPUStartTime/GPUEndTime are only meaningful once a buffer has
-// completed, so the accumulator is updated from the completed handlers (on a Metal thread) and read
-// by the render thread; std::atomic keeps that race benign. A read at present lags by roughly one
-// frame, which is fine for a CPU-vs-GPU indicator.
-static std::atomic<double> g_GpuMsAccum{0.0};
-static std::atomic<uint64_t> g_GpuBufferCount{0};
-
+// Command-buffer completion hook. GPUStartTime/GPUEndTime are deliberately NOT summed into a
+// frame-time figure: command buffers on one queue may overlap execution, so a sum over-counts by
+// however many are in flight (measured ~3x, and once ~8x), and it is not a per-frame GPU time. A
+// trustworthy GPU figure needs MTLCounterSampleBuffer timestamps around the frame; see the
+// cpu-vs-gpu note in MetalDevice.java for the indicator that is used instead.
 static void mmm_note_command_buffer_completion(id<MTLCommandBuffer> completed) {
     if (completed.status == MTLCommandBufferStatusError) {
         NSLog(@"[MetalMod] command buffer ERROR: %@", completed.error);
-    }
-    double start = completed.GPUStartTime;
-    double end = completed.GPUEndTime;
-    if (end > start) {
-        g_GpuMsAccum.fetch_add((end - start) * 1000.0, std::memory_order_relaxed);
-        g_GpuBufferCount.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -1312,20 +1299,7 @@ void mmm_command_buffer_release(void* commandBuffer) {
     }
 }
 
-// Frame-timing readout. The render thread reads the accumulated GPU time at present and resets it
-// for the next frame; see the accumulator comment at the top of this file.
-double mmm_gpu_frame_time_ms(void) {
-    return g_GpuMsAccum.load(std::memory_order_relaxed);
-}
-
-uint64_t mmm_gpu_buffer_count(void) {
-    return g_GpuBufferCount.load(std::memory_order_relaxed);
-}
-
-void mmm_reset_gpu_frame_time(void) {
-    g_GpuMsAccum.store(0.0, std::memory_order_relaxed);
-    g_GpuBufferCount.store(0, std::memory_order_relaxed);
-}
+// (Frame-timing exports removed: summing per-command-buffer GPU spans is not a frame time.)
 
 void* mmm_begin_clear_pass(void* commandBuffer, void* texture,
                            float r, float g, float b, float a) {

@@ -76,6 +76,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     @Override
     public void submit() {
         if (this.commandBuffer.address() != 0) {
+            MetalDevice.countCommandBuffer();
             MetalNative.commandBufferCommit(this.commandBuffer);
             MetalNative.commandBufferRelease(this.commandBuffer);
             this.commandBuffer = MemorySegment.NULL;
@@ -263,6 +264,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         // different one, so deferring the commit to submit() lost every draw: only the standalone
         // clears (which commit immediately) ever reached the GPU. Commit here instead.
         if (this.commandBuffer.address() != 0) {
+            MetalDevice.countCommandBuffer();
             MetalNative.commandBufferCommit(this.commandBuffer);
             MetalNative.commandBufferRelease(this.commandBuffer);
             this.commandBuffer = MemorySegment.NULL;

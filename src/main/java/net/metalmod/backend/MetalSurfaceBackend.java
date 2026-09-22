@@ -62,11 +62,15 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     @Override
     public void acquireNextTexture() throws SurfaceException {
         final MemorySegment[] result;
+        // nextDrawable blocks until the GPU (or the display) frees a drawable, so the time spent
+        // here is the frame's wait on the GPU. MetalDevice turns it into the CPU/GPU split F3 shows.
+        long waitStart = System.nanoTime();
         try {
             result = MetalNative.layerAcquire(this.layer);
         } catch (Throwable t) {
             throw new SurfaceException(t);
         }
+        MetalDevice.noteAcquireWait((System.nanoTime() - waitStart) / 1_000_000.0);
         if (result[0] == null || result[0].address() == 0) {
             throw new SurfaceException("CAMetalLayer nextDrawable returned nil");
         }
@@ -96,6 +100,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
         float[] color = this.clearColor;
         int rc;
         if (this.sourceTexture.address() != 0) {
+            MetalDevice.countCommandBuffer();   // the present blit is a command buffer too
             rc = MetalNative.layerPresentTexture(this.layer, this.drawable, this.sourceTexture);
         } else {
             rc = MetalNative.layerPresentClear(this.layer, this.drawable,

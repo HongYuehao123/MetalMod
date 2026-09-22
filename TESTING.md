@@ -56,17 +56,29 @@ Launch with the backend on, load a world, press **F3**, and let it run at least 
 ```
 [MetalMod] Backend: Metal (active)
 [MetalMod] Resolution: <framebuffer width>x<height>
-[MetalMod] Frame 16.7 ms | GPU 9.2 ms | 1234 draws (18 cmd buffers) (GPU-bound)
+[MetalMod] Frame 17.5 ms avg | GPU wait 2.1 ms avg | 6400 draws (37 render passes) (CPU-bound)
 [MetalMod] unbound/missingAttr/failed: 0 (0/0/0 = bindings, missing vertex attributes, pipeline builds)
 ```
 
-The **Frame** line is the performance indicator. `GPU` is the sum of the command buffers' own
-`GPUStartTime`/`GPUEndTime` since the previous present, so it lags about a frame. Read it as:
+The **Frame** line is the performance indicator, and both timings are averages over about a second.
 
-- GPU ≈ Frame → **GPU-bound** (fill rate / overdraw); CPU work will not move the frame rate.
-- GPU ≪ Frame → **CPU-bound** (per-draw work); `draws` says how much of it scales with the scene.
-- `cmd buffers` is the per-frame submission count; a high number means utility work
-  (uniform writes, mesh copies, clears, texture copies) is not being batched.
+`GPU wait` is the time the render thread spent blocked in `nextDrawable()` — waiting for the GPU to
+hand back a drawable. The rest of the frame interval is CPU work, so:
+
+- **wait ≈ 0** → **CPU-bound**: the GPU keeps up, and the frame time is CPU work (per-draw encoding,
+  binding, submission). The `draws` count is what scales here.
+- **wait ≈ Frame** → **GPU-bound**: the CPU finishes early and then waits for the GPU. Optimising
+  the CPU side will not move the frame rate.
+- **wait in between** → mixed.
+
+Caveat: with vsync on, a *fast* frame waits for the display too, so only read "GPU-bound" when the
+frame is also slower than the refresh rate. `render passes` is the per-frame command-buffer count
+for the engine's passes (plus the present blit); a high number is submission overhead.
+
+> A true per-frame GPU *execution* time is not shown. Summing each command buffer's
+> `GPUStartTime`/`GPUEndTime` looks like it works and does not: command buffers on one queue may
+> overlap execution, so the sum over-counts (measured ~3× in one scene and ~8× in another, and it
+> fell while the scene got heavier). Doing it properly needs `MTLCounterSampleBuffer` timestamps.
 
 plus `UMA pool ...` when `enableUnifiedMemoryPool=true`, and a `hooks:` line only if a hook failed to
 apply. `Backend: Metal (active)` is read from the engine's own `DeviceInfo`, so it answers whether

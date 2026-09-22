@@ -56,21 +56,20 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         }
         displayer.addLine("§6[MetalMod]§r Resolution: §b" + resolution);
 
-        // Frame timing and draw census. This is the line that answers "why is this slow?": when GPU
-        // time is close to the frame time the frame is GPU-bound (fill/overdraw), and when it is
-        // small next to it the frame is CPU-bound (per-draw work). The draw count is the number that
-        // grows underground, where far more sections are visible. Both figures are averages over
-        // about a second, so they are directly comparable - see MetalDevice for why a per-present
-        // GPU sample cannot be.
+        // Frame timing and the CPU/GPU split. "wait" is the time the render thread spent blocked in
+        // nextDrawable, i.e. waiting on the GPU; the rest of the frame interval is CPU work. Wait
+        // near the frame time means GPU-bound, wait near zero means CPU-bound. (A fast vsync-capped
+        // frame also waits for the display, so only read "GPU-bound" when the frame is slower than
+        // that.) Draws is the number that grows underground.
         float frameMs = net.metalmod.backend.MetalDevice.lastFrameMs();
-        float gpuMs = net.metalmod.backend.MetalDevice.lastGpuMs();
+        float waitMs = net.metalmod.backend.MetalDevice.lastAcquireWaitMs();
         String bound = frameMs <= 0.0f ? ""
-                : gpuMs >= frameMs * 0.8f ? " §7(GPU-bound)§r"
-                : gpuMs <= frameMs * 0.5f ? " §7(CPU-bound)§r" : " §7(mixed)§r";
-        displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms avg§r | GPU §b"
-                + oneDecimal(gpuMs) + " ms avg§r | §b" + net.metalmod.backend.MetalDevice.lastFrameDraws()
-                + "§r draws §7(" + net.metalmod.backend.MetalDevice.lastGpuBuffers() + " cmd buffers)§r"
-                + bound);
+                : waitMs >= frameMs * 0.5f ? " §7(GPU-bound)§r"
+                : waitMs <= frameMs * 0.15f ? " §7(CPU-bound)§r" : " §7(mixed)§r";
+        displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms avg§r | GPU wait §b"
+                + oneDecimal(waitMs) + " ms avg§r | §b" + net.metalmod.backend.MetalDevice.lastFrameDraws()
+                + "§r draws §7(" + net.metalmod.backend.MetalDevice.lastCommandBuffers()
+                + " render passes)§r" + bound);
 
         // The backend's health counters. These are the numbers that explain a black or missing
         // object: a shader sampling something nothing bound, an attribute dropped from the vertex
