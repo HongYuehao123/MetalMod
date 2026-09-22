@@ -206,6 +206,71 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-020 — Entering a world aborted: texel buffers were one row wide
+
+**Status:** **FIXED** (Phase 5) — pending confirmation on a fresh run.
+**Severity:** critical. The first frame in a world killed the process.
+**Found on:** the first in-game run of the Phase 5 fixes, build `424b111`.
+
+### Symptom
+
+Loading into a world aborted on the render thread with an assertion rather than a Java exception:
+
+```
+[Render thread/INFO]: Resizing Dynamic Transforms UBO, capacity limit of 4 reached during a single
+frame. New capacity will be 8.
+-[MTLTextureDescriptorInternal validateWithDevice:]:1421: failed assertion `Texture Descriptor
+Validation
+MTLTextureDescriptor has width (181818) greater than the maximum allowed size of 16384.'
+```
+
+### Cause
+
+Two bugs in the texel-buffer emulation added for BUG-013, which re-expresses a buffer as a 2D texture
+because Metal has no buffer textures.
+
+**The width.** The texture was built `texels x 1`, so a 181818-byte cloud buffer asked for a
+181818-wide texture. Metal's maximum texture dimension on this device is 16384, so the descriptor was
+rejected and the process aborted. The cloud buffer is a few hundred bytes in a small scene, which is
+why every offline check passed: this only appears once there are enough cloud quads to exceed the
+limit, and the report's view distance of 32 was enough.
+
+**The layout.** Metal has no buffer textures, so SPIRV-Cross emulates one as a 2D texture and emits
+
+```metal
+uint2 spvTexelBufferCoord(uint tc)
+{
+    return uint2(tc % 4096, tc / 4096);
+}
+```
+
+with the width baked in as a literal. The generated texture therefore has to be exactly that wide -
+a `texels x 1` texture reads the correct texel only while the index stays under 4096. The engine's own
+cloud buffer holds three bytes per quad, so passing 4096 texels needs a few thousand cloud quads; the
+small-buffer case hid it, and a second row was never exercised.
+
+### Fix
+
+`MetalShaderCompiler.TEXEL_BUFFER_WIDTH` is now set explicitly through
+`SPVC_COMPILER_OPTION_MSL_TEXEL_BUFFER_TEXTURE_WIDTH` rather than inheriting SPIRV-Cross's default, so
+the width the shader divides by and the width the texture is laid out with cannot drift. The value is
+4096, which is SPIRV-Cross's own default, so every pipeline compiled before this still agrees with it.
+
+`MetalDevice.texelTexture` lays the data out as `TEXEL_BUFFER_WIDTH x ceil(texels / width)` and uploads
+it as whole rows plus a last partial row. Padding the tail to a full row would read past the end of
+the backing buffer, which is a ring allocation the engine owns.
+
+### Verified
+
+`tools/render_check` now presents a **20000-texel** buffer as a texture - past 4096, so the second and
+later rows are real, and past 16384, so a one-row texture could not be allocated at all. It asserts
+the texture is 4096x5 and then reads every texel back and compares it with where
+`spvTexelBufferCoord(tc)` would look for it: 20000/20000 match. Making the texture 2048 wide instead
+fails both assertions at the first texel, so the check is sensitive to the width rather than merely to
+the absence of an abort.
+
+---
+
 ## BUG-019 — Post-processing passes were never precompiled, only skipped
 
 **Status:** **FIXED** (Phase 5). The chain rendered anyway through the lazy path; what was missing

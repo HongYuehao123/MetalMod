@@ -27,6 +27,7 @@ import net.metalmod.backend.MetalBuffer;
 import net.metalmod.backend.MetalDevice;
 import net.metalmod.backend.MetalNative;
 import net.metalmod.backend.MetalRenderPipeline;
+import net.metalmod.backend.MetalShaderCompiler;
 import net.metalmod.backend.MetalTexture;
 import org.joml.Vector4f;
 import org.joml.Vector4fc;
@@ -225,6 +226,15 @@ public final class RenderCheck {
             // DeviceLimits.maxColorAttachments, and that value is the only guard against a pass this
             // backend cannot render - the pipeline builds state for one target.
             colorTargetLimitCheck();
+
+            // Texel buffers, which Metal has no primitive for. This is the regression test for the
+            // crash on entering a world: a buffer big enough to need a second row.
+            texelBufferTextureCheck(device);
+
+            // The eight depth compare functions, as a truth table. Only GREATER_THAN_OR_EQUAL is
+            // exercised anywhere else, and EQUAL is live for GLINT and the armour decals - a wrong
+            // entry in that table is a depth test that passes when it should not, or the reverse.
+            depthCompareMatrixCheck(device, source);
 
             // The two topologies nothing else draws. Both are live: DEBUG_POINTS for the debug
             // renderers and TRIANGLE_STRIP for the leash. This table has already produced two real
@@ -1476,6 +1486,220 @@ public final class RenderCheck {
         buffer.putFloat(lineWidth);
         buffer.flip();
         return buffer;
+    }
+
+    /**
+     * Present a large texel buffer as a 2D texture and check the layout the shader will read.
+     *
+     * <p>Metal has no buffer textures, so SPIRV-Cross emits
+     * {@code spvTexelBufferCoord(tc) { return uint2(tc % W, tc / W); }} with {@code W} as a literal,
+     * and the backing texture has to be exactly {@code W} wide. This was two bugs at once: the
+     * texture was built {@code texels x 1}, which reads the wrong texels past {@code W}, and Metal
+     * rejects a texture wider than the device limit - the cloud buffer reaches six figures in a
+     * world, so the first frame aborted with
+     * {@code MTLTextureDescriptor has width (181818) greater than the maximum allowed size of 16384}.
+     *
+     * <p>20000 texels is chosen to be past both {@code W} (so the second and later rows are real) and
+     * past the device's 16384 limit (so a one-row texture cannot be allocated at all). Every texel is
+     * read back and compared against where it should have landed.
+     */
+    private static void texelBufferTextureCheck(MetalDevice device) {
+        final int texels = 20000;
+        final int width = MetalShaderCompiler.TEXEL_BUFFER_WIDTH;
+        byte[] pattern = new byte[texels];
+        for (int i = 0; i < texels; i++) {
+            pattern[i] = (byte) (i * 7 + 3);
+        }
+        ByteBuffer data = ByteBuffer.allocateDirect(texels).order(ByteOrder.nativeOrder());
+        data.put(pattern).flip();
+        GpuBuffer buffer = device.createBuffer(() -> "texel source",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, data);
+
+        MetalTexture texture = device.texelTexture((MetalBuffer) buffer, 0, texels, GpuFormat.R8_SINT, 1);
+        if (texture == null) {
+            check("a " + texels + "-texel buffer becomes a 2D texture", false, "texelTexture returned null");
+            buffer.close();
+            return;
+        }
+        int height = (texels + width - 1) / width;
+        check("a " + texels + "-texel buffer becomes a " + texture.getWidth(0) + "x"
+                        + texture.getHeight(0) + " texture (expected " + width + "x" + height + ")",
+                texture.getWidth(0) == width && texture.getHeight(0) == height, "");
+
+        // Read every texel back and compare it with where spvTexelBufferCoord would look for it.
+        byte[] read = new byte[width * height];
+        try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+            java.lang.foreign.MemorySegment segment = arena.allocate(read.length);
+            if (MetalNative.textureReadRegion(texture.handle(), 0, 0, 0, 0, width, height, segment,
+                    read.length, width) != 0) {
+                check("the texel texture can be read back", false, "");
+                buffer.close();
+                return;
+            }
+            java.lang.foreign.MemorySegment.copy(segment, 0L,
+                    java.lang.foreign.MemorySegment.ofArray(read), 0L, read.length);
+        }
+        int wrong = 0;
+        int firstWrong = -1;
+        for (int t = 0; t < texels; t++) {
+            int at = (t / width) * width + (t % width);
+            if (read[at] != pattern[t]) {
+                if (firstWrong < 0) {
+                    firstWrong = t;
+                }
+                wrong++;
+            }
+        }
+        check("every texel is where spvTexelBufferCoord(tc) = (tc % " + width + ", tc / " + width
+                        + ") looks for it (" + (texels - wrong) + "/" + texels + " match, first wrong"
+                        + " at " + firstWrong + ")",
+                wrong == 0, "");
+        buffer.close();
+    }
+
+    /**
+     * Verify all eight depth compare functions against the rule they are named after.
+     *
+     * <p>Each row is one compare function. A quad is written at {@code stored} with depth writing on,
+     * then the same quad is drawn at {@code incoming} through a pipeline using that compare function.
+     * Whether the second colour survives is {@code incoming OP stored}, and the three cases - less
+     * than, equal to, greater than - are the whole truth table for the ordering axis.
+     *
+     * <p>The expected column is written out independently in {@link #comparePasses} rather than
+     * derived from the backend, so this states what the answer should be instead of agreeing with
+     * whatever Metal does.
+     */
+    private static void depthCompareMatrixCheck(MetalDevice device, ShaderSource source) throws Exception {
+        RenderPipeline writer = depthPipeline("compare_writer", CompareOp.GREATER_THAN_OR_EQUAL);
+        device.precompilePipeline(writer, source);
+
+        CompareOp[] ops = CompareOp.values();
+        RenderPipeline[] testers = new RenderPipeline[ops.length];
+        for (int i = 0; i < ops.length; i++) {
+            testers[i] = depthPipeline("compare_" + ops[i].name().toLowerCase(java.util.Locale.ROOT), ops[i]);
+            device.precompilePipeline(testers[i], source);
+        }
+        if (device.pipelineFor(writer) == null) {
+            check("depth compare pipelines compiled", false, "writer");
+            return;
+        }
+
+        float[][] cases = {{0.5f, 0.25f}, {0.5f, 0.5f}, {0.5f, 0.75f}};
+        int[] relations = {-1, 0, 1};
+        for (int i = 0; i < ops.length; i++) {
+            if (device.pipelineFor(testers[i]) == null) {
+                check("depth compare " + ops[i] + " compiled", false, "");
+                continue;
+            }
+            StringBuilder got = new StringBuilder();
+            boolean ok = true;
+            for (int c = 0; c < cases.length; c++) {
+                boolean passed = depthCase(device, writer, testers[i], cases[c][0], cases[c][1]);
+                boolean want = comparePasses(ops[i], relations[c]);
+                ok &= passed == want;
+                got.append(relations[c] < 0 ? " <" : relations[c] == 0 ? " =" : " >").append(':')
+                        .append(passed ? "pass" : "fail");
+            }
+            check("depth compare " + ops[i] + " ->" + got, ok, "");
+        }
+    }
+
+    /** Whether an incoming fragment passes {@code incoming OP stored}; the rule the op is named for. */
+    private static boolean comparePasses(CompareOp op, int relation) {
+        return switch (op) {
+            case NEVER_PASS -> false;
+            case LESS_THAN -> relation < 0;
+            case EQUAL -> relation == 0;
+            case LESS_THAN_OR_EQUAL -> relation <= 0;
+            case GREATER_THAN -> relation > 0;
+            case NOT_EQUAL -> relation != 0;
+            case GREATER_THAN_OR_EQUAL -> relation >= 0;
+            case ALWAYS_PASS -> true;
+        };
+    }
+
+    /**
+     * Write a quad at {@code stored}, then draw one at {@code incoming} through {@code tester}, and
+     * report whether the second colour won. Red means the test rejected it.
+     */
+    private static boolean depthCase(MetalDevice device, RenderPipeline writer, RenderPipeline tester,
+                                     float stored, float incoming) {
+        GpuTexture color = device.createTexture("depth compare", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuTexture depth = device.createTexture("depth compare depth",
+                GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView depthView = device.createTextureView(depth);
+        GpuBuffer first = device.createBuffer(() -> "stored quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(stored));
+        GpuBuffer second = device.createBuffer(() -> "incoming quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(incoming));
+        GpuBuffer indices = device.createBuffer(() -> "i", GpuBuffer.USAGE_INDEX
+                | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer red = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 0.0f, 0.0f, 1.0f}));
+        GpuBuffer blue = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{0.0f, 0.0f, 1.0f, 1.0f}));
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "depth compare")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withDepthAttachment(depthView, OptionalDouble.of(0.0))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setUniform("Projection", projection.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+
+        pass.setPipeline(writer);
+        pass.setUniform("DynamicTransforms", red.slice());
+        pass.setVertexBuffer(0, first.slice());
+        pass.drawIndexed(6, 1, 0, 0, 0);
+
+        pass.setPipeline(tester);
+        pass.setUniform("DynamicTransforms", blue.slice());
+        pass.setVertexBuffer(0, second.slice());
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        boolean blueWon = (pixels.get(at + 2) & 0xFF) > 200;
+        readback.close();
+        blue.close();
+        red.close();
+        projection.close();
+        indices.close();
+        second.close();
+        first.close();
+        depthView.close();
+        depth.close();
+        colorView.close();
+        color.close();
+        return blueWon;
+    }
+
+    /** A gui-shaded pipeline with the given depth compare function and depth writing on. */
+    private static RenderPipeline depthPipeline(String name, CompareOp op) throws Exception {
+        VertexFormat format = ((RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("GUI").get(null)).getVertexFormatBinding(0);
+        return RenderPipeline.builder()
+                .withLocation("depth_compare/" + name)
+                .withVertexShader(Identifier.parse("minecraft:core/gui"))
+                .withFragmentShader(Identifier.parse("minecraft:core/gui"))
+                .withVertexBinding(0, format)
+                .withPrimitiveTopology(PrimitiveTopology.QUADS)
+                .withCull(false)
+                .withColorTargetState(new ColorTargetState(Optional.empty(),
+                        GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+                .withDepthStencilState(new DepthStencilState(op, true, 0.0f, 0.0f))
+                .build();
     }
 
     /**

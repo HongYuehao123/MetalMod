@@ -351,24 +351,45 @@ public final class MetalDevice implements GpuDeviceBackend {
      */
     public synchronized MetalTexture texelTexture(MetalBuffer buffer, long offset, long length,
                                                   GpuFormat format, int bytesPerTexel) {
-        int texels = (int) Math.max(1L, length / Math.max(1, bytesPerTexel));
-        long needed = (long) texels * Math.max(1, bytesPerTexel);
+        int perTexel = Math.max(1, bytesPerTexel);
+        int texels = (int) Math.max(1L, length / perTexel);
+        long needed = (long) texels * perTexel;
         if (buffer == null || !buffer.isMapped() || offset < 0
                 || offset + needed > buffer.data().byteSize()) {
             return null;
         }
+        // The shader flattens a linear texel index with `tc % W, tc / W` for a literal W
+        // (MetalShaderCompiler.TEXEL_BUFFER_WIDTH), so the texture has to be W wide and as tall as
+        // the data needs. It used to be `texels x 1`, which reads the wrong texels past W texels and
+        // is rejected by Metal outright once `texels` passes the device's 16384 limit - the cloud
+        // buffer reaches six figures, so entering a world aborted on texture creation.
+        int width = MetalShaderCompiler.TEXEL_BUFFER_WIDTH;
+        int height = (texels + width - 1) / width;
         long key = buffer.handle().address() * 1_000_003L + texels;
         MetalTexture texture = this.texelTextures.get(key);
         if (texture == null) {
             texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING,
-                    "texel buffer", format, texels, 1, 1, 1);
+                    "texel buffer", format, width, height, 1, 1);
             if (!texture.isValid()) {
                 return null;
             }
             this.texelTextures.put(key, texture);
         }
-        MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, 0, texels, 1,
-                buffer.dataSlice(offset, needed), needed);
+        // Uploaded as whole rows plus a last partial one. Padding the tail to a full row would read
+        // past the end of the backing buffer, which is a ring allocation the engine owns.
+        int fullRows = texels / width;
+        if (fullRows > 0) {
+            long bytes = (long) width * fullRows * perTexel;
+            MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, 0, width, fullRows,
+                    buffer.dataSlice(offset, bytes), (long) width * perTexel);
+        }
+        int remainder = texels % width;
+        if (remainder > 0) {
+            long start = offset + (long) width * fullRows * perTexel;
+            long bytes = (long) remainder * perTexel;
+            MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, fullRows, remainder, 1,
+                    buffer.dataSlice(start, bytes), bytes);
+        }
         return texture;
     }
 

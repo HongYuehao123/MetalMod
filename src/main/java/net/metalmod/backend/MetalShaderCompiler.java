@@ -31,6 +31,21 @@ public final class MetalShaderCompiler implements AutoCloseable {
 
     private final GlslCompiler glsl = new GlslCompiler();
 
+    /**
+     * The width of the 2D texture a texel buffer is presented as, in texels.
+     *
+     * <p>Metal has no buffer textures, so {@code spvTexelBufferCoord} flattens a linear texel index
+     * with {@code (tc % W, tc / W)} and {@code W} is a literal in the generated MSL. The backing
+     * texture must therefore be exactly this wide - a {@code texels x 1} texture reads the wrong
+     * texels as soon as the index passes {@code W}, and one wider than the device limit is rejected
+     * outright ({@code MTLTextureDescriptor has width (181818) greater than the maximum allowed size
+     * of 16384}, which aborted the game on the first frame in a world).
+     *
+     * <p>4096 is SPIRV-Cross's own default, so every pipeline that compiled before this was pinned
+     * still agrees with it; it is now set explicitly on both sides.
+     */
+    public static final int TEXEL_BUFFER_WIDTH = 4096;
+
     public record CompiledShader(String msl,
                                  Map<String, Integer> vertexBuffers,
                                  Map<String, Integer> fragmentBuffers,
@@ -297,6 +312,12 @@ public final class MetalShaderCompiler implements AutoCloseable {
                     Spvc.spvc_compiler_options_set_uint(options, Spvc.SPVC_COMPILER_OPTION_MSL_VERSION, 20100);
                     Spvc.spvc_compiler_options_set_uint(options, Spvc.SPVC_COMPILER_OPTION_MSL_PLATFORM,
                             Spvc.SPVC_MSL_PLATFORM_MACOS);
+                    // Metal has no buffer textures, so SPIRV-Cross emulates one as a 2D texture and
+                    // emits `spvTexelBufferCoord(tc) { return uint2(tc % W, tc / W); }` with W baked
+                    // in as a literal. Set W here rather than inheriting the default, so the width
+                    // the shader divides by and the width the texture is laid out with cannot drift.
+                    Spvc.spvc_compiler_options_set_uint(options,
+                            Spvc.SPVC_COMPILER_OPTION_MSL_TEXEL_BUFFER_TEXTURE_WIDTH, TEXEL_BUFFER_WIDTH);
                     Spvc.spvc_compiler_install_compiler_options(compiler, options);
                 }
 

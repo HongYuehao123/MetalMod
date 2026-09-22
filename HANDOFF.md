@@ -276,13 +276,13 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Twenty-three rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Twenty-four rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
   orientation, mip selection, texture copies (whole and by rectangle), the atlas compositing flip,
   `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, every
   blend state vanilla uses, depth bias, the depth-stencil state, the reported colour-attachment limit, the lightmap pass, post-processing, alpha cutout, the point
-  and strip topologies, and 16-bit indices with non-zero
+  and strip topologies, texel-buffer layout, and 16-bit indices with non-zero
   `firstIndex`/base-vertex offsets. Each
   one is a mechanism one of the open bugs implicates, and the harness has eliminated five BUG-001
   theories.
@@ -303,6 +303,13 @@ Also for Phase 5:
   from `LightmapInfo` - six floats followed by four `vec3`s, which is exactly where hand-built std140
   padding goes wrong. All three channels are asserted against channel-distinct light colours, because
   the first version compared only red and passed even with four bytes of padding removed.
+- **The first in-game run immediately found a crash the offline suites could not.** Entering a world
+  aborted Metal on `MTLTextureDescriptor has width (181818) greater than the maximum allowed size of
+  16384`. The texel-buffer emulation built its texture `texels x 1`, and SPIRV-Cross bakes a 4096
+  width into `spvTexelBufferCoord`, so the layout was wrong past 4096 texels and unallocatable past
+  16384. Both are now pinned to a shared constant and covered by a 20000-texel check. See BUG-020.
+  The lesson is the one the offline suites cannot teach: the cloud buffer only grows past those limits
+  with enough scenery on screen, so no amount of small-buffer testing would have reached it.
 - **Fragment discard is verified on both sides of its threshold, which nothing else did.**
   `ENTITY_CUTOUT` compiles with `ALPHA_CUTOUT=0.1` and tests the *sampled* alpha before any
   modulation, and RGBA8 lands on either side of that exactly: 25/255 is 0.098 and 26/255 is 0.102. The
