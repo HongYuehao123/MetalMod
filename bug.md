@@ -56,7 +56,7 @@ by their position, which still works.
 
 ## BUG-002 — Block selection outline is drawn as a huge wireframe box
 
-**Status:** open, unfixed.
+**Status:** root cause fixed (BUG-012); needs an in-game look to confirm.
 **Severity:** low / cosmetic. Nothing breaks; it just looks wrong and is distracting.
 **Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native, 111 fps.
 **Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)
@@ -79,6 +79,34 @@ The outline goes through a line-rendering pipeline (`lines` / `debug_line` with 
 a line primitive). Likely candidates: the wrong primitive topology for the outline pipeline, a
 mis-scaled `ModelViewMat`/`DynamicTransforms` bound to the outline draw, or a `fillMode`/
 `lines` mapping bug in `MetalFormat`. Part of the Phase 5 parity work.
+
+### Root cause identified — BUG-012
+
+`rendertype_lines.vsh` expands each line into a screen-space quad, and the expansion is:
+
+```glsl
+vec2 lineScreenDirection = normalize((ndc2.xy - ndc1.xy) * ScreenSize);
+vec2 lineOffset = vec2(-lineScreenDirection.y, lineScreenDirection.x) * LineWidth / ScreenSize;
+```
+
+`ScreenSize` comes from **`Globals`**, which shared a Metal buffer slot with `Fog` before BUG-012. The
+divisor was therefore fog data, the offset blew up, and the "line" expanded into a screen-filling
+quad — which is exactly what this bug describes, including the "two nested wireframe rectangles"
+(the expanded quad's edges) and why depth testing did not hide it.
+
+`LineWidth` is the only other input to that offset and it is per-vertex data from the CPU, so
+`ScreenSize` is the only value that could produce the symptom.
+
+**Verified, not assumed.** `tools/render_check` now draws a 2px line through the real `LINES`
+pipeline with `ScreenSize = 64` and checks the result:
+
+```
+PASS  thin line lights the centre row -> R255
+PASS  thin line does not cover a row 8px away -> R0 (a giant quad would)
+```
+
+A mis-bound `Globals` would light the far row too. This test would have caught the original bug, and
+it confirms the fix at render level rather than by inspection.
 
 ### Ruled out (Phase 5)
 

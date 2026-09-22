@@ -243,7 +243,11 @@ Also for Phase 5:
   `ChunkSection`, `Projection` and `Fog` to all be bound correctly. That terrain case is precisely
   what BUG-012 broke, so the harness would have caught it. It also caught a mistake in my own test
   first: the terrain pipeline uses reversed-Z, so the quad was correctly depth-rejected until the
-  test used near = 1.0 and cleared depth to 0.0.
+  test used near = 1.0 and cleared depth to 0.0. It also draws a 2px line through the real `LINES`
+  pipeline and checks a row 8px away stays untouched, which is BUG-002's mechanism: the line
+  expansion divides by `ScreenSize` from `Globals`, the block that collided with `Fog`, so a
+  mis-bound `Globals` turned the outline into a screen-filling quad. BUG-002's root cause is
+  therefore BUG-012, confirmed at render level.
 
 **To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
 BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been

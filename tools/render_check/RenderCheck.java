@@ -105,6 +105,21 @@ public final class RenderCheck {
             if (device.pipelineFor(terrain) != null) {
                 terrainCheck(device, terrain);
             }
+
+            // BUG-002's path. rendertype_lines.vsh expands a line in screen space:
+            //   lineOffset = perpendicular * LineWidth / ScreenSize
+            // and ScreenSize lives in Globals. If Globals were mis-bound (it shared a SPIR-V binding
+            // with Fog before BUG-012), that divisor is garbage and the "line" becomes a huge quad -
+            // which is exactly what BUG-002 describes. So: draw a 2px line and check that a pixel
+            // well away from it is untouched.
+            RenderPipeline lines = (RenderPipeline) Class
+                    .forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("LINES").get(null);
+            device.precompilePipeline(lines, source);
+            check("lines pipeline compiled and registered", device.pipelineFor(lines) != null, "");
+            if (device.pipelineFor(lines) != null) {
+                linesCheck(device, lines);
+            }
         } finally {
             device.close();
         }
@@ -234,6 +249,92 @@ public final class RenderCheck {
         buffer.putFloat(2000).putFloat(2000);                     // sky end, clouds end
         buffer.flip();
         return buffer;
+    }
+
+    /**
+     * Draw one thin line across the middle of the target and check it stays thin.
+     *
+     * <p>Two pixels wide, so the centre row must be lit and a row well above it must not be. A huge
+     * offset - the BUG-002 symptom - lights the far pixel too.
+     */
+    private static void linesCheck(MetalDevice device, RenderPipeline pipeline) {
+        GpuBuffer vertices = device.createBuffer(() -> "line vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, lineVertices());
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4()));
+        uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f})));
+        uniforms.put("Globals", device.createBuffer(() -> "Globals",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, globals()));
+        uniforms.put("Fog", device.createBuffer(() -> "Fog",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, fog()));
+
+        // A 64x64 target with ScreenSize 64 and LineWidth 2 gives a 2px line, so the centre row is
+        // lit and 8px away is clear.
+        int[] rows = renderLines(device, pipeline, vertices, uniforms);
+        int centreRow = rows[0];
+        int farRow = rows[1];
+        check("thin line lights the centre row -> R" + centreRow, centreRow > 200, "");
+        check("thin line does not cover a row 8px away -> R" + farRow + " (a giant quad would)",
+                farRow < 60, "");
+        vertices.close();
+        for (GpuBuffer buffer : uniforms.values()) {
+            buffer.close();
+        }
+    }
+
+    /** Two 24-byte line vertices: Position RGB32_FLOAT, Color RGBA8_UNORM, Normal RGBA8_SNORM, LineWidth F32. */
+    private static ByteBuffer lineVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(2 * 24).order(ByteOrder.nativeOrder());
+        // Start, then end. Normal carries the direction, which is how the shader finds the end point.
+        for (float x : new float[]{-0.8f, 0.8f}) {
+            buffer.putFloat(x).putFloat(0.0f).putFloat(1.0f);        // Position, reversed-Z near plane
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+            buffer.put((byte) 127).put((byte) 0).put((byte) 0).put((byte) 0);   // Normal (1, 0, 0)
+            buffer.putFloat(2.0f);                                   // LineWidth in pixels
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /** Render the line and return the centre row and a row 8px above it, as red channel values. */
+    private static int[] renderLines(MetalDevice device, RenderPipeline pipeline, GpuBuffer vertices,
+                                     Map<String, GpuBuffer> uniforms) {
+        GpuTexture color = device.createTexture("lines", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, pipeline.getColorTargetState().format(), WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuTexture depth = device.createTexture("lines depth", GpuTexture.USAGE_RENDER_ATTACHMENT,
+                GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView depthView = device.createTextureView(depth);
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "lines")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withDepthAttachment(depthView, OptionalDouble.of(0.0))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        for (Map.Entry<String, GpuBuffer> uniform : uniforms.entrySet()) {
+            pass.setUniform(uniform.getKey(), uniform.getValue().slice());
+        }
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.draw(2, 1, 0, 0);
+        encoder.submitRenderPass();
+
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int centreRow = pixels.get(((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4) & 0xFF;
+        int farRow = pixels.get(((HEIGHT / 2 - 8) * WIDTH + (WIDTH / 2)) * 4) & 0xFF;
+        readback.close();
+        depthView.close();
+        depth.close();
+        colorView.close();
+        color.close();
+        return new int[]{centreRow, farRow};
     }
 
     /** Shared draw: render the quad and return the centre pixel as {r, g, b}. */
