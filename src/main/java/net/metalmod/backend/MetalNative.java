@@ -38,7 +38,8 @@ public final class MetalNative {
     private static MethodHandle mhRenderPassBegin, mhRenderPassEnd, mhRenderPassSetPipeline,
             mhRenderPassSetVertexBuffer, mhRenderPassSetFragmentBuffer, mhRenderPassSetVertexTexture,
             mhRenderPassSetFragmentTexture, mhRenderPassSetVertexSampler, mhRenderPassSetFragmentSampler,
-            mhRenderPassSetScissor, mhRenderPassDraw, mhRenderPassDrawIndexed;
+            mhRenderPassSetScissor, mhRenderPassSetViewport, mhRenderPassPushDebugGroup,
+            mhRenderPassPopDebugGroup, mhRenderPassDraw, mhRenderPassDrawIndexed;
 
     static {
         try {
@@ -116,6 +117,7 @@ public final class MetalNative {
         mhClearTextures = linker.downcallHandle(symbol(lookup, "mmm_clear_textures"),
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D));
 
+        mhQueueSynchronize = linker.downcallHandle(symbol(lookup, "mmm_queue_synchronize"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
         mhCommandBufferCommit = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_commit"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferWait = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_wait"), FunctionDescriptor.ofVoid(A));
@@ -138,6 +140,9 @@ public final class MetalNative {
         mhRenderPassSetVertexSampler = linker.downcallHandle(symbol(lookup, "mmm_render_pass_set_vertex_sampler"), FunctionDescriptor.ofVoid(A, A, I));
         mhRenderPassSetFragmentSampler = linker.downcallHandle(symbol(lookup, "mmm_render_pass_set_fragment_sampler"), FunctionDescriptor.ofVoid(A, A, I));
         mhRenderPassSetScissor = linker.downcallHandle(symbol(lookup, "mmm_render_pass_set_scissor"), FunctionDescriptor.ofVoid(A, I, I, I, I));
+        mhRenderPassSetViewport = linker.downcallHandle(symbol(lookup, "mmm_render_pass_set_viewport"), FunctionDescriptor.ofVoid(A, D, D, D, D));
+        mhRenderPassPushDebugGroup = linker.downcallHandle(symbol(lookup, "mmm_render_pass_push_debug_group"), FunctionDescriptor.ofVoid(A, A));
+        mhRenderPassPopDebugGroup = linker.downcallHandle(symbol(lookup, "mmm_render_pass_pop_debug_group"), FunctionDescriptor.ofVoid(A));
         mhRenderPassDraw = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw"), FunctionDescriptor.ofVoid(A, I, I, I, I, I));
         mhRenderPassDrawIndexed = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_indexed"), FunctionDescriptor.ofVoid(A, I, A, L, I, I, I, I, I, I));
     }
@@ -228,6 +233,8 @@ public final class MetalNative {
     public static int textureReadRegion(MemorySegment tex, int mip, int slice, int x, int y, int w, int h, MemorySegment out, long cap, long rowBytes) {
         return i(mhTextureReadRegion, tex, mip, slice, x, y, w, h, out, cap, rowBytes);
     }
+    private static MethodHandle mhQueueSynchronize;
+    public static void queueSynchronize(MemorySegment queue) { v(mhQueueSynchronize, queue); }
     public static MemorySegment bufferCreate(MemorySegment dev, long length) { return addr(mhBufferCreate, dev, Math.max(1L, length)); }
     public static MemorySegment bufferContents(MemorySegment buf, long length) {
         MemorySegment p = addr(mhBufferContents, buf);
@@ -298,6 +305,9 @@ public final class MetalNative {
     public static void renderPassSetVertexSampler(MemorySegment enc, MemorySegment sampler, int index) { v(mhRenderPassSetVertexSampler, enc, sampler, index); }
     public static void renderPassSetFragmentSampler(MemorySegment enc, MemorySegment sampler, int index) { v(mhRenderPassSetFragmentSampler, enc, sampler, index); }
     public static void renderPassSetScissor(MemorySegment enc, int x, int y, int w, int h) { v(mhRenderPassSetScissor, enc, x, y, w, h); }
+    public static void renderPassSetViewport(MemorySegment enc, double x, double y, double w, double h) { v(mhRenderPassSetViewport, enc, x, y, w, h); }
+    public static void renderPassPushDebugGroup(MemorySegment enc, MemorySegment label) { v(mhRenderPassPushDebugGroup, enc, label); }
+    public static void renderPassPopDebugGroup(MemorySegment enc) { v(mhRenderPassPopDebugGroup, enc); }
     public static void renderPassDraw(MemorySegment enc, int topology, int vertexStart, int vertexCount, int instanceCount, int firstInstance) {
         v(mhRenderPassDraw, enc, topology, vertexStart, vertexCount, instanceCount, firstInstance);
     }

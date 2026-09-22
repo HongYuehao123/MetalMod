@@ -23,17 +23,6 @@ import java.util.OptionalDouble;
 /** Phase 3 command encoder: owns a Metal command buffer, records render passes into it, submits. */
 public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
-    private static final java.util.concurrent.atomic.AtomicInteger RENDER_PASS_COUNT =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger SUBMIT_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger PASS_END_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger WRITE_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger COPY_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-
     private final MetalDevice device;
     private MemorySegment commandBuffer = MemorySegment.NULL;
     private MemorySegment currentEncoder = MemorySegment.NULL;
@@ -84,16 +73,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public void submit() {
-        int n = SUBMIT_LOG.incrementAndGet();
         if (this.commandBuffer.address() != 0) {
-            if (n <= 10) {
-                System.out.println("[MetalMod] submit #" + n + " commits a command buffer");
-            }
             MetalNative.commandBufferCommit(this.commandBuffer);
             MetalNative.commandBufferRelease(this.commandBuffer);
             this.commandBuffer = MemorySegment.NULL;
-        } else if (n <= 10) {
-            System.out.println("[MetalMod] submit #" + n + " (no command buffer)");
         }
     }
 
@@ -161,13 +144,26 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 height = descriptor.renderArea.height();
             }
 
-            int passIndex = RENDER_PASS_COUNT.incrementAndGet();
-            if (passIndex <= 40 || passIndex % 300 == 0) {
-                System.out.println("[MetalMod] render pass #" + passIndex + " colors=" + count
-                        + " depth=" + (depthTexture.address() != 0) + " " + width + "x" + height);
+            String targetLabel = "?";
+            if (count > 0 && colors.get(0).textureView() != null
+                    && colors.get(0).textureView().texture() != null) {
+                targetLabel = colors.get(0).textureView().texture().getLabel();
             }
+
             MemorySegment encoder = MetalNative.renderPassBegin(cb, count, colorTextures, loadClear,
                     clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
+            boolean atlasTarget = targetLabel != null && targetLabel.contains("/atlas/");
+            if (encoder.address() != 0 && atlasTarget) {
+                // TextureAtlas.uploadInitialContents() composites every sprite into the atlas with a
+                // render pass per mip level, using a projection built by
+                // TextureAtlasSprite.uploadSpriteUbo(): new Matrix4f().ortho2D(0, w, 0, h). That maps
+                // atlas row 0 to NDC y = -1, i.e. it assumes a Y-down (Vulkan) NDC. Metal's NDC is
+                // Y-up, so the composited atlas came out vertically mirrored and the sprite UVs
+                // (v = y / atlasHeight) sampled the wrong sprite - the "unselected button" sampled a
+                // status/icon sprite. Flip the viewport for every atlas mip pass (each is composited
+                // independently from the sprite's own mip image) so the stored atlas matches the UVs.
+                MetalNative.renderPassSetViewport(encoder, 0.0, (double) height, (double) width, -(double) height);
+            }
             this.currentEncoder = encoder;
             if (encoder.address() == 0) {
                 System.err.println("[MetalMod] render pass begin failed");
@@ -180,10 +176,6 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     public void submitRenderPass() {
         if (this.currentEncoder.address() == 0) {
             return;
-        }
-        int n = PASS_END_LOG.incrementAndGet();
-        if (n <= 5) {
-            System.out.println("[MetalMod] submitRenderPass #" + n);
         }
         MetalNative.renderPassEnd(this.currentEncoder);
         this.currentEncoder = MemorySegment.NULL;
@@ -272,9 +264,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (metal == null || data == null) {
             return;
         }
-        // The interface order is (mipLevel, depthOrLayers, x, y, width, height): reading it as
-        // (mip, x, y, width, height, layers) made the region and its bytes-per-row garbage, which
-        // is what produced "slice OOB" and "bytes_per_row >= used_bytes_per_row".
+        // The interface order is (mipLevel, depthOrLayers, x, y, width, height); reading it as
+        // (mip, x, y, width, height, layers) makes the region and its bytes-per-row garbage.
         int layers = Math.max(1, texture.getDepthOrLayers());
         int slice = layers > 1 ? Math.max(0, Math.min(depthOrLayers, layers - 1)) : 0;
         int mipWidth = Math.max(1, texture.getWidth(mipLevel));
@@ -283,13 +274,6 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         int safeY = Math.max(0, Math.min(y, mipHeight - 1));
         int safeWidth = Math.max(1, Math.min(width, mipWidth - safeX));
         int safeHeight = Math.max(1, Math.min(height, mipHeight - safeY));
-        if (WRITE_LOG.incrementAndGet() <= 12) {
-            System.out.println("[MetalMod] writeTex mip=" + mipLevel + " slice=" + slice
-                    + " xy=" + safeX + "," + safeY + " wh=" + safeWidth + "x" + safeHeight
-                    + " rowBytes=" + (long) safeWidth * metal.bytesPerPixel()
-                    + " texMip=" + mipWidth + "x" + mipHeight + " fmt=" + texture.getFormat()
-                    + " layers=" + layers + " bpp=" + metal.bytesPerPixel());
-        }
         MetalNative.textureReplaceRegion(metal.handle(), mipLevel, slice, safeX, safeY,
                 safeWidth, safeHeight, data.duplicate(), (long) safeWidth * metal.bytesPerPixel());
     }
@@ -307,8 +291,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         int bytesPerPixel = dst.bytesPerPixel();
         // sourceRowLength is the source row stride in texels (0 means tightly packed), and
         // (sourceX, sourceY) is the sub-region origin inside that source image. The last two
-        // parameters are (mipLevel, depthOrLayers) - the reverse of what the Phase 2 code assumed,
-        // which is what sent mip uploads to level 0 with base dimensions.
+        // parameters are (mipLevel, depthOrLayers).
         int rowLength = sourceRowLength > 0 ? sourceRowLength : Math.max(1, targetWidth);
         long rowBytes = (long) rowLength * bytesPerPixel;
         long offsetBytes = source.offset()
@@ -334,12 +317,6 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         }
         int layers = Math.max(1, target.getDepthOrLayers());
         int slice = layers > 1 ? Math.max(0, Math.min(targetDepthOrLayers, layers - 1)) : 0;
-        if (COPY_LOG.incrementAndGet() <= 8) {
-            System.out.println("[MetalMod] copyBufTex mip=" + targetMipLevel + " slice=" + slice
-                    + " src=" + sourceX + "," + sourceY + " rowLen=" + rowLength
-                    + " dst=" + targetX + "," + targetY + " " + safeWidth + "x" + safeHeight
-                    + " rowBytes=" + rowBytes + " fmt=" + target.getFormat());
-        }
         MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, slice, safeX, safeY,
                 safeWidth, safeHeight, src.dataSlice(offsetBytes, needed), rowBytes);
     }
@@ -357,6 +334,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                                     int x, int y, int width, int height) {
         MetalTexture metal = textureOf(source);
         if (metal != null && target instanceof MetalBuffer buffer && buffer.isMapped()) {
+            MetalNative.queueSynchronize(this.device.queueHandle());
             long rowBytes = (long) width * metal.bytesPerPixel();
             long needed = rowBytes * height;
             if (targetOffset >= 0 && targetOffset + needed <= buffer.data().byteSize()) {
@@ -378,6 +356,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (src == null || dst == null) {
             return;
         }
+        MetalNative.queueSynchronize(this.device.queueHandle());
         long rowBytes = (long) width * src.bytesPerPixel();
         long size = rowBytes * height;
         try (Arena arena = Arena.ofConfined()) {

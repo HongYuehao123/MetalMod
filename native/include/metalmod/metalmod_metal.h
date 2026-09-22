@@ -96,6 +96,10 @@ MMM_API int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t sli
 // Buffers (CPU-visible shared storage)
 // ---------------------------------------------------------------------------------------------
 
+/// Block until all previously committed work on the queue has completed. Used before a CPU-side
+/// texture readback, which otherwise races the GPU that is still writing that texture.
+MMM_API void mmm_queue_synchronize(void* queue);
+
 MMM_API void*   mmm_buffer_create(void* device, int64_t length);
 MMM_API void*   mmm_buffer_contents(void* buffer);
 MMM_API int64_t mmm_buffer_length(void* buffer);
@@ -178,6 +182,9 @@ MMM_API void mmm_render_pass_set_fragment_texture(void* encoder, void* texture, 
 MMM_API void mmm_render_pass_set_vertex_sampler(void* encoder, void* sampler, int32_t index);
 MMM_API void mmm_render_pass_set_fragment_sampler(void* encoder, void* sampler, int32_t index);
 MMM_API void mmm_render_pass_set_scissor(void* encoder, int32_t x, int32_t y, int32_t width, int32_t height);
+MMM_API void mmm_render_pass_set_viewport(void* encoder, double x, double y, double width, double height);
+MMM_API void mmm_render_pass_push_debug_group(void* encoder, const char* label);
+MMM_API void mmm_render_pass_pop_debug_group(void* encoder);
 MMM_API void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart,
                                   int32_t vertexCount, int32_t instanceCount, int32_t firstInstance);
 MMM_API void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBuffer,

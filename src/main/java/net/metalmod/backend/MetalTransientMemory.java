@@ -52,7 +52,7 @@ public final class MetalTransientMemory implements TransientMemory {
 
     @Override
     public ByteBuffer allocateCpu(long size, long alignment, long lifetime, long flags) {
-        return allocate(size, alignment, 0).data().asByteBuffer();
+        return allocate(size, alignment, 0).data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
     }
 
     @Override
@@ -60,7 +60,8 @@ public final class MetalTransientMemory implements TransientMemory {
                                                      long lifetime, long flags) {
         MetalBuffer buffer = allocate(size, alignment, usage);
         GpuBufferSlice slice = buffer.slice(0L, buffer.size());
-        return new GpuBufferSlice.MappedView(slice, buffer.data().asByteBuffer(), () -> {
+        return new GpuBufferSlice.MappedView(slice,
+                buffer.data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder()), () -> {
         });
     }
 
@@ -76,7 +77,8 @@ public final class MetalTransientMemory implements TransientMemory {
                                                        long lifetime, long flags) {
         MetalBuffer buffer = allocate(size, alignment, usage);
         GpuBufferSlice slice = buffer.slice(0L, buffer.size());
-        return new GpuBufferSlice.MappedView(slice, buffer.data().asByteBuffer(), () -> {
+        return new GpuBufferSlice.MappedView(slice,
+                buffer.data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder()), () -> {
         });
     }
 

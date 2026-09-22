@@ -117,14 +117,15 @@ public final class MetalFormat {
 
     /** Minecraft texture usage bits to {@code MTLTextureUsage} bits. */
     public static int mtlTextureUsage(int mcUsage) {
-        int usage = 0;
-        if ((mcUsage & GpuTexture.USAGE_TEXTURE_BINDING) != 0) {
-            usage |= TEXTURE_USAGE_SHADER_READ | TEXTURE_USAGE_PIXEL_FORMAT_VIEW;
-        }
+        // ShaderRead is required by the presentation blit, which samples the engine's render
+        // target, and by mip generation. The engine creates its main target as render-target-only,
+        // so honouring only USAGE_TEXTURE_BINDING left that target unsampleable and the blit read
+        // black. On Apple silicon these usage bits carry no allocation cost, so grant them always.
+        int usage = TEXTURE_USAGE_SHADER_READ | TEXTURE_USAGE_PIXEL_FORMAT_VIEW;
         if ((mcUsage & GpuTexture.USAGE_RENDER_ATTACHMENT) != 0) {
             usage |= TEXTURE_USAGE_RENDER_TARGET;
         }
-        return usage == 0 ? TEXTURE_USAGE_SHADER_READ : usage;
+        return usage;
     }
 
     /** Pick the Metal texture type for a Minecraft texture description. */

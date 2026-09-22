@@ -108,6 +108,9 @@ public final class MetalShaderCompiler implements AutoCloseable {
     private static final int DECORATION_BINDING = 33;
     private static final int DECORATION_DESCRIPTOR_SET = 34;
 
+    /** Slots 0..15 are reserved for VertexFormat attribute layouts; uniform buffers start here. */
+    private static final int VERTEX_BUFFER_INDEX_OFFSET = 16;
+
     /**
      * Fill the primary map (uniform buffers / textures) and optionally the secondary (samplers), and
      * force the MSL binding for each resource.
@@ -147,8 +150,16 @@ public final class MetalShaderCompiler implements AutoCloseable {
             SpvcMslResourceBinding resourceBinding = SpvcMslResourceBinding.calloc(stack);
             resourceBinding.stage(stage).desc_set(set).binding(binding);
             if (type == Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
-                resourceBinding.msl_buffer(binding);
-                if (primary != null) primary.put(name, binding);
+                // Metal shares one buffer index space per stage between the vertex-attribute layouts
+                // (MTLVertexDescriptor slots, which Minecraft numbers from 0) and the "constant"
+                // buffers SPIRV-Cross emits for uniform blocks. Vulkan keeps those two namespaces
+                // apart, so SPIRV-Cross maps both from 0 - and binding DynamicTransforms at index 0
+                // overwrote the VertexFormat data at slot 0. Every vertex then read UBO bytes as its
+                // position and nothing rasterised. Keep the low indices for attributes and shift
+                // vertex-stage uniform buffers above them.
+                int mslBuffer = stage == 0 ? binding + VERTEX_BUFFER_INDEX_OFFSET : binding;
+                resourceBinding.msl_buffer(mslBuffer);
+                if (primary != null) primary.put(name, mslBuffer);
             } else if (type == Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE) {
                 resourceBinding.msl_texture(binding).msl_sampler(binding);
                 if (primary != null) primary.put(name, binding);

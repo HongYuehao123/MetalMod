@@ -46,7 +46,14 @@ public final class MetalDevice implements GpuDeviceBackend {
     private final MetalShaderCompiler shaderCompiler = new MetalShaderCompiler();
     private final Map<RenderPipeline, MetalRenderPipeline> pipelines = new HashMap<>();
 
-    private final Set<String> placeholderPipelines = new HashSet<>();
+    // Pipelines are mostly compiled ahead of time through precompilePipeline(), but the engine also
+    // binds pipelines it never precompiled (the loading-screen 'mojang_logo', for instance). Keep the
+    // most recent ShaderSource - lookups are by identifier, so any one will do - and compile on first
+    // use so those pipelines draw instead of being silently skipped.
+    private ShaderSource lastShaderSource;
+    private final Set<RenderPipeline> failedPipelines =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
     private int placeholderLogCount;
     private boolean closed;
 
@@ -264,21 +271,33 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     @Override
-    public CompiledRenderPipeline precompilePipeline(RenderPipeline pipeline, ShaderSource shaderSource) {
+    public synchronized CompiledRenderPipeline precompilePipeline(RenderPipeline pipeline, ShaderSource shaderSource) {
+        if (shaderSource != null) {
+            this.lastShaderSource = shaderSource;
+        }
         String key = pipeline.getLocation().toString();
+        // The engine announces some pipelines (the blur chain) without a ShaderSource. There is
+        // nothing to compile, and those passes are skipped by the draw path.
+        if (shaderSource == null) {
+            return new MetalCompiledPipeline(true);
+        }
         MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline, shaderSource);
         if (compiled != null) {
             MetalRenderPipeline previous = this.pipelines.put(pipeline, compiled);
             if (previous != null) {
                 previous.close();
             }
+            this.failedPipelines.remove(pipeline);
             if (this.placeholderLogCount < 30) {
                 this.placeholderLogCount++;
                 System.out.println("[MetalMod] metal pipeline compiled: " + key);
             }
-        } else if (this.placeholderLogCount < 30) {
-            this.placeholderLogCount++;
-            System.err.println("[MetalMod] metal pipeline FAILED (draws with it are skipped): " + key);
+        } else {
+            this.failedPipelines.add(pipeline);
+            if (this.placeholderLogCount < 30) {
+                this.placeholderLogCount++;
+                System.err.println("[MetalMod] metal pipeline FAILED (draws with it are skipped): " + key);
+            }
         }
         // Always valid: ShaderManager throws when a precompiled pipeline reports invalid, which would
         // take the game down before it can render anything. A failed pipeline simply has no native
@@ -286,9 +305,35 @@ public final class MetalDevice implements GpuDeviceBackend {
         return new MetalCompiledPipeline(true);
     }
 
-    /** The compiled pipeline for a RenderPipeline, or null when compilation failed. */
-    public MetalRenderPipeline pipelineFor(RenderPipeline pipeline) {
-        return this.pipelines.get(pipeline);
+    /**
+     * The compiled pipeline for a RenderPipeline, or null when compilation failed. Compiles lazily on
+     * first use for pipelines the engine never precompiled.
+     */
+    public synchronized MetalRenderPipeline pipelineFor(RenderPipeline pipeline) {
+        MetalRenderPipeline existing = this.pipelines.get(pipeline);
+        if (existing != null) {
+            return existing;
+        }
+        if (this.failedPipelines.contains(pipeline) || this.lastShaderSource == null) {
+            return null;
+        }
+        MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline,
+                this.lastShaderSource);
+        if (compiled == null) {
+            this.failedPipelines.add(pipeline);
+            if (this.placeholderLogCount < 40) {
+                this.placeholderLogCount++;
+                System.err.println("[MetalMod] metal pipeline FAILED (draws with it are skipped): "
+                        + pipeline.getLocation());
+            }
+            return null;
+        }
+        this.pipelines.put(pipeline, compiled);
+        if (this.placeholderLogCount < 40) {
+            this.placeholderLogCount++;
+            System.out.println("[MetalMod] metal pipeline compiled lazily: " + pipeline.getLocation());
+        }
+        return compiled;
     }
 
     @Override
@@ -297,7 +342,7 @@ public final class MetalDevice implements GpuDeviceBackend {
             compiled.close();
         }
         this.pipelines.clear();
-        this.placeholderPipelines.clear();
+        this.failedPipelines.clear();
     }
 
     @Override

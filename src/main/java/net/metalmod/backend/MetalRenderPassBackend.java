@@ -11,12 +11,23 @@ import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import org.lwjgl.PointerBuffer;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.IntBuffer;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Supplier;
 
-/** Phase 3 render pass: binds the compiled pipeline and encodes draws into the Metal encoder. */
+/**
+ * Phase 3 render pass: encodes draws into a Metal render command encoder.
+ *
+ * <p>Uniform and texture bindings are recorded by name and resolved at draw time against the
+ * *current* pipeline. They must be deferred: the engine records bindings before (or independently
+ * of) setPipeline, and a name has no binding index until the pipeline is known. Resolving eagerly
+ * against whatever pipeline happened to be current bound uniforms to the wrong slots - or nowhere -
+ * so the shader read zeros and every GUI quad collapsed to nothing.
+ */
 public final class MetalRenderPassBackend implements RenderPassBackend {
 
     private final MetalCommandEncoderBackend owner;
@@ -24,19 +35,11 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final int width;
     private final int height;
 
-    private static final java.util.concurrent.atomic.AtomicInteger PIPELINE_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.Set<String> LOGGED_UNBOUND =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
-    private static final java.util.concurrent.atomic.AtomicInteger DRAW_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger UNIFORM_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger VERTEX_LOG =
-            new java.util.concurrent.atomic.AtomicInteger();
+    private final Map<String, GpuBufferSlice> uniforms = new HashMap<>();
+    private final Map<String, GpuTextureView> textures = new HashMap<>();
+    private final Map<String, GpuSampler> samplers = new HashMap<>();
 
     private String pipelineName = "none";
-
     private MetalRenderPipeline pipeline;
     private int topology = 3;
     private MemorySegment indexBuffer = MemorySegment.NULL;
@@ -56,19 +59,26 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void pushDebugGroup(Supplier<String> label) {
+        if (this.encoder.address() == 0) {
+            return;
+        }
+        String text = label == null ? "" : label.get();
+        try (Arena arena = Arena.ofConfined()) {
+            MetalNative.renderPassPushDebugGroup(this.encoder, arena.allocateFrom(text == null ? "" : text));
+        }
     }
 
     @Override
     public void popDebugGroup() {
+        if (this.encoder.address() == 0) {
+            return;
+        }
+        MetalNative.renderPassPopDebugGroup(this.encoder);
     }
 
     @Override
     public void setPipeline(RenderPipeline pipeline) {
         this.pipeline = this.owner.device().pipelineFor(pipeline);
-        if (PIPELINE_LOG.incrementAndGet() <= 6) {
-            System.out.println("[MetalMod] setPipeline " + pipeline.getLocation()
-                    + " -> " + (this.pipeline != null ? "compiled" : "MISSING"));
-        }
         this.pipelineName = pipeline.getLocation().toString();
         if (this.pipeline != null) {
             this.topology = this.pipeline.topology();
@@ -76,24 +86,53 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
     }
 
-    @Override
-    public void bindTexture(String name, GpuTextureView textureView, GpuSampler sampler) {
-        if (!ready()) {
+    /** Resolve every recorded binding against the current pipeline and encode it. */
+    private void applyBindings() {
+        if (this.pipeline == null) {
             return;
         }
-        MemorySegment texture = MetalCommandEncoderBackend.handleOf(textureView);
-        MemorySegment samplerHandle = sampler instanceof MetalSampler metal ? metal.handle() : MemorySegment.NULL;
-        int vt = this.pipeline.vertexTexture(name);
-        int ft = this.pipeline.fragmentTexture(name);
-        if (vt < 0 && ft < 0 && LOGGED_UNBOUND.add("t:" + name) && LOGGED_UNBOUND.size() <= 25) {
-            System.out.println("[MetalMod] unbound texture: " + name + " in " + this.pipelineName);
+        for (Map.Entry<String, GpuBufferSlice> entry : this.uniforms.entrySet()) {
+            String name = entry.getKey();
+            int vb = this.pipeline.vertexBuffer(name);
+            int fb = this.pipeline.fragmentBuffer(name);
+            if (vb < 0 && fb < 0) {
+                continue;
+            }
+            GpuBufferSlice slice = entry.getValue();
+            MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
+            if (handle.address() == 0) {
+                continue;
+            }
+            if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, slice.offset(), vb);
+            if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, slice.offset(), fb);
         }
-        if (vt >= 0) MetalNative.renderPassSetVertexTexture(this.encoder, texture, vt);
-        if (ft >= 0) MetalNative.renderPassSetFragmentTexture(this.encoder, texture, ft);
-        int vs = this.pipeline.vertexSampler(name);
-        int fs = this.pipeline.fragmentSampler(name);
-        if (vs >= 0) MetalNative.renderPassSetVertexSampler(this.encoder, samplerHandle, vs);
-        if (fs >= 0) MetalNative.renderPassSetFragmentSampler(this.encoder, samplerHandle, fs);
+        for (Map.Entry<String, GpuTextureView> entry : this.textures.entrySet()) {
+            String name = entry.getKey();
+            int vt = this.pipeline.vertexTexture(name);
+            int ft = this.pipeline.fragmentTexture(name);
+            if (vt < 0 && ft < 0) {
+                continue;
+            }
+            MemorySegment texture = MetalCommandEncoderBackend.handleOf(entry.getValue());
+            if (vt >= 0) MetalNative.renderPassSetVertexTexture(this.encoder, texture, vt);
+            if (ft >= 0) MetalNative.renderPassSetFragmentTexture(this.encoder, texture, ft);
+
+            GpuSampler sampler = this.samplers.get(name);
+            MemorySegment samplerHandle = sampler instanceof MetalSampler metal
+                    ? metal.handle() : MemorySegment.NULL;
+            int vs = this.pipeline.vertexSampler(name);
+            int fs = this.pipeline.fragmentSampler(name);
+            if (vs >= 0) MetalNative.renderPassSetVertexSampler(this.encoder, samplerHandle, vs);
+            if (fs >= 0) MetalNative.renderPassSetFragmentSampler(this.encoder, samplerHandle, fs);
+        }
+    }
+
+    @Override
+    public void bindTexture(String name, GpuTextureView textureView, GpuSampler sampler) {
+        this.textures.put(name, textureView);
+        if (sampler != null) {
+            this.samplers.put(name, sampler);
+        }
     }
 
     @Override
@@ -103,33 +142,9 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void setUniform(String name, GpuBufferSlice slice) {
-        if (!ready() || slice == null) {
-            return;
+        if (slice != null) {
+            this.uniforms.put(name, slice);
         }
-        MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
-        if (handle.address() == 0) {
-            return;
-        }
-        int vb = this.pipeline.vertexBuffer(name);
-        int fb = this.pipeline.fragmentBuffer(name);
-        if (vb < 0 && fb < 0 && LOGGED_UNBOUND.add("u:" + name) && LOGGED_UNBOUND.size() <= 25) {
-            System.out.println("[MetalMod] unbound uniform: " + name + " in " + this.pipelineName);
-        }
-        if ("Projection".equals(name) && UNIFORM_LOG.incrementAndGet() <= 2
-                && slice.buffer() instanceof MetalBuffer buffer && buffer.isMapped()) {
-            try {
-                var data = buffer.dataSlice(slice.offset(), 64)
-                        .asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
-                System.out.println("[MetalMod] Projection uniform floats: "
-                        + data.getFloat(0) + ", " + data.getFloat(4) + ", "
-                        + data.getFloat(8) + ", " + data.getFloat(12) + ", "
-                        + data.getFloat(15));
-            } catch (Throwable t) {
-                System.out.println("[MetalMod] Projection uniform read failed: " + t);
-            }
-        }
-        if (vb >= 0) MetalNative.renderPassSetVertexBuffer(this.encoder, handle, slice.offset(), vb);
-        if (fb >= 0) MetalNative.renderPassSetFragmentBuffer(this.encoder, handle, slice.offset(), fb);
     }
 
     @Override
@@ -148,22 +163,6 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
-        if (index == 0 && VERTEX_LOG.incrementAndGet() <= 3
-                && slice.buffer() instanceof MetalBuffer buffer && buffer.isMapped()) {
-            try {
-                long available = buffer.data().byteSize() - slice.offset();
-                int count = (int) Math.min(48, Math.max(0, available));
-                var data = buffer.dataSlice(slice.offset(), count)
-                        .asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
-                StringBuilder text = new StringBuilder();
-                for (int i = 0; i + 3 < Math.min(24, count); i += 4) {
-                    text.append(data.getFloat(i)).append(' ');
-                }
-                System.out.println("[MetalMod] vertex buffer[0] first floats: " + text);
-            } catch (Throwable t) {
-                System.out.println("[MetalMod] vertex buffer read failed: " + t);
-            }
-        }
         MetalNative.renderPassSetVertexBuffer(this.encoder, handle, slice.offset(), index);
     }
 
@@ -179,12 +178,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
-        if (DRAW_LOG.incrementAndGet() <= 20) {
-            System.out.println("[MetalMod] drawIndexed pipeline=" + this.pipelineName
-                    + " indexCount=" + indexCount + " instances=" + instanceCount
-                    + " firstIndex=" + firstIndex + " baseVertex=" + vertexOffset
-                    + " indexBuffer=" + (this.indexBuffer.address() != 0) + " type=" + this.indexType);
-        }
+        applyBindings();
         MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
                 this.indexType, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
@@ -192,17 +186,28 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     @Override
     public void multiDrawIndexed(IntBuffer firstIndices, int indexCount, int instanceCount,
                                  int firstInstance) {
+        if (!ready()) {
+            return;
+        }
         for (int i = 0; i < firstIndices.remaining(); i++) {
-            drawIndexed(indexCount, instanceCount, firstIndices.get(firstIndices.position() + i), 0, firstInstance);
+            applyBindings();
+            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+                    this.indexType, indexCount, instanceCount,
+                    firstIndices.get(firstIndices.position() + i), 0, firstInstance);
         }
     }
 
     @Override
     public void multiDrawIndexed(PointerBuffer firstIndices, IntBuffer indexCounts,
                                  IntBuffer vertexOffsets, int instanceCount) {
+        if (!ready()) {
+            return;
+        }
         int draws = Math.min(firstIndices.remaining(), Math.min(indexCounts.remaining(), vertexOffsets.remaining()));
         for (int i = 0; i < draws; i++) {
-            drawIndexed(indexCounts.get(indexCounts.position() + i), instanceCount,
+            applyBindings();
+            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+                    this.indexType, indexCounts.get(indexCounts.position() + i), instanceCount,
                     (int) firstIndices.get(firstIndices.position() + i),
                     vertexOffsets.get(vertexOffsets.position() + i), 0);
         }
@@ -210,7 +215,6 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void drawIndexedIndirect(GpuBufferSlice slice, int drawCount) {
-        // Indirect draws land in a later pass; the direct path covers vanilla and Sodium's default.
     }
 
     @Override
@@ -223,9 +227,11 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         setIndexBuffer(indexBuffer, indexType);
         for (RenderPass.Draw<T> draw : draws) {
             if (draw.vertexBuffer() != null) {
-                setVertexBuffer(draw.slot() == 0 ? 0 : draw.slot(), draw.vertexBuffer().slice());
+                setVertexBuffer(draw.slot(), draw.vertexBuffer().slice());
             }
-            drawIndexed(draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
+            applyBindings();
+            MetalNative.renderPassDrawIndexed(this.encoder, this.topology, this.indexBuffer, 0,
+                    this.indexType, draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
     }
 
@@ -234,6 +240,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
+        applyBindings();
         MetalNative.renderPassDraw(this.encoder, this.topology, firstVertex, vertexCount,
                 instanceCount, firstInstance);
     }
@@ -241,17 +248,27 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     @Override
     public void multiDraw(IntBuffer firstVertices, int vertexCount, int instanceCount,
                           int firstInstance) {
+        if (!ready()) {
+            return;
+        }
         for (int i = 0; i < firstVertices.remaining(); i++) {
-            draw(vertexCount, instanceCount, firstVertices.get(firstVertices.position() + i), firstInstance);
+            applyBindings();
+            MetalNative.renderPassDraw(this.encoder, this.topology,
+                    firstVertices.get(firstVertices.position() + i), vertexCount, instanceCount, firstInstance);
         }
     }
 
     @Override
     public void multiDraw(IntBuffer firstVertices, IntBuffer vertexCounts, int instanceCount) {
+        if (!ready()) {
+            return;
+        }
         int draws = Math.min(firstVertices.remaining(), vertexCounts.remaining());
         for (int i = 0; i < draws; i++) {
-            draw(vertexCounts.get(vertexCounts.position() + i), instanceCount,
-                    firstVertices.get(firstVertices.position() + i), 0);
+            applyBindings();
+            MetalNative.renderPassDraw(this.encoder, this.topology,
+                    firstVertices.get(firstVertices.position() + i),
+                    vertexCounts.get(vertexCounts.position() + i), instanceCount, 0);
         }
     }
 

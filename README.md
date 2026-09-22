@@ -5,19 +5,19 @@ MetalMod is building a **native Metal graphics backend** for Minecraft on macOS,
 Silicon unified-memory allocator. It replaces the older "run MetalFX on top of MoltenVK" design,
 which could never own presentation.
 
-> ## Current status: Phases 1 and 2 are DONE; only the draw path remains
+> ## Current status: Phases 1–3 are DONE; the game renders
 >
-> Minecraft selects a **Metal backend**, creates the device and a `CAMetalLayer`, and now creates
-> real Metal **textures, texture views, buffers and samplers** (verified in-game:
-> `textures=4416 views=9325 buffers=77 samplers=32 failures=0`), presenting cleared frames at
-> display rate. The **draw path is still inert** (placeholder pipelines, no-op draws), so the window
-> shows a pulsing first-light colour rather than the game image — that is Phase 3. See `ROADMAP.md`
-> and `docs/phase1-boot-trace.md`.
+> Minecraft selects a **Metal backend**, creates the device and a `CAMetalLayer`, creates real
+> Metal **textures, texture views, buffers and samplers**, compiles the engine's shaders
+> (**GLSL → SPIR-V → MSL**), encodes real render passes and presents the engine's render target to
+> the drawable. Verified in-game: the Mojang loading screen (logo + progress bar), the main menu
+> (logotype, buttons, sliders, splash, blurred panorama) and an in-world view (sky, hotbar, terrain
+> geometry). See `ROADMAP.md` Phase 3 and `docs/phase1-boot-trace.md`.
 >
-> The backend is **opt-in and OFF by default**, because it cannot draw the game yet. Normal play is
-> untouched (Vulkan/OpenGL). To exercise first light, set `preferMetalBackend=true` in
-> `config/metalmod.properties` or launch with `-Dmetalmod.metalBackend=true`; expect a flat
-> pulsing clear colour, not the game.
+> The backend is **opt-in and OFF by default** while the remaining visual parity work (Phase 5) is
+> unfinished. Normal play is untouched (Vulkan/OpenGL). To exercise it, set
+> `preferMetalBackend=true` in `config/metalmod.properties` or launch with
+> `-Dmetalmod.metalBackend=true`.
 >
 > ## ⚠️ The MetalFX frame pipeline is INACTIVE
 >

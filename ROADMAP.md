@@ -189,13 +189,41 @@ a pulsing first-light colour because all draws are inert.
 3600+ frames presented. The native smoke test adds byte-exact texture upload/readback, mip levels,
 texture views, buffers, samplers and a clear round-trip.
 
-### Phase 3 — Pipelines and draw calls · **M**
+### Phase 3 — Pipelines and draw calls · **M** · ✅ **DONE**
 
-- `MetalRenderPipeline` — `RenderPipeline` → `MTLRenderPipelineState` + `MTLDepthStencilState`; blend, cull, polygon mode, vertex layouts, primitive topology.
-- `MetalBindGroupLayout` → argument buffers or explicit bindings; uniform buffer/sampler binding.
-- Full `RenderPassBackend`: indexed/indirect/multi-draw, scissor, timestamp writes, debug groups.
+- `MetalRenderPipeline` — `RenderPipeline` → `MTLRenderPipelineState` + `MTLDepthStencilState`; blend, cull, polygon mode, vertex layouts, primitive topology. Pipelines are precompiled from the engine's `ShaderSource` and compiled lazily on first use for the ones the engine never announces (e.g. `mojang_logo`).
+- Shader path: GLSL → SPIR-V via `GlslCompiler.createIntermediary` → MSL via SPIRV-Cross, with the reflected buffer/texture/sampler indices read back for name-based binding.
+- Full `RenderPassBackend`: indexed draws (direct, multi and grouped), scissor, deferred name→slot binding, debug groups. Indirect draws are accepted but skipped for now.
+- Real blit of the engine's render target into the drawable (built-in full-screen-triangle MSL pipeline).
 
-**Done when:** simple geometry renders correctly (the sky and a flat-coloured world).
+**Done when:** simple geometry renders correctly (the sky and a flat-coloured world). ✅ Verified: the
+Mojang loading screen (logo + bar), the main menu (logotype, buttons, sliders, splash, blurred
+panorama) and an in-world view (sky + terrain silhouette) all render.
+
+Bugs found and fixed during the phase (kept here because they are easy to reintroduce):
+
+1. **Vertex buffers and uniform buffers share Metal's per-stage buffer index space.** SPIRV-Cross
+   emitted `DynamicTransforms` at `[[buffer(0)]]` while `VertexFormat` slot 0 was also bound at
+   index 0, so the UBO overwrote the vertex data and nothing rasterised. Vertex-stage uniform buffers
+   are shifted by 16 (`VERTEX_BUFFER_INDEX_OFFSET`) above the attribute slots.
+2. **`MemorySegment.asByteBuffer()` is big-endian.** MC writes floats without setting the order, so
+   mapped buffers read as zeros/garbage. Buffers and transient memory now use the native order.
+3. **Render passes must commit in `submitRenderPass()`.** The engine records a pass on one encoder
+   but calls `submit()` on another, so deferring the commit dropped every draw.
+4. **The presentation blit needs `MTLTextureUsageShaderRead`.** MC creates its main target as
+   render-target-only; the usage mapping now grants shader-read (and pixel-format-view) to every
+   texture, which are free on Apple silicon.
+5. **Atlas compositing assumed a Y-down (Vulkan) NDC.** `TextureAtlas.uploadInitialContents`
+   renders every sprite into the atlas with `ortho2D(0, w, 0, h)`, which maps atlas row 0 to
+   NDC y = -1. Metal's NDC is Y-up, so the atlas came out vertically mirrored and sprite UVs sampled
+   the wrong sprite (unselected buttons drew status icons). Atlas render passes now use a flipped
+   viewport **and a flipped front-face winding** — a negative Metal viewport mirrors Y and reverses
+   triangle winding, so without the winding flip the mirrored quads are back-face culled and the
+   atlas ends up empty.
+
+**Still open (moved to Phase 4):** `minecraft:pipeline/animate_sprite_interpolate` fails to build
+(varying mismatch between its vertex and fragment stages). Non-fatal: it is not needed for the
+loading screen, menu or terrain.
 
 ### Phase 4 — Shaders · **M**
 

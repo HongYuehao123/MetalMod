@@ -21,9 +21,6 @@ import java.util.Map;
  */
 public final class MetalRenderPipeline {
 
-    private static final java.util.concurrent.atomic.AtomicInteger DEBUG_LOGGED = new java.util.concurrent.atomic.AtomicInteger();
-    private static final java.util.concurrent.atomic.AtomicInteger MSL_LOGGED = new java.util.concurrent.atomic.AtomicInteger();
-
     private static final MemoryLayout LAYOUT_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT.withName("bufferIndex"),
             ValueLayout.JAVA_INT.withName("stride"),
@@ -81,28 +78,6 @@ public final class MetalRenderPipeline {
             MetalShaderCompiler.CompiledShader fs = compiler.compile(
                     pipeline.getFragmentShader().toString(), fragmentSource, ShaderType.FRAGMENT);
 
-            if (DEBUG_LOGGED.incrementAndGet() <= 3) {
-                System.out.println("[MetalMod] pipeline debug " + pipeline.getLocation()
-                        + " vsInputs=" + vs.inputs());
-                System.out.println("[MetalMod]   vsBuffers=" + vs.vertexBuffers()
-                        + " fsBuffers=" + fs.fragmentBuffers());
-                System.out.println("[MetalMod]   vsTextures=" + vs.textures()
-                        + " fsTextures=" + fs.textures());
-                System.out.println("[MetalMod]   vsSamplers=" + vs.samplers()
-                        + " fsSamplers=" + fs.samplers());
-                VertexFormat[] debugFormats = pipeline.getVertexFormatBindings();
-                for (int slot = 0; slot < debugFormats.length; slot++) {
-                    if (debugFormats[slot] != null && debugFormats[slot].getVertexSize() > 0) {
-                        System.out.println("[MetalMod]   slot " + slot + " size=" + debugFormats[slot].getVertexSize()
-                                + " elements=" + debugFormats[slot].getElements());
-                    }
-                }
-            }
-
-            if (MSL_LOGGED.incrementAndGet() <= 1) {
-                System.out.println("[MetalMod] ===== VERTEX MSL (" + pipeline.getLocation() + ") =====\n"
-                        + vs.msl() + "\n===== END VERTEX MSL =====");
-            }
             MemorySegment vlib = MetalNative.libraryCreate(device.deviceHandle(), vs.msl());
             if (vlib.address() == 0) {
                 System.err.println("[MetalMod] vertex MSL failed for " + pipeline.getLocation());
@@ -142,6 +117,14 @@ public final class MetalRenderPipeline {
             int topology = MetalFormat.mtlTopology(pipeline.getPrimitiveTopology());
             int cullMode = pipeline.isCull() ? 2 : 0;
             int fillMode = MetalFormat.mtlFillMode(pipeline.getPolygonMode());
+
+            if (Boolean.getBoolean("metalmod.safeState")) {
+                blendEnabled = 0;
+                writeMask = 15;
+                cullMode = 0;
+                depthCompare = 7;
+                depthWrite = 0;
+            }
 
             try (Arena arena = Arena.ofConfined()) {
                 VertexFormat[] formats = pipeline.getVertexFormatBindings();

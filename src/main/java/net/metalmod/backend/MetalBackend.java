@@ -41,8 +41,8 @@ public final class MetalBackend implements GpuBackend {
         if (!MetalNative.isAvailable()) {
             return null;
         }
-        System.out.println("[MetalMod] Metal backend ENABLED (first light): draws are inert, so the "
-                + "game will show a flat clear colour. Disable preferMetalBackend to play normally.");
+        System.out.println("[MetalMod] Metal backend ENABLED. This is still an in-progress backend; "
+                + "disable preferMetalBackend to play on the default backend.");
         return new MetalBackend();
     }
 

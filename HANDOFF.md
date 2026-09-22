@@ -6,10 +6,11 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
 
 - **Build:** compiles against the **real Minecraft client jar** (no API stubs).
   `./scripts/build_mod.sh` → `build/libs/metalmod-1.0.0.jar`.
-- **Metal renderer backend (Phase 1 first light):** Minecraft selects `MetalBackend`, creates an
-  `MTLDevice` and attaches a `CAMetalLayer` to the window, and presents cleared frames at display
-  rate (verified 3000 frames in 55 s). Mixin: `PreferredGraphicsApiMixin`. The draw path is inert,
-  so the window shows a pulsing clear colour rather than the game image.
+- **Metal renderer backend (Phase 1 + Phase 3):** Minecraft selects `MetalBackend`, creates an
+  `MTLDevice` and attaches a `CAMetalLayer` to the window. Real render pipelines are compiled from
+  the engine's shaders (GLSL → SPIR-V → MSL) and the engine's draw calls are encoded and blitted to
+  the drawable. The loading screen, main menu and terrain all render. Mixin:
+  `PreferredGraphicsApiMixin`.
 - **Real Metal resources (Phase 2):** textures, texture views, buffers and samplers are real Metal
   objects with mapped formats; uploads, readbacks and clears go through them. A run created
   `textures=4416 views=9325 buffers=77 samplers=32 failures=0`.
@@ -57,19 +58,29 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
 - Verification: `./native/build/metalmod_smoke` passes the new resource section (byte-exact texture
   round-trip, mips, view, buffer, sampler, clear), and the in-game run reported `failures=0`.
 
+## Phase 3 status (pipelines and draw calls) — DONE
+
+- `MetalRenderPipeline`: `RenderPipeline` → `MTLRenderPipelineState` + `MTLDepthStencilState`
+  (blend, cull, fill, topology, vertex layouts). Precompiled from the engine's `ShaderSource`, with
+  lazy compilation for pipelines the engine never announces.
+- `MetalShaderCompiler`: GLSL → SPIR-V (`GlslCompiler.createIntermediary`) → MSL (SPIRV-Cross),
+  plus reflection to drive name-based uniform/texture/sampler binding. Vertex-stage uniform buffers
+  are offset above the vertex-attribute slots (they share Metal's per-stage buffer index space).
+- `MetalRenderPassBackend`: indexed / multi / grouped draws, scissor, deferred bindings, debug
+  groups. Indirect draws are accepted but skipped.
+- Real presentation blit (built-in full-screen-triangle MSL pipeline).
+- Verification: Mojang loading screen (logo + bar), main menu (logotype, buttons, sliders, splash,
+  blurred panorama) and an in-world view (sky + terrain). See `ROADMAP.md` Phase 3 for the five
+  bugs fixed along the way.
+
 ## What does not work
 
-- **Upscaling / frame generation:** inactive. `MoltenVK owns presentation` — anything the mod
-  produces is overwritten before it reaches the screen, and `Vulkan interop` was never registered.
-  See ROADMAP §3.
-- **Internal resolution scaling:** removed. Shrinking the main render target made the GUI's scissor
-  rectangles exceed the render area, killing input:
-  `Scissor at 0, 179 with size 2520x2150 is out of bounds for render area ... 3942x2052`.
-  Fixing it needs a separate world render target (ROADMAP Phase 5).
-- **Shaderpacks, Metal backend, ray tracing:** not started.
-
-So: the mod currently costs nothing and does nothing except F3 telemetry. That is deliberate — it is
-better than the previous state, which was inert *and* crashed when enabled.
+- **`animate_sprite_interpolate`** fails to build (vertex/fragment varying mismatch). Non-fatal;
+  animated-sprite interpolation is not needed for the loading screen, menu or a static view.
+- **Vanilla visual parity (Phase 5):** terrain is geometry + textures but lighting/effects and
+  post-processing are not complete.
+- **Upscaling / frame generation:** inactive until the mod owns presentation and the later phases.
+- **Shaderpacks, MetalFX, ray tracing:** not started.
 
 ## The performance question
 

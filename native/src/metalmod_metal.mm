@@ -270,6 +270,17 @@ int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t slice,
 // Buffers
 // ---------------------------------------------------------------------------------------------
 
+void mmm_queue_synchronize(void* queue) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    if (metalQueue == nil) return;
+    @autoreleasepool {
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod sync";
+        [commandBuffer commit];
+        [commandBuffer waitUntilCompleted];
+    }
+}
+
 void* mmm_buffer_create(void* device, int64_t length) {
     id<MTLDevice> dev = mmm_device(device);
     if (dev == nil || length < 0) return NULL;
@@ -318,9 +329,7 @@ void* mmm_sampler_create(void* device, int32_t addressU, int32_t addressV,
         descriptor.tAddressMode = (MTLSamplerAddressMode)addressV;
         descriptor.minFilter = (MTLSamplerMinMagFilter)minFilter;
         descriptor.magFilter = (MTLSamplerMinMagFilter)magFilter;
-        descriptor.mipFilter = (minFilter == MTLSamplerMinMagFilterLinear)
-                                   ? MTLSamplerMipFilterLinear
-                                   : MTLSamplerMipFilterNearest;
+        descriptor.mipFilter = MTLSamplerMipFilterNotMipmapped;  // TEST: force mip 0
         descriptor.maxAnisotropy = (NSUInteger)(maxAnisotropy < 1 ? 1 : maxAnisotropy);
         descriptor.lodMinClamp = 0.0f;
         if (hasMaxLod) {
@@ -613,6 +622,28 @@ void mmm_render_pass_set_fragment_sampler(void* encoder, void* sampler, int32_t 
     [metalEncoder setFragmentSamplerState:metalSampler atIndex:(NSUInteger)index];
 }
 
+void mmm_render_pass_set_viewport(void* encoder, double x, double y, double width, double height) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    [metalEncoder setViewport:(MTLViewport){x, y, width, height, 0.0, 1.0}];
+    // A negative viewport height mirrors Y (the Metal equivalent of VK_KHR_maintenance1), which also
+    // reverses triangle winding. Flip the front-face winding with it, or back-face culling would drop
+    // the mirrored geometry entirely.
+    [metalEncoder setFrontFacingWinding:(height < 0.0 ? MTLWindingClockwise : MTLWindingCounterClockwise)];
+}
+
+void mmm_render_pass_push_debug_group(void* encoder, const char* label) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    [metalEncoder pushDebugGroup:(label != NULL ? [NSString stringWithUTF8String:label] : @"")];
+}
+
+void mmm_render_pass_pop_debug_group(void* encoder) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    [metalEncoder popDebugGroup];
+}
+
 void mmm_render_pass_set_scissor(void* encoder, int32_t x, int32_t y, int32_t width, int32_t height) {
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     if (metalEncoder == nil) return;
@@ -797,23 +828,13 @@ void* mmm_command_buffer_create(void* queue) {
     }
 }
 
-static int g_CommitCounter = 0;
-static int g_CompleteCounter = 0;
-
 void mmm_command_buffer_commit(void* commandBuffer) {
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
     if (buffer == nil) return;
     @autoreleasepool {
-        int cid = __sync_add_and_fetch(&g_CommitCounter, 1);
-        if (cid <= 1500) {
-            NSLog(@"[MetalMod] commit cb %d", cid);
-        }
         [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-            int done = __sync_add_and_fetch(&g_CompleteCounter, 1);
             if (completed.status == MTLCommandBufferStatusError) {
-                NSLog(@"[MetalMod] cb %d ERROR: %@", cid, completed.error);
-            } else if (done % 25 == 0 || cid <= 3) {
-                NSLog(@"[MetalMod] completed cb %d (total %d)", cid, done);
+                NSLog(@"[MetalMod] command buffer ERROR: %@", completed.error);
             }
         }];
         [buffer commit];

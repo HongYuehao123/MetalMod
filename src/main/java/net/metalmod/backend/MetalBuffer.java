@@ -69,7 +69,10 @@ public final class MetalBuffer extends GpuBuffer {
         if (this.data.address() == 0) {
             mapped = ByteBuffer.allocateDirect((int) Math.max(0L, Math.min(length, Integer.MAX_VALUE)));
         } else {
-            mapped = this.data.asSlice(offset, length).asByteBuffer();
+            // Native order is essential: the caller writes floats without changing the buffer order,
+            // and the GPU reads the MTLBuffer bytes as little-endian. A big-endian view byte-swaps
+            // every uniform, which is why ColorModulator arrived as ~0 and everything drew black.
+            mapped = this.data.asSlice(offset, length).asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
         }
         return new GpuBufferSlice.MappedView(slice, mapped, () -> {
         });
