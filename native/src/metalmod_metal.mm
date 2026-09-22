@@ -456,15 +456,21 @@ void* mmm_render_pipeline_create(
             return NULL;
         }
 
-        MTLDepthStencilDescriptor* depthDescriptor = [[MTLDepthStencilDescriptor alloc] init];
-        depthDescriptor.depthCompareFunction = (MTLCompareFunction)depthCompare;
-        depthDescriptor.depthWriteEnabled = depthWrite ? YES : NO;
-        id<MTLDepthStencilState> depthState = [dev newDepthStencilStateWithDescriptor:depthDescriptor];
+        // Only attach a depth-stencil state when the pipeline actually declares a depth format. A
+        // depth state set on an encoder whose pass has no depth attachment is invalid and can wedge
+        // the GPU.
+        id<MTLDepthStencilState> depthState = nil;
+        if (depthFormat != 0) {
+            MTLDepthStencilDescriptor* depthDescriptor = [[MTLDepthStencilDescriptor alloc] init];
+            depthDescriptor.depthCompareFunction = (MTLCompareFunction)depthCompare;
+            depthDescriptor.depthWriteEnabled = depthWrite ? YES : NO;
+            depthState = [dev newDepthStencilStateWithDescriptor:depthDescriptor];
+        }
 
         MMMPipeline* pipeline = (MMMPipeline*)calloc(1, sizeof(MMMPipeline));
         if (pipeline == NULL) return NULL;
         pipeline->pipelineState = (__bridge_retained void*)state;
-        pipeline->depthStencilState = (__bridge_retained void*)depthState;
+        pipeline->depthStencilState = depthState != nil ? (__bridge_retained void*)depthState : NULL;
         pipeline->topology = topology;
         pipeline->cullMode = cullMode;
         pipeline->triangleFill = triangleFill;
@@ -791,13 +797,23 @@ void* mmm_command_buffer_create(void* queue) {
     }
 }
 
+static int g_CommitCounter = 0;
+static int g_CompleteCounter = 0;
+
 void mmm_command_buffer_commit(void* commandBuffer) {
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
     if (buffer == nil) return;
     @autoreleasepool {
+        int cid = __sync_add_and_fetch(&g_CommitCounter, 1);
+        if (cid <= 1500) {
+            NSLog(@"[MetalMod] commit cb %d", cid);
+        }
         [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            int done = __sync_add_and_fetch(&g_CompleteCounter, 1);
             if (completed.status == MTLCommandBufferStatusError) {
-                NSLog(@"[MetalMod] render command buffer error: %@", completed.error);
+                NSLog(@"[MetalMod] cb %d ERROR: %@", cid, completed.error);
+            } else if (done % 25 == 0 || cid <= 3) {
+                NSLog(@"[MetalMod] completed cb %d (total %d)", cid, done);
             }
         }];
         [buffer commit];

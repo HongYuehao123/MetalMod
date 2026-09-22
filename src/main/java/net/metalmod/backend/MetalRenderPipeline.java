@@ -22,6 +22,7 @@ import java.util.Map;
 public final class MetalRenderPipeline {
 
     private static final java.util.concurrent.atomic.AtomicInteger DEBUG_LOGGED = new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger MSL_LOGGED = new java.util.concurrent.atomic.AtomicInteger();
 
     private static final MemoryLayout LAYOUT_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT.withName("bufferIndex"),
@@ -83,6 +84,12 @@ public final class MetalRenderPipeline {
             if (DEBUG_LOGGED.incrementAndGet() <= 3) {
                 System.out.println("[MetalMod] pipeline debug " + pipeline.getLocation()
                         + " vsInputs=" + vs.inputs());
+                System.out.println("[MetalMod]   vsBuffers=" + vs.vertexBuffers()
+                        + " fsBuffers=" + fs.fragmentBuffers());
+                System.out.println("[MetalMod]   vsTextures=" + vs.textures()
+                        + " fsTextures=" + fs.textures());
+                System.out.println("[MetalMod]   vsSamplers=" + vs.samplers()
+                        + " fsSamplers=" + fs.samplers());
                 VertexFormat[] debugFormats = pipeline.getVertexFormatBindings();
                 for (int slot = 0; slot < debugFormats.length; slot++) {
                     if (debugFormats[slot] != null && debugFormats[slot].getVertexSize() > 0) {
@@ -92,6 +99,10 @@ public final class MetalRenderPipeline {
                 }
             }
 
+            if (MSL_LOGGED.incrementAndGet() <= 1) {
+                System.out.println("[MetalMod] ===== VERTEX MSL (" + pipeline.getLocation() + ") =====\n"
+                        + vs.msl() + "\n===== END VERTEX MSL =====");
+            }
             MemorySegment vlib = MetalNative.libraryCreate(device.deviceHandle(), vs.msl());
             if (vlib.address() == 0) {
                 System.err.println("[MetalMod] vertex MSL failed for " + pipeline.getLocation());

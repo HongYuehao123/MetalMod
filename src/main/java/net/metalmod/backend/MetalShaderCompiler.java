@@ -7,6 +7,7 @@ import org.lwjgl.PointerBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.util.spvc.Spvc;
+import org.lwjgl.util.spvc.SpvcMslResourceBinding;
 import org.lwjgl.util.spvc.SpvcReflectedResource;
 
 import java.nio.ByteBuffer;
@@ -88,9 +89,10 @@ public final class MetalShaderCompiler implements AutoCloseable {
                 Spvc.spvc_compiler_create_shader_resources(compiler, resourcesPtr);
                 long resources = resourcesPtr.get(0);
 
-                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, buffers, null);
-                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, textures, samplers);
-                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, null, samplers);
+                int stage = type == ShaderType.VERTEX ? 0 : 4;  // spv::ExecutionModel
+                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, stage, buffers, null);
+                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, stage, textures, samplers);
+                collect(compiler, resources, stack, Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS, stage, null, samplers);
                 collectInputs(compiler, resources, stack, inputs);
 
                 PointerBuffer result = stack.mallocPointer(1);
@@ -103,8 +105,19 @@ public final class MetalShaderCompiler implements AutoCloseable {
         }
     }
 
-    /** Fill the primary map (uniform buffers / textures) and optionally the secondary (samplers). */
-    private static void collect(long compiler, long resources, MemoryStack stack, int type,
+    private static final int DECORATION_BINDING = 33;
+    private static final int DECORATION_DESCRIPTOR_SET = 34;
+
+    /**
+     * Fill the primary map (uniform buffers / textures) and optionally the secondary (samplers), and
+     * force the MSL binding for each resource.
+     *
+     * <p>Two SPIRV-Cross details matter here. A uniform block's *variable* name is often empty (the
+     * name lives on the block type), so the type name is used as a fallback. And
+     * spvc_compiler_msl_get_automatic_resource_binding reports -1 before compilation, so the binding
+     * is taken from the SPIR-V descriptor set/binding decorations and pushed explicitly instead.
+     */
+    private static void collect(long compiler, long resources, MemoryStack stack, int type, int stage,
                                 Map<String, Integer> primary, Map<String, Integer> secondary) {
         PointerBuffer listPtr = stack.mallocPointer(1);
         PointerBuffer countPtr = stack.mallocPointer(1);
@@ -119,16 +132,32 @@ public final class MetalShaderCompiler implements AutoCloseable {
         for (int index = 0; index < count; index++) {
             SpvcReflectedResource resource = list.get(index);
             String name = Spvc.spvc_compiler_get_name(compiler, resource.id());
-            if (primary != null) {
-                primary.put(name, Spvc.spvc_compiler_msl_get_automatic_resource_binding(compiler, resource.id()));
+            if (name == null || name.isEmpty()) {
+                name = Spvc.spvc_compiler_get_name(compiler, resource.base_type_id());
             }
-            if (secondary != null) {
-                int binding = Spvc.spvc_compiler_msl_get_automatic_resource_binding_secondary(compiler, resource.id());
-                if (binding < 0) {
-                    binding = Spvc.spvc_compiler_msl_get_automatic_resource_binding(compiler, resource.id());
-                }
-                secondary.put(name, binding);
+            if (name == null || name.isEmpty()) {
+                continue;
             }
+
+            int set = Spvc.spvc_compiler_get_decoration(compiler, resource.id(), DECORATION_DESCRIPTOR_SET);
+            int binding = Spvc.spvc_compiler_get_decoration(compiler, resource.id(), DECORATION_BINDING);
+            if (set < 0) set = 0;
+            if (binding < 0) binding = index;
+
+            SpvcMslResourceBinding resourceBinding = SpvcMslResourceBinding.calloc(stack);
+            resourceBinding.stage(stage).desc_set(set).binding(binding);
+            if (type == Spvc.SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
+                resourceBinding.msl_buffer(binding);
+                if (primary != null) primary.put(name, binding);
+            } else if (type == Spvc.SPVC_RESOURCE_TYPE_SAMPLED_IMAGE) {
+                resourceBinding.msl_texture(binding).msl_sampler(binding);
+                if (primary != null) primary.put(name, binding);
+                if (secondary != null) secondary.put(name, binding);
+            } else if (type == Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS) {
+                resourceBinding.msl_sampler(binding);
+                if (secondary != null) secondary.put(name, binding);
+            }
+            Spvc.spvc_compiler_msl_add_resource_binding(compiler, resourceBinding);
         }
     }
 

@@ -25,6 +25,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     private static final java.util.concurrent.atomic.AtomicInteger RENDER_PASS_COUNT =
             new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger SUBMIT_LOG =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicInteger PASS_END_LOG =
+            new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicInteger WRITE_LOG =
             new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicInteger COPY_LOG =
@@ -80,10 +84,16 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public void submit() {
+        int n = SUBMIT_LOG.incrementAndGet();
         if (this.commandBuffer.address() != 0) {
+            if (n <= 10) {
+                System.out.println("[MetalMod] submit #" + n + " commits a command buffer");
+            }
             MetalNative.commandBufferCommit(this.commandBuffer);
             MetalNative.commandBufferRelease(this.commandBuffer);
             this.commandBuffer = MemorySegment.NULL;
+        } else if (n <= 10) {
+            System.out.println("[MetalMod] submit #" + n + " (no command buffer)");
         }
     }
 
@@ -168,9 +178,23 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public void submitRenderPass() {
-        if (this.currentEncoder.address() != 0) {
-            MetalNative.renderPassEnd(this.currentEncoder);
-            this.currentEncoder = MemorySegment.NULL;
+        if (this.currentEncoder.address() == 0) {
+            return;
+        }
+        int n = PASS_END_LOG.incrementAndGet();
+        if (n <= 5) {
+            System.out.println("[MetalMod] submitRenderPass #" + n);
+        }
+        MetalNative.renderPassEnd(this.currentEncoder);
+        this.currentEncoder = MemorySegment.NULL;
+
+        // The engine records a render pass on one CommandEncoder but then calls submit() on a
+        // different one, so deferring the commit to submit() lost every draw: only the standalone
+        // clears (which commit immediately) ever reached the GPU. Commit here instead.
+        if (this.commandBuffer.address() != 0) {
+            MetalNative.commandBufferCommit(this.commandBuffer);
+            MetalNative.commandBufferRelease(this.commandBuffer);
+            this.commandBuffer = MemorySegment.NULL;
         }
     }
 
