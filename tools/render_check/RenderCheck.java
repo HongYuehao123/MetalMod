@@ -215,6 +215,12 @@ public final class RenderCheck {
             // compared against the blend equation evaluated on the CPU.
             blendMatrixCheck(device, source);
 
+            // The capability the engine is told about has to cover the pipeline space it is told
+            // about. CommandEncoder.createRenderPass refuses a pass with more attachments than
+            // DeviceLimits.maxColorAttachments, and that value is the only guard against a pass this
+            // backend cannot render - the pipeline builds state for one target.
+            colorTargetLimitCheck();
+
             // Depth bias is encoder state in Metal, not pipeline state, so a biased pipeline must
             // not leave its bias behind for the rest of the pass. Five vanilla pipelines bias.
             depthBiasLeakCheck(device, source);
@@ -1176,6 +1182,48 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Assert that no vanilla pipeline declares more colour targets than the device reports.
+     *
+     * <p>{@code DeviceLimits.maxColorAttachments} is what {@code CommandEncoder.createRenderPass}
+     * checks before creating a pass, so it is the engine's only guard against a pass this backend
+     * cannot render - {@code MetalRenderPipeline} builds state for one target, and a second
+     * attachment would silently keep its clear value. Reporting Metal's own 8 would let that pass
+     * through.
+     *
+     * <p>This walks every pipeline in the game rather than pinning the constant, so it is the
+     * pipeline space that has to stay inside the limit. It passes because vanilla declares one target
+     * everywhere; if a future version ships a multi-target pipeline the failure names it, and the
+     * answer is to implement multi-target pipelines rather than to raise the number.
+     */
+    private static void colorTargetLimitCheck() throws Exception {
+        Class<?> pipelines = Class.forName("net.minecraft.client.renderer.RenderPipelines");
+        java.lang.reflect.Field[] fields = pipelines.getDeclaredFields();
+        int checked = 0;
+        java.util.List<String> over = new ArrayList<>();
+        for (java.lang.reflect.Field field : fields) {
+            if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())
+                    || !RenderPipeline.class.isAssignableFrom(field.getType())) {
+                continue;
+            }
+            field.setAccessible(true);
+            RenderPipeline pipeline = (RenderPipeline) field.get(null);
+            if (pipeline == null) {
+                continue;
+            }
+            checked++;
+            int targets = pipeline.getColorTargetStates().length;
+            if (targets > MetalRenderPipeline.MAX_COLOR_ATTACHMENTS) {
+                over.add(field.getName() + "=" + targets);
+            }
+        }
+        check("no vanilla pipeline exceeds the reported colour-attachment limit of "
+                        + MetalRenderPipeline.MAX_COLOR_ATTACHMENTS + " (checked " + checked + ")",
+                over.isEmpty(),
+                over.isEmpty() ? "" : "over: " + over + " - implement multi-target pipelines rather"
+                        + " than raising the reported limit");
     }
 
     /**

@@ -206,6 +206,45 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-018 — `maxColorAttachments` claimed 8, but the pipeline builds one
+
+**Status:** **FIXED** (Phase 5). Latent for vanilla; would break a multi-target mod or shaderpack.
+**Severity:** low for vanilla, high for anything that renders to more than one target.
+**Found by:** auditing every value reported to the engine through `DeviceLimits`, `DeviceFeatures`
+and `HintsAndWorkarounds` against what the backend actually implements.
+
+### Cause
+
+`DeviceInfo.limits().maxColorAttachments()` was reported as Metal's own 8, while
+`MetalRenderPipeline` builds pipeline state from `pipeline.getColorTargetState()` - the **first**
+target only. The render pass does accept a count and attaches all of them, so the pipeline is the
+binding constraint.
+
+`CommandEncoder.createRenderPass` checks the attachment count against that reported value and throws
+when it is exceeded. Reporting 8 therefore removed the engine's only guard: a pass with two
+attachments would be created, the pipeline would write the first, and the second would silently keep
+its clear value. A wrong frame is worse than an error, which is the same reasoning that kept
+`multiDrawIndirect` and `drawIndirect` false and that made `maxMultiDrawDirectInterleavedDrawCount`
+worth correcting when 0 turned out to mean "calling `multiDrawIndexed` at all throws".
+
+### Fix
+
+The limit now comes from `MetalRenderPipeline.MAX_COLOR_ATTACHMENTS`, which is 1 and sits next to the
+code that builds the single target - so the claim and the implementation cannot drift apart. Vanilla
+is unaffected: the census showed no vanilla pipeline declares more than one colour target.
+
+### Verified
+
+`tools/render_check` walks every pipeline in `RenderPipelines` and asserts none declares more targets
+than the reported limit - 87 checked. Pinning the constant alone would not catch a future pipeline
+that needs two; the check names the offending pipeline when that happens, and the answer is to
+implement multi-target pipelines rather than to raise the number. Confirmed failing (naming all 87) by
+temporarily reporting 0.
+
+---
+
+---
+
 ## BUG-017 — A pipeline with no depth state inherited the previous one's
 
 **Status:** **FIXED** (Phase 5) — pending in-game confirmation.

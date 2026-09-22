@@ -269,15 +269,21 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Seventeen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Eighteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
   orientation, mip selection, texture copies (whole and by rectangle), the atlas compositing flip,
   `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, every
-  blend state vanilla uses, depth bias, the depth-stencil state, and 16-bit indices with non-zero
+  blend state vanilla uses, depth bias, the depth-stencil state, the reported colour-attachment limit, and 16-bit indices with non-zero
   `firstIndex`/base-vertex offsets. Each
   one is a mechanism one of the open bugs implicates, and the harness has eliminated five BUG-001
   theories.
+- **Reported capabilities are claims, not ceilings.** `DeviceLimits.maxColorAttachments` was Metal's
+  own 8 while the pipeline builder covers one target, which removed the only guard the engine has
+  (`CommandEncoder.createRenderPass` checks it). Before that, `maxMultiDrawDirectInterleavedDrawCount`
+  of 0 turned out to mean "calling multiDrawIndexed at all throws". Both say the same thing: a value
+  reported to the engine is a statement about the backend, and it is worth checking each one against
+  the code rather than against the hardware.
 - **Ask of every pipeline value: is it pipeline state or encoder state?** Metal stores depth bias and
   the depth-stencil state on the render command encoder, where they persist until reset, so a backend
   that sets them only for the non-default case leaks them into every later draw in the same pass.

@@ -288,7 +288,11 @@ public final class MetalDevice implements GpuDeviceBackend {
                 // Vulkan backend reports exactly this fallback (Integer.MAX_VALUE) when
                 // VK_EXT_multi_draw is unavailable.
                 /* maxMultiDrawDirectInterleavedDrawCount */ Integer.MAX_VALUE,
-                /* maxColorAttachments */ 8);
+                // The number of colour targets the pipeline builder actually covers. Reporting
+                // Metal's own 8 would let the engine accept a multi-target pass that then renders
+                // only its first attachment, which is a silent wrong frame rather than an error;
+                // CommandEncoder.createRenderPass checks this value before the pass is created.
+                /* maxColorAttachments */ MetalRenderPipeline.MAX_COLOR_ATTACHMENTS);
         // Reported per feature rather than all-false, because the engine uses these to decide which
         // paths it may take. Each value is a claim about what this backend actually implements:
         //

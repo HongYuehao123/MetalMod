@@ -117,6 +117,10 @@ public final class MetalRenderPipeline {
                 return null;
             }
 
+            // Only the first colour target is built. The render pass itself accepts as many
+            // attachments as the engine gives it, but the pipeline state covers one, so any further
+            // attachment would silently keep its clear value. MAX_COLOR_ATTACHMENTS is what the
+            // device reports, so the engine rejects such a pass instead of rendering it wrong.
             ColorTargetState color = pipeline.getColorTargetState();
             long colorFormat = color != null ? MetalFormat.mtlPixelFormat(color.format()) : 0L;
             int writeMask = color != null ? MetalFormat.mtlWriteMask(color.writeMask()) : 15;
@@ -299,6 +303,15 @@ public final class MetalRenderPipeline {
      * A uniform declared {@code TEXEL_BUFFER}: the engine hands us a {@link com.mojang.blaze3d.buffers.GpuBuffer}
      * and the shader reads it through a 2D integer texture.
      */
+    /**
+     * How many colour attachments this backend builds pipeline state for.
+     *
+     * <p>Reported through {@code DeviceLimits.maxColorAttachments}. The render pass takes a count and
+     * attaches all of them, but the pipeline declares one - so this is the number of targets the
+     * backend actually honours, and the engine uses it to reject a pass with more.
+     */
+    public static final int MAX_COLOR_ATTACHMENTS = 1;
+
     public record TexelBuffer(GpuFormat format, int textureSlot, boolean vertexStage) {
     }
 
