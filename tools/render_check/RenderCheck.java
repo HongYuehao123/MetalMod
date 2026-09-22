@@ -292,6 +292,24 @@ public final class RenderCheck {
                 covered, "centre R" + pixel[0] + " G" + pixel[1] + " B" + pixel[2]);
         check("terrain quad is white -> R" + pixel[0] + " G" + pixel[1] + " B" + pixel[2],
                 isWhite, "");
+
+        // The same quad with RGSS enabled. The texture is one flat colour, so rotating the sample
+        // grid cannot change the answer - what this checks is that the branch runs at all, since a
+        // broken textureLod, log2 or sampler state there would not produce a clean white.
+        uniforms.get("Globals").close();
+        uniforms.put("Globals", device.createBuffer(() -> "Globals",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, globals(true)));
+        int[] rgss = renderQuad(device, pipeline, vertices, indices, uniforms, textures, true,
+                "terrain rgss", new float[]{0.0f, 1.0f, 0.0f, 1.0f});
+        check("terrain with RGSS filtering (UseRgss = 1) is still white -> R" + rgss[0] + " G"
+                        + rgss[1] + " B" + rgss[2],
+                rgss[0] > 250 && rgss[1] > 250 && rgss[2] > 250, "");
+
+        for (GpuBuffer buffer : uniforms.values()) {
+            buffer.close();
+        }
+        whiteView.close();
+        white.close();
     }
 
     /** 28-byte terrain vertex: Position RGB32_FLOAT, Color RGBA8_UNORM, UV0 RG32_FLOAT, UV2 RG16_SINT. */
@@ -473,14 +491,27 @@ public final class RenderCheck {
         return buffer;
     }
 
-    /** std140 Globals: ivec3 CameraBlockPos, vec3 CameraOffset, vec2 ScreenSize, then four scalars. */
+    /** std140 Globals with the default texture filtering (RGSS off). */
     private static ByteBuffer globals() {
+        return globals(false);
+    }
+
+    /**
+     * std140 Globals: ivec3 CameraBlockPos, vec3 CameraOffset, vec2 ScreenSize, then four scalars.
+     *
+     * <p>{@code UseRgss} is {@code textureFiltering == RGSS} in the client's video settings; the
+     * default is {@code NONE}, so terrain normally takes the {@code sampleNearest} branch of
+     * {@code terrain.fsh}. Both are rendered here, because RGSS swaps in {@code log2},
+     * {@code textureLod}, {@code smoothstep} and a {@code const vec2[]} array - a whole extra MSL
+     * surface that nothing else touches.
+     */
+    private static ByteBuffer globals(boolean useRgss) {
         ByteBuffer buffer = ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder());
         buffer.putInt(0).putInt(0).putInt(0).putInt(0);          // CameraBlockPos + padding
         buffer.putFloat(0).putFloat(0).putFloat(0).putFloat(0);  // CameraOffset + padding
         buffer.putFloat(WIDTH).putFloat(HEIGHT);                 // ScreenSize
         buffer.putFloat(1.0f).putFloat(0.0f);                    // GlintAlpha, GameTime
-        buffer.putInt(0).putInt(0);                              // MenuBlurRadius, UseRgss = 0
+        buffer.putInt(0).putInt(useRgss ? 1 : 0);                // MenuBlurRadius, UseRgss
         buffer.flip();
         return buffer;
     }
