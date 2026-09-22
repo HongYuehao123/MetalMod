@@ -109,11 +109,24 @@ public final class MetalDevice implements GpuDeviceBackend {
     //
     // The 30 s telemetry line reports health counters; these answer the performance question the
     // health counters cannot: is a frame CPU-bound or GPU-bound, and how many draws does it encode?
-    // The render thread writes them and F3 reads them, so volatile publication is enough. GPU time
-    // is accumulated natively (see mmm_gpu_frame_time_ms) and lags about a frame.
+    // The render thread writes them and F3 reads them, so volatile publication is enough.
+    //
+    // Everything here is a *window average* (about a second), not a per-frame sample, and that is
+    // deliberate. The native side accumulates the GPU execution span of every committed command
+    // buffer, but those completions land asynchronously while the CPU runs a few frames ahead of the
+    // GPU (three drawables). Sampling that accumulator at one present therefore sums several frames
+    // of command buffers and reads roughly 3x too high - it is a busy-time total, not a frame time.
+    // Over a window, the totals match the frames that produced them, so dividing the window's GPU
+    // busy time by the window's frame count gives a figure that is directly comparable to the frame
+    // time. Averaging the frame time over the same window keeps the two consistent.
     // ---------------------------------------------------------------------------------------------
 
+    private static final int TIMING_WINDOW_FRAMES = 60;
+
     private static int drawsThisFrame;
+    private static int framesInWindow;
+    private static double frameMsSumInWindow;
+
     private static volatile int lastFrameDraws;
     private static volatile float lastFrameMs;
     private static volatile float lastGpuMs;
@@ -126,38 +139,47 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
-     * Close out a frame at present: publish the CPU frame interval, the GPU time accumulated since
-     * the previous present, and the draw count, then reset the counters for the next frame.
+     * Close out a frame at present. Accumulates the frame interval into the current timing window
+     * and, once the window is full, publishes the per-frame averages and resets the native GPU
+     * accumulator. The draw count is instantaneous - it is a property of the frame just encoded, and
+     * averaging it would only hide a spike.
      */
     public static void endFrame() {
         long now = System.nanoTime();
         if (lastFrameNanos != 0L) {
-            lastFrameMs = (float) ((now - lastFrameNanos) / 1_000_000.0);
+            frameMsSumInWindow += (now - lastFrameNanos) / 1_000_000.0;
         }
         lastFrameNanos = now;
-        lastGpuMs = (float) MetalNative.gpuFrameTimeMs();
-        lastGpuBuffers = MetalNative.gpuBufferCount();
-        MetalNative.resetGpuFrameTime();
         lastFrameDraws = drawsThisFrame;
         drawsThisFrame = 0;
+        framesInWindow++;
+
+        if (framesInWindow >= TIMING_WINDOW_FRAMES) {
+            lastFrameMs = (float) (frameMsSumInWindow / framesInWindow);
+            lastGpuMs = (float) (MetalNative.gpuFrameTimeMs() / framesInWindow);
+            lastGpuBuffers = MetalNative.gpuBufferCount() / framesInWindow;
+            MetalNative.resetGpuFrameTime();
+            framesInWindow = 0;
+            frameMsSumInWindow = 0.0;
+        }
     }
 
-    /** Wall-clock interval between the last two presents, in milliseconds. */
+    /** Average wall-clock frame interval over the last timing window, in milliseconds. */
     public static float lastFrameMs() {
         return lastFrameMs;
     }
 
-    /** GPU busy time accumulated for the previous frame, in milliseconds. */
+    /** Average GPU busy time per frame over the last timing window, in milliseconds. */
     public static float lastGpuMs() {
         return lastGpuMs;
     }
 
-    /** How many command buffers that GPU time covered; a high count is submission overhead. */
+    /** Average command buffers per frame; a high count is submission overhead. */
     public static long lastGpuBuffers() {
         return lastGpuBuffers;
     }
 
-    /** Draw calls encoded in the last completed frame. */
+    /** Average draw calls per frame; this is the number that grows underground. */
     public static int lastFrameDraws() {
         return lastFrameDraws;
     }
