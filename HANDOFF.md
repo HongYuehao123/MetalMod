@@ -155,6 +155,12 @@ terrain are fixed:
   texel, and the natural fix — an `MTLTextureTypeTextureBuffer` — *aborts* Metal for `R8_SINT`. The
   working path is the one SPIRV-Cross already emits (`texture2d<int>` + `spvTexelBufferCoord`), so
   the bytes are presented as a 2D texture, cached per backing buffer.
+- **Two capability reports were wrong, both in the same way.** `DeviceLimits.maxMultiDrawDirectInterleavedDrawCount`
+  was 0, which reads like "no batching" but actually means `RenderPass.multiDrawIndexed` throws an
+  `IllegalArgumentException` for *any* non-empty call. Vanilla never calls it, so it went unnoticed,
+  but it is a trap for any mod that batches. `MetalRenderPassBackend` loops over the draw list, so
+  the honest answer is "as many as you give me" — and the Vulkan backend reports exactly this
+  fallback (`Integer.MAX_VALUE`) when `VK_EXT_multi_draw` is missing.
 - **Device capabilities are reported per feature, and one was wrong.** `DeviceFeatures` is what the
   engine uses to decide which paths it may take, so each value is now a claim about what this backend
   implements. `nonZeroFirstInstance` was reported `false`, which made the engine refuse to pass a

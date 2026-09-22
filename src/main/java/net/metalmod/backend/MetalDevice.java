@@ -259,7 +259,14 @@ public final class MetalDevice implements GpuDeviceBackend {
                 /* minUniformOffsetAlignment */ 256,
                 (int) Math.min(maxTexture, Integer.MAX_VALUE),
                 maxBuffer,
-                /* maxMultiDrawDirectInterleavedDrawCount */ 0,
+                // RenderPass refuses a batched draw whose count exceeds this, with an
+                // IllegalArgumentException - so 0 does not mean "no batching", it means "calling
+                // multiDrawIndexed at all throws". Vanilla never does, which is why it went
+                // unnoticed, but it is a trap for any mod that batches. MetalRenderPassBackend loops
+                // over the draw list, so the honest answer is "as many as you give me", and the
+                // Vulkan backend reports exactly this fallback (Integer.MAX_VALUE) when
+                // VK_EXT_multi_draw is unavailable.
+                /* maxMultiDrawDirectInterleavedDrawCount */ Integer.MAX_VALUE,
                 /* maxColorAttachments */ 8);
         // Reported per feature rather than all-false, because the engine uses these to decide which
         // paths it may take. Each value is a claim about what this backend actually implements:
