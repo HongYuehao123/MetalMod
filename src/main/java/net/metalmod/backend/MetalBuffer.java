@@ -7,36 +7,71 @@ import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 
 /**
- * CPU-backed buffer for Phase 1. Draw calls are inert, so nothing reads it; mapping works so the
- * engine's ring buffers and uniform writes do not fault. Phase 2 replaces the storage with a real
- * shared-mode MTLBuffer.
+ * A real MTLBuffer in shared storage. Mapping hands out a ByteBuffer over the buffer's CPU-visible
+ * memory, so uniform writes and ring-buffer uploads work without a staging copy.
+ *
+ * <p>A sub-buffer shares its parent's MTLBuffer handle and owns nothing; this is what lets the
+ * transient arena slice large allocations without creating one MTLBuffer per request.
  */
 public final class MetalBuffer extends GpuBuffer {
 
-    private final MemorySegment memory;
-    private final long byteSize;
+    private final MemorySegment handle;
+    private final MemorySegment data;
+    private final boolean ownsHandle;
+    @SuppressWarnings("unused")
+    private final Object owner;
     private boolean closed;
 
-    public MetalBuffer(int usage, long size, MemorySegment memory) {
+    public MetalBuffer(int usage, long size, MemorySegment handle, MemorySegment data,
+                       boolean ownsHandle, Object owner) {
         super(usage, size);
-        this.byteSize = size;
-        this.memory = memory;
+        this.handle = handle == null ? MemorySegment.NULL : handle;
+        this.data = data == null ? MemorySegment.NULL : data;
+        this.ownsHandle = ownsHandle;
+        this.owner = owner;
     }
 
-    public MemorySegment memory() {
-        return this.memory;
+    public static MetalBuffer sub(int usage, long size, MetalBuffer parent, long offset) {
+        MemorySegment slice = (parent.data.address() == 0)
+                ? MemorySegment.NULL
+                : parent.data.asSlice(offset, size);
+        return new MetalBuffer(usage, size, parent.handle, slice, false, parent);
+    }
+
+    public MemorySegment handle() {
+        return this.handle;
+    }
+
+    public MemorySegment data() {
+        return this.data;
+    }
+
+    public boolean isValid() {
+        return this.handle.address() != 0;
+    }
+
+    public boolean isMapped() {
+        return this.data.address() != 0;
+    }
+
+    /** A native view of [offset, offset+length) inside this buffer's CPU memory, or NULL. */
+    public MemorySegment dataSlice(long offset, long length) {
+        if (this.data.address() == 0) {
+            return MemorySegment.NULL;
+        }
+        return this.data.asSlice(offset, length);
     }
 
     @Override
     public GpuBufferSlice.MappedView map(long offset, long length, boolean read, boolean write) {
         GpuBufferSlice slice = slice(offset, length);
-        ByteBuffer data;
-        if (this.memory == null || this.memory.address() == 0) {
-            data = ByteBuffer.allocateDirect((int) Math.max(0, Math.min(length, Integer.MAX_VALUE)));
+        ByteBuffer mapped;
+        if (this.data.address() == 0) {
+            mapped = ByteBuffer.allocateDirect((int) Math.max(0L, Math.min(length, Integer.MAX_VALUE)));
         } else {
-            data = this.memory.asSlice(offset, length).asByteBuffer();
+            mapped = this.data.asSlice(offset, length).asByteBuffer();
         }
-        return new GpuBufferSlice.MappedView(slice, data, () -> {
+        return new GpuBufferSlice.MappedView(slice, mapped, () -> {
         });
     }
 
@@ -47,10 +82,12 @@ public final class MetalBuffer extends GpuBuffer {
 
     @Override
     public void close() {
+        if (this.closed) {
+            return;
+        }
         this.closed = true;
-    }
-
-    public long capacity() {
-        return this.byteSize;
+        if (this.ownsHandle) {
+            MetalNative.bufferRelease(this.handle);
+        }
     }
 }

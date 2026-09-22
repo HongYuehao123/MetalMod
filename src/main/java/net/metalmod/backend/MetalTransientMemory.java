@@ -10,24 +10,34 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Phase 1 transient memory: a bump arena over one shared segment.
+ * Phase 2 transient memory: a real shared MTLBuffer used as a bump arena.
  *
- * <p>The engine streams vertices and uniforms through this each frame. Draws are inert, so the
- * contents are never consumed, but the slices must be valid and stable for the frame. The cursor
- * wraps when the arena is exhausted; a wrap can only invalidate data nothing reads yet.
+ * <p>The engine streams vertices and uniforms through this each frame. Allocations are sub-buffers
+ * of one MTLBuffer (sharing its handle), so a slice is a genuine GPU resource while remaining
+ * CPU-writable. The cursor wraps when the arena is exhausted; a wrap can only invalidate data
+ * nothing has consumed yet.
  */
 public final class MetalTransientMemory implements TransientMemory {
 
     private static final long CAPACITY = 64L << 20;
 
-    private final MemorySegment arena;
+    private final MetalBuffer arena;
     private long cursor;
+    private boolean closed;
 
     public MetalTransientMemory(MetalDevice device) {
-        this.arena = device.arena().allocate(CAPACITY);
+        MemorySegment handle = MetalNative.bufferCreate(device.deviceHandle(), CAPACITY);
+        MemorySegment data = (handle.address() == 0)
+                ? MemorySegment.NULL
+                : MetalNative.bufferContents(handle, CAPACITY);
+        if (handle.address() == 0 || data.address() == 0) {
+            MetalDevice.reportResourceFailure("transient arena " + CAPACITY + " bytes");
+        }
+        this.arena = new MetalBuffer(GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_COPY_DST,
+                CAPACITY, handle, data, true, null);
     }
 
-    private synchronized MemorySegment allocate(long size, long alignment) {
+    private synchronized MetalBuffer allocate(long size, long alignment, int usage) {
         long safeSize = Math.max(1L, size);
         long align = alignment <= 1L ? 1L : alignment;
         long aligned = (this.cursor + align - 1L) & -align;
@@ -36,45 +46,37 @@ public final class MetalTransientMemory implements TransientMemory {
             aligned = 0L;
         }
         this.cursor = aligned + safeSize;
-        return this.arena.asSlice(aligned, safeSize);
-    }
-
-    private MetalBuffer temporaryBuffer(long size, long alignment, int usage) {
-        MemorySegment memory = allocate(size, alignment);
-        // The caller's usage bits are load-bearing: the engine validates them (for example
-        // uploadStaging is used as a copy source and therefore requests USAGE_COPY_SRC). Dropping
-        // them made CommandEncoder.copyBufferToTexture reject the slice.
         int effective = usage != 0 ? usage : (GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_UNIFORM);
-        return new MetalBuffer(effective, Math.max(1L, size), memory);
+        return MetalBuffer.sub(effective, safeSize, this.arena, aligned);
     }
 
     @Override
     public ByteBuffer allocateCpu(long size, long alignment, long lifetime, long flags) {
-        return allocate(size, alignment).asByteBuffer();
+        return allocate(size, alignment, 0).data().asByteBuffer();
     }
 
     @Override
     public GpuBufferSlice.MappedView allocateStaging(long size, long alignment, int usage,
                                                      long lifetime, long flags) {
-        MetalBuffer buffer = temporaryBuffer(size, alignment, usage);
-        GpuBufferSlice slice = buffer.slice(0L, Math.max(1L, size));
-        return new GpuBufferSlice.MappedView(slice, buffer.memory().asByteBuffer(), () -> {
+        MetalBuffer buffer = allocate(size, alignment, usage);
+        GpuBufferSlice slice = buffer.slice(0L, buffer.size());
+        return new GpuBufferSlice.MappedView(slice, buffer.data().asByteBuffer(), () -> {
         });
     }
 
     @Override
     public GpuBufferSlice allocateGpu(long size, long alignment, int usage,
                                       long lifetime, long flags) {
-        MetalBuffer buffer = temporaryBuffer(size, alignment, usage);
-        return buffer.slice(0L, Math.max(1L, size));
+        MetalBuffer buffer = allocate(size, alignment, usage);
+        return buffer.slice(0L, buffer.size());
     }
 
     @Override
     public GpuBufferSlice.MappedView allocateGpuMapped(long size, long alignment, int usage,
                                                        long lifetime, long flags) {
-        MetalBuffer buffer = temporaryBuffer(size, alignment, usage);
-        GpuBufferSlice slice = buffer.slice(0L, Math.max(1L, size));
-        return new GpuBufferSlice.MappedView(slice, buffer.memory().asByteBuffer(), () -> {
+        MetalBuffer buffer = allocate(size, alignment, usage);
+        GpuBufferSlice slice = buffer.slice(0L, buffer.size());
+        return new GpuBufferSlice.MappedView(slice, buffer.data().asByteBuffer(), () -> {
         });
     }
 
@@ -83,12 +85,14 @@ public final class MetalTransientMemory implements TransientMemory {
         for (ByteBuffer buffer : data) {
             total += buffer.remaining();
         }
-        MetalBuffer target = temporaryBuffer(total, alignment, usage);
-        ByteBuffer view = target.memory().asByteBuffer();
-        for (ByteBuffer buffer : data) {
-            view.put(buffer.duplicate());
+        MetalBuffer target = allocate(total, alignment, usage);
+        if (target.isMapped()) {
+            ByteBuffer view = target.data().asByteBuffer();
+            for (ByteBuffer buffer : data) {
+                view.put(buffer.duplicate());
+            }
         }
-        return target.slice(0L, Math.max(1L, total));
+        return target.slice(0L, target.size());
     }
 
     @Override
@@ -119,5 +123,13 @@ public final class MetalTransientMemory implements TransientMemory {
             slices.add(upload(List.of(buffer), alignment, usage));
         }
         return slices;
+    }
+
+    public void close() {
+        if (this.closed) {
+            return;
+        }
+        this.closed = true;
+        this.arena.close();
     }
 }

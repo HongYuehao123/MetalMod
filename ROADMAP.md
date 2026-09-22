@@ -172,14 +172,22 @@ a pulsing first-light colour because all draws are inert.
 
 **Risks:** window/layer ownership with GLFW; present-mode negotiation; device-loss handling.
 
-### Phase 2 — Resource layer  · **M**
+### Phase 2 — Resource layer  · **M**  · ✅ **DONE**
 
-- `MetalGpuTexture`, `MetalGpuTextureView`, `MetalGpuBuffer`, `MetalGpuSampler`, `MetalFence`.
-- `GpuFormat` → `MTLPixelFormat` mapping table, including sRGB, depth, and integer formats.
-- Shared/private storage modes, staging uploads, `TransientMemory` ring allocator.
-- `GpuQueryPool` via `MTLCounterSampleBuffer`.
+- Real `MetalTexture` / `MetalTextureView` / `MetalBuffer` / `MetalSampler` / `MetalFence`.
+- `GpuFormat` → `MTLPixelFormat` mapping for all 54 formats. Minecraft 26.2 has no sRGB formats,
+  so none are mapped; the 3-channel formats have no Metal equivalent and map to the 4-channel format
+  of the same component type (their uploads are skipped rather than written with a wrong stride).
+- Shared storage throughout, with `replaceRegion`/`getBytes` upload and readback. The
+  `TransientMemory` ring allocator is a real shared `MTLBuffer` sliced into sub-buffers.
+- Render-pass clears (colour and depth) are real.
+- Deferred to Phase 3: `MTLCounterSampleBuffer` query pools, GPU-side blits, and private storage
+  for GPU-only resources.
 
 **Done when:** the game creates all its textures, buffers and samplers without falling back.
+✅ Verified in a throwaway instance: `textures=4416 views=9325 buffers=77 samplers=32 failures=0`,
+3600+ frames presented. The native smoke test adds byte-exact texture upload/readback, mip levels,
+texture views, buffers, samplers and a clear round-trip.
 
 ### Phase 3 — Pipelines and draw calls · **M**
 

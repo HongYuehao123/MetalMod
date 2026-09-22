@@ -10,6 +10,9 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
   `MTLDevice` and attaches a `CAMetalLayer` to the window, and presents cleared frames at display
   rate (verified 3000 frames in 55 s). Mixin: `PreferredGraphicsApiMixin`. The draw path is inert,
   so the window shows a pulsing clear colour rather than the game image.
+- **Real Metal resources (Phase 2):** textures, texture views, buffers and samplers are real Metal
+  objects with mapped formats; uploads, readbacks and clears go through them. A run created
+  `textures=4416 views=9325 buffers=77 samplers=32 failures=0`.
 - **The Metal backend is opt-in and OFF by default** (`preferMetalBackend=false`, also
   `-Dmetalmod.metalBackend=true`). It must be, because until Phase 3 draws the game the window is a
   flat colour and the game is unusable; defaulting it on silently broke normal play. With it off,
@@ -37,9 +40,22 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
 - **First light: verified.** A throwaway instance booted with `Using graphics backend Metal`,
   created device + layer, recorded the surface (`1708x960`), and presented 2400+ cleared frames
   before a clean shutdown. See `docs/phase1-boot-trace.md` for the calibration.
-- **Placeholder by design:** textures, buffers, samplers and pipelines carry no native objects, and
-  every draw is a no-op. That is what Phase 2/3 replace. The interface contract is in
+- **Still placeholder:** only the pipeline/draw path. `precompilePipeline` returns a valid
+  placeholder and every draw is a no-op; Phase 3 replaces both. The interface contract is in
   `docs/backend-api.md`.
+
+## Phase 2 status (resource layer) — DONE
+
+- `net.metalmod.backend` now creates real `MTLTexture` (2D, 2D-array, cube; mip levels),
+  `MTLTextureView`, `MTLBuffer` and `MTLSamplerState` objects via `MetalNative`.
+- `MetalFormat` holds the single `GpuFormat` → `MTLPixelFormat` / texture-type / usage / sampler
+  mapping. All 54 formats are covered.
+- Uploads and readbacks use shared storage (`replaceRegion`/`getBytes`); clears are real
+  render-pass clears. `MetalTransientMemory` is a real shared `MTLBuffer` bump arena.
+- `MetalMod` prints `Metal resources created: textures=… views=… buffers=… samplers=… failures=…`
+  with the 30 s hook summary.
+- Verification: `./native/build/metalmod_smoke` passes the new resource section (byte-exact texture
+  round-trip, mips, view, buffer, sampler, clear), and the in-game run reported `failures=0`.
 
 ## What does not work
 

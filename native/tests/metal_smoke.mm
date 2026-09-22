@@ -11,6 +11,8 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 #include "metalmod/metalmod_metal.h"
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
@@ -138,6 +140,85 @@ static void test_surface(void) {
     mmm_device_release(device);
 }
 
+// Phase 2 resource layer: real textures with mips, upload/readback, texture views, buffers,
+// samplers and a render-pass clear.
+static void test_resources(void) {
+    printf("\n== resources (texture, view, buffer, sampler, clear) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) {
+        check("device", false, "no device");
+        return;
+    }
+    void* queue = mmm_queue_create(device);
+
+    const int64_t kRGBA8 = 70;  // MTLPixelFormatRGBA8Unorm
+    const int32_t W = 4, H = 4;
+
+    // 2D texture, one layer, two mip levels, shared storage, shaderRead|renderTarget|view.
+    void* texture = mmm_texture_create_full(device, kRGBA8, W, H, 1, 2, 2 /*2D*/, true, 1u | 4u | 16u);
+    check("texture create (2 mips)", texture != NULL, "");
+
+    unsigned char pixels[16 * 4];
+    for (int i = 0; i < W * H; i++) {
+        pixels[i * 4 + 0] = (unsigned char)(i * 10);
+        pixels[i * 4 + 1] = (unsigned char)(200 - i);
+        pixels[i * 4 + 2] = 0x33;
+        pixels[i * 4 + 3] = 0xFF;
+    }
+    int rc = mmm_texture_replace_region(texture, 0, 0, 0, 0, W, H, pixels, W * 4);
+    check("texture upload (mip 0)", rc == 0, "");
+
+    unsigned char readback[16 * 4];
+    rc = mmm_texture_read_region(texture, 0, 0, 0, 0, W, H, readback, sizeof(readback), W * 4);
+    check("texture readback", rc == 0, "");
+    check("texture round-trips byte-exact",
+          rc == 0 && memcmp(pixels, readback, sizeof(pixels)) == 0, "");
+
+    unsigned char mip1[4 * 4];
+    for (int i = 0; i < 4; i++) { mip1[i*4+0]=1; mip1[i*4+1]=2; mip1[i*4+2]=3; mip1[i*4+3]=4; }
+    check("texture upload (mip 1)", mmm_texture_replace_region(texture, 1, 0, 0, 0, 2, 2, mip1, 2 * 4) == 0, "");
+
+    void* view = mmm_texture_create_view(texture, kRGBA8, 2 /*2D*/, 1, 1, 0, 1);
+    check("texture view (mip 1)", view != NULL, "");
+
+    const int64_t kBufferLength = 256;
+    void* buffer = mmm_buffer_create(device, kBufferLength);
+    check("buffer create", buffer != NULL, "");
+    check("buffer length", mmm_buffer_length(buffer) == kBufferLength, "");
+    void* contents = mmm_buffer_contents(buffer);
+    check("buffer contents pointer", contents != NULL, "");
+    if (contents != NULL) {
+        memset(contents, 0xAB, (size_t)kBufferLength);
+        check("buffer is CPU-writable", ((unsigned char*)contents)[255] == 0xAB, "");
+    }
+
+    void* sampler = mmm_sampler_create(device, 2, 2, 1, 1, 1, false, 0.0);
+    check("sampler create", sampler != NULL, "");
+
+    // Clear a render-target texture and read it back (shared storage, so CPU-readable).
+    void* renderTarget = mmm_texture_create_full(device, kRGBA8, 2, 2, 1, 1, 2 /*2D*/, true, 1u | 4u);
+    check("render-target texture", renderTarget != NULL, "");
+    check("clear colour texture",
+          mmm_clear_textures(queue, renderTarget, true, 1.0f, 0.0f, 0.0f, 1.0f,
+                             NULL, false, 0.0) == 0, "");
+    usleep(50 * 1000);  // the clear is committed asynchronously
+    unsigned char cleared[2 * 2 * 4];
+    rc = mmm_texture_read_region(renderTarget, 0, 0, 0, 0, 2, 2, cleared, sizeof(cleared), 2 * 4);
+    check("cleared texture readable", rc == 0, "");
+    if (rc == 0) {
+        check("clear value round-trips",
+              cleared[0] > 250 && cleared[1] < 5 && cleared[2] < 5 && cleared[3] > 250, "");
+    }
+
+    if (sampler) mmm_sampler_release(sampler);
+    if (buffer) mmm_buffer_release(buffer);
+    if (view) mmm_texture_release(view);
+    if (texture) mmm_texture_release(texture);
+    if (renderTarget) mmm_texture_release(renderTarget);
+    if (queue) mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -145,6 +226,7 @@ int main(void) {
     @autoreleasepool {
         test_device();
         test_clear_and_readback();
+        test_resources();
         test_surface();
     }
     printf("\n==================================================\n");

@@ -66,6 +66,60 @@ MMM_API int32_t mmm_texture_height(void* texture);
 /// Read a 2D texture back into `out` (must hold rowBytes * height bytes). Blocks.
 MMM_API int mmm_texture_read(void* texture, void* out, size_t capacity, size_t rowBytes);
 
+/// General texture creation with explicit mips, layers and texture type.
+///
+/// `textureType` is an MTLTextureType raw value supplied by the Java side, so the Metal enum
+/// mapping lives in one place (`MetalFormat`). For a cube texture pass depthOrLayers = 6; for a
+/// 2D array pass the layer count. `storageShared` selects MTLStorageModeShared (CPU-visible).
+MMM_API void* mmm_texture_create_full(void* device, int64_t pixelFormat,
+                                      int32_t width, int32_t height,
+                                      int32_t depthOrLayers, int32_t mipLevels,
+                                      int32_t textureType, bool storageShared,
+                                      uint32_t usageFlags);
+
+/// Create a mip-level / layer-range view of a texture. `textureType` is an MTLTextureType value.
+MMM_API void* mmm_texture_create_view(void* texture, int64_t pixelFormat, int32_t textureType,
+                                      int32_t baseMipLevel, int32_t mipLevels,
+                                      int32_t baseLayer, int32_t layerCount);
+
+/// Upload `height` rows into a shared-storage texture. Returns 0 on success.
+MMM_API int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
+                                       int32_t x, int32_t y, int32_t width, int32_t height,
+                                       const void* data, size_t bytesPerRow);
+
+/// Read a region back from a shared-storage texture. Returns 0 on success.
+MMM_API int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t slice,
+                                    int32_t x, int32_t y, int32_t width, int32_t height,
+                                    void* out, size_t capacity, size_t bytesPerRow);
+
+// ---------------------------------------------------------------------------------------------
+// Buffers (CPU-visible shared storage)
+// ---------------------------------------------------------------------------------------------
+
+MMM_API void*   mmm_buffer_create(void* device, int64_t length);
+MMM_API void*   mmm_buffer_contents(void* buffer);
+MMM_API int64_t mmm_buffer_length(void* buffer);
+MMM_API void    mmm_buffer_release(void* buffer);
+
+// ---------------------------------------------------------------------------------------------
+// Samplers
+// ---------------------------------------------------------------------------------------------
+
+MMM_API void* mmm_sampler_create(void* device, int32_t addressU, int32_t addressV,
+                                 int32_t minFilter, int32_t magFilter,
+                                 int32_t maxAnisotropy, bool hasMaxLod, double maxLod);
+MMM_API void  mmm_sampler_release(void* sampler);
+
+// ---------------------------------------------------------------------------------------------
+// Clear (render-pass load/store)
+// ---------------------------------------------------------------------------------------------
+
+/// Clear a colour and/or depth texture with one render pass. Pass NULL/false to skip an attachment.
+/// The texture must have been created with MTLTextureUsageRenderTarget.
+MMM_API int mmm_clear_textures(void* queue,
+                               void* colorTexture, bool hasColor, float r, float g, float b, float a,
+                               void* depthTexture, bool hasDepth, double depthValue);
+
 // ---------------------------------------------------------------------------------------------
 // Surface (CAMetalLayer)
 // ---------------------------------------------------------------------------------------------

@@ -9,19 +9,17 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
 /**
  * Panama FFI bindings for the Metal substrate (`metalmod_metal.h`).
  *
- * <p>This is deliberately separate from {@link net.metalmod.ffi.MetalBridge}: that class binds the
- * retired MoltenVK/MetalFX interop API, while this one binds the primitives the Metal renderer
- * backend needs (device, queue, CAMetalLayer, clear+present). Both load the same dylib, which is
- * safe because the JVM does not load a library twice.
- *
- * <p>The class fails soft: if the dylib or a symbol is missing, {@link #isAvailable()} returns
- * false and the backend is simply not offered, so Minecraft falls back to Vulkan/OpenGL.
+ * <p>Separate from {@link net.metalmod.ffi.MetalBridge}, which binds the retired MoltenVK/MetalFX
+ * interop API. This class covers device, queue, layer, texture, buffer, sampler and clear
+ * primitives. It fails soft: if the dylib or a symbol is missing, {@link #isAvailable()} is false
+ * and the backend is simply not offered.
  */
 public final class MetalNative {
 
@@ -41,6 +39,19 @@ public final class MetalNative {
     private static MethodHandle mhLayerConfigure;
     private static MethodHandle mhLayerAcquire;
     private static MethodHandle mhLayerPresentClear;
+
+    private static MethodHandle mhTextureCreateFull;
+    private static MethodHandle mhTextureCreateView;
+    private static MethodHandle mhTextureReplaceRegion;
+    private static MethodHandle mhTextureReadRegion;
+    private static MethodHandle mhTextureRelease;
+    private static MethodHandle mhBufferCreate;
+    private static MethodHandle mhBufferContents;
+    private static MethodHandle mhBufferLength;
+    private static MethodHandle mhBufferRelease;
+    private static MethodHandle mhSamplerCreate;
+    private static MethodHandle mhSamplerRelease;
+    private static MethodHandle mhClearTextures;
 
     static {
         try {
@@ -118,6 +129,54 @@ public final class MetalNative {
                         ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                         ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT,
                         ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT));
+
+        mhTextureCreateFull = linker.downcallHandle(symbol(lookup, "mmm_texture_create_full"),
+                FunctionDescriptor.of(ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_BOOLEAN,
+                        ValueLayout.JAVA_INT));
+        mhTextureCreateView = linker.downcallHandle(symbol(lookup, "mmm_texture_create_view"),
+                FunctionDescriptor.of(ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+        mhTextureReplaceRegion = linker.downcallHandle(symbol(lookup, "mmm_texture_replace_region"),
+                FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        mhTextureReadRegion = linker.downcallHandle(symbol(lookup, "mmm_texture_read_region"),
+                FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG));
+        mhTextureRelease = linker.downcallHandle(symbol(lookup, "mmm_texture_release"),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        mhBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_buffer_create"),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+        mhBufferContents = linker.downcallHandle(symbol(lookup, "mmm_buffer_contents"),
+                FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+        mhBufferLength = linker.downcallHandle(symbol(lookup, "mmm_buffer_length"),
+                FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));
+        mhBufferRelease = linker.downcallHandle(symbol(lookup, "mmm_buffer_release"),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        mhSamplerCreate = linker.downcallHandle(symbol(lookup, "mmm_sampler_create"),
+                FunctionDescriptor.of(ValueLayout.ADDRESS,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                        ValueLayout.JAVA_INT, ValueLayout.JAVA_BOOLEAN, ValueLayout.JAVA_DOUBLE));
+        mhSamplerRelease = linker.downcallHandle(symbol(lookup, "mmm_sampler_release"),
+                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+        mhClearTextures = linker.downcallHandle(symbol(lookup, "mmm_clear_textures"),
+                FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                        ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN,
+                        ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT,
+                        ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT,
+                        ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN, ValueLayout.JAVA_DOUBLE));
     }
 
     private static MemorySegment symbol(SymbolLookup lookup, String name) {
@@ -134,6 +193,10 @@ public final class MetalNative {
         return loadError;
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Call helpers
+    // -----------------------------------------------------------------------------------------
+
     private static MemorySegment callAddress(MethodHandle handle, Object... args) {
         try {
             return (MemorySegment) handle.invokeWithArguments(args);
@@ -142,16 +205,44 @@ public final class MetalNative {
         }
     }
 
+    private static int callInt(MethodHandle handle, Object... args) {
+        try {
+            return (int) handle.invokeWithArguments(args);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private static long callLong(MethodHandle handle, Object... args) {
+        try {
+            return (long) handle.invokeWithArguments(args);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private static void callVoid(MethodHandle handle, Object... args) {
+        try {
+            handle.invokeWithArguments(args);
+        } catch (Throwable t) {
+            throw new RuntimeException(t);
+        }
+    }
+
+    private static boolean isNull(MemorySegment segment) {
+        return segment == null || segment.address() == 0;
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Device / queue
+    // -----------------------------------------------------------------------------------------
+
     public static MemorySegment deviceCreate() {
         return callAddress(mhDeviceCreate);
     }
 
     public static void deviceRelease(MemorySegment device) {
-        try {
-            mhDeviceRelease.invokeExact(device);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
+        callVoid(mhDeviceRelease, device);
     }
 
     /** @return {name, vendor, driver} */
@@ -160,38 +251,24 @@ public final class MetalNative {
             MemorySegment name = arena.allocate(256);
             MemorySegment vendor = arena.allocate(128);
             MemorySegment driver = arena.allocate(128);
-            int rc = (int) mhDeviceInfo.invokeExact(device, name, 256L, vendor, 128L, driver, 128L);
+            int rc = callInt(mhDeviceInfo, device, name, 256L, vendor, 128L, driver, 128L);
             if (rc != 0) {
                 return new String[]{"Unknown Metal device", "Apple", "Metal (macOS)"};
             }
             return new String[]{name.getString(0), vendor.getString(0), driver.getString(0)};
-        } catch (Throwable t) {
-            return new String[]{"Unknown Metal device", "Apple", "Metal (macOS)"};
         }
     }
 
     public static long deviceMaxTextureSize(MemorySegment device) {
-        try {
-            return (long) mhDeviceMaxTextureSize.invokeExact(device);
-        } catch (Throwable t) {
-            return 8192L;
-        }
+        return callLong(mhDeviceMaxTextureSize, device);
     }
 
     public static long deviceMaxBufferSize(MemorySegment device) {
-        try {
-            return (long) mhDeviceMaxBufferSize.invokeExact(device);
-        } catch (Throwable t) {
-            return 0L;
-        }
+        return callLong(mhDeviceMaxBufferSize, device);
     }
 
     public static long deviceRecommendedWorkingSet(MemorySegment device) {
-        try {
-            return (long) mhDeviceRecommendedWorkingSet.invokeExact(device);
-        } catch (Throwable t) {
-            return 0L;
-        }
+        return callLong(mhDeviceRecommendedWorkingSet, device);
     }
 
     public static MemorySegment queueCreate(MemorySegment device) {
@@ -199,12 +276,12 @@ public final class MetalNative {
     }
 
     public static void queueRelease(MemorySegment queue) {
-        try {
-            mhQueueRelease.invokeExact(queue);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
+        callVoid(mhQueueRelease, queue);
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Surface
+    // -----------------------------------------------------------------------------------------
 
     public static MemorySegment layerCreateForNsWindow(long nsWindow) {
         MemorySegment window = (nsWindow == 0) ? MemorySegment.NULL : MemorySegment.ofAddress(nsWindow);
@@ -212,19 +289,11 @@ public final class MetalNative {
     }
 
     public static void layerRelease(MemorySegment layer) {
-        try {
-            mhLayerRelease.invokeExact(layer);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
+        callVoid(mhLayerRelease, layer);
     }
 
     public static int layerConfigure(MemorySegment layer, int width, int height, boolean vsync) {
-        try {
-            return (int) mhLayerConfigure.invokeExact(layer, width, height, vsync);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
+        return callInt(mhLayerConfigure, layer, width, height, vsync);
     }
 
     /** @return {drawable, drawableTexture}; both NULL when acquisition failed. */
@@ -232,7 +301,7 @@ public final class MetalNative {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment outDrawable = arena.allocate(ValueLayout.ADDRESS);
             MemorySegment outTexture = arena.allocate(ValueLayout.ADDRESS);
-            int rc = (int) mhLayerAcquire.invokeExact(layer, outDrawable, outTexture);
+            int rc = callInt(mhLayerAcquire, layer, outDrawable, outTexture);
             if (rc != 0) {
                 return new MemorySegment[]{MemorySegment.NULL, MemorySegment.NULL};
             }
@@ -240,17 +309,122 @@ public final class MetalNative {
                     outDrawable.get(ValueLayout.ADDRESS, 0),
                     outTexture.get(ValueLayout.ADDRESS, 0)
             };
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
         }
     }
 
     public static int layerPresentClear(MemorySegment layer, MemorySegment drawable,
                                         float r, float g, float b, float a) {
-        try {
-            return (int) mhLayerPresentClear.invokeExact(layer, drawable, r, g, b, a);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
+        return callInt(mhLayerPresentClear, layer, drawable, r, g, b, a);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Textures
+    // -----------------------------------------------------------------------------------------
+
+    public static MemorySegment textureCreateFull(MemorySegment device, long pixelFormat,
+                                                  int width, int height, int depthOrLayers,
+                                                  int mipLevels, int textureType,
+                                                  boolean storageShared, int usageFlags) {
+        return callAddress(mhTextureCreateFull, device, pixelFormat, width, height,
+                depthOrLayers, mipLevels, textureType, storageShared, usageFlags);
+    }
+
+    public static MemorySegment textureCreateView(MemorySegment texture, long pixelFormat,
+                                                  int textureType, int baseMipLevel, int mipLevels,
+                                                  int baseLayer, int layerCount) {
+        return callAddress(mhTextureCreateView, texture, pixelFormat, textureType,
+                baseMipLevel, mipLevels, baseLayer, layerCount);
+    }
+
+    public static void textureRelease(MemorySegment texture) {
+        callVoid(mhTextureRelease, texture);
+    }
+
+    /**
+     * Upload a region from a (possibly heap) {@link ByteBuffer}. Heap buffers cannot be passed to
+     * native code, so they are copied into a short-lived confined arena first.
+     */
+    public static int textureReplaceRegion(MemorySegment texture, int mipLevel, int slice,
+                                           int x, int y, int width, int height,
+                                           ByteBuffer data, long bytesPerRow) {
+        MemorySegment segment = MemorySegment.ofBuffer(data.duplicate());
+        if (segment.isNative()) {
+            return callInt(mhTextureReplaceRegion, texture, mipLevel, slice, x, y, width, height,
+                    segment, bytesPerRow);
         }
+        try (Arena arena = Arena.ofConfined()) {
+            long size = segment.byteSize();
+            MemorySegment copy = arena.allocate(Math.max(1L, size));
+            MemorySegment.copy(segment, 0L, copy, 0L, size);
+            return callInt(mhTextureReplaceRegion, texture, mipLevel, slice, x, y, width, height,
+                    copy, bytesPerRow);
+        }
+    }
+
+    /** Upload from an already-native segment (used by the buffer-to-texture path). */
+    public static int textureReplaceRegionRaw(MemorySegment texture, int mipLevel, int slice,
+                                              int x, int y, int width, int height,
+                                              MemorySegment nativeData, long bytesPerRow) {
+        return callInt(mhTextureReplaceRegion, texture, mipLevel, slice, x, y, width, height,
+                nativeData, bytesPerRow);
+    }
+
+    public static int textureReadRegion(MemorySegment texture, int mipLevel, int slice,
+                                        int x, int y, int width, int height,
+                                        MemorySegment nativeOut, long capacity, long bytesPerRow) {
+        return callInt(mhTextureReadRegion, texture, mipLevel, slice, x, y, width, height,
+                nativeOut, capacity, bytesPerRow);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Buffers
+    // -----------------------------------------------------------------------------------------
+
+    public static MemorySegment bufferCreate(MemorySegment device, long length) {
+        return callAddress(mhBufferCreate, device, Math.max(1L, length));
+    }
+
+    public static MemorySegment bufferContents(MemorySegment buffer, long length) {
+        MemorySegment ptr = callAddress(mhBufferContents, buffer);
+        if (isNull(ptr)) {
+            return MemorySegment.NULL;
+        }
+        return ptr.reinterpret(Math.max(1L, length));
+    }
+
+    public static long bufferLength(MemorySegment buffer) {
+        return callLong(mhBufferLength, buffer);
+    }
+
+    public static void bufferRelease(MemorySegment buffer) {
+        callVoid(mhBufferRelease, buffer);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Samplers
+    // -----------------------------------------------------------------------------------------
+
+    public static MemorySegment samplerCreate(MemorySegment device, int addressU, int addressV,
+                                              int minFilter, int magFilter,
+                                              int maxAnisotropy, boolean hasMaxLod, double maxLod) {
+        return callAddress(mhSamplerCreate, device, addressU, addressV, minFilter, magFilter,
+                maxAnisotropy, hasMaxLod, maxLod);
+    }
+
+    public static void samplerRelease(MemorySegment sampler) {
+        callVoid(mhSamplerRelease, sampler);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Clear
+    // -----------------------------------------------------------------------------------------
+
+    public static int clearTextures(MemorySegment queue,
+                                    MemorySegment colorTexture, boolean hasColor,
+                                    float r, float g, float b, float a,
+                                    MemorySegment depthTexture, boolean hasDepth, double depthValue) {
+        MemorySegment color = hasColor && colorTexture != null ? colorTexture : MemorySegment.NULL;
+        MemorySegment depth = hasDepth && depthTexture != null ? depthTexture : MemorySegment.NULL;
+        return callInt(mhClearTextures, queue, color, hasColor, r, g, b, a, depth, hasDepth, depthValue);
     }
 }

@@ -89,6 +89,7 @@ public class MetalModClient implements ClientModInitializer {
                         summaryReported = true;
                         System.out.println("[MetalMod] hook summary after 30s: "
                                 + net.metalmod.Diagnostics.summary());
+                        System.out.println(net.metalmod.backend.MetalDevice.resourceSummary());
                         System.out.println("[MetalMod] F3 section built "
                                 + net.metalmod.debug.DebugScreenRegistration.displayCallCount()
                                 + " time(s). 0 means F3 was never opened, or the entry is still hidden.");

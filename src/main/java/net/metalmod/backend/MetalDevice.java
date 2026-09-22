@@ -20,7 +20,6 @@ import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 
-import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.util.HashSet;
@@ -30,25 +29,55 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * Phase 1 Metal device backend.
+ * Phase 2 Metal device backend.
  *
- * <p>Real: device, command queue, surface, and the present path. Placeholder (no native object):
- * textures, buffers, samplers, fences, query pools and pipelines. The split is deliberate and is
- * documented in docs/phase1-boot-trace.md: the engine validates pipeline objects and creates
- * textures/buffers at boot, so those calls must succeed, but nothing samples their contents until
- * the draw path exists in Phase 3.
+ * <p>Real: device, command queue, surface, textures, texture views, buffers and samplers. Still
+ * placeholder: render pipelines and the draw path (Phase 3), so a compiled pipeline reports valid
+ * without compiling shaders.
  */
 public final class MetalDevice implements GpuDeviceBackend {
 
     private final MemorySegment device;
     private final MemorySegment queue;
-    private final Arena arena = Arena.ofShared();
     private final DeviceInfo info;
     private final MetalTransientMemory transientMemory;
 
     private final Set<String> placeholderPipelines = new HashSet<>();
     private int placeholderLogCount;
     private boolean closed;
+
+    // Resource creation failures are counted and logged a bounded number of times: one unsupported
+    // format must not spam the log or take the game down.
+    private static int resourceFailureCount;
+    private static int resourceFailureLogCount;
+
+    // Resource counters, so "the game created all its resources" is a measurable claim rather than
+    // an absence of errors. Static because the game only ever has one Metal device.
+    private static final java.util.concurrent.atomic.AtomicLong TEXTURE_COUNT = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong TEXTURE_VIEW_COUNT = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong BUFFER_COUNT = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong SAMPLER_COUNT = new java.util.concurrent.atomic.AtomicLong();
+
+    public static String resourceSummary() {
+        return "[MetalMod] Metal resources created: textures=" + TEXTURE_COUNT.get()
+                + " views=" + TEXTURE_VIEW_COUNT.get()
+                + " buffers=" + BUFFER_COUNT.get()
+                + " samplers=" + SAMPLER_COUNT.get()
+                + " failures=" + resourceFailureCount;
+    }
+
+    static synchronized void reportResourceFailure(String what) {
+        resourceFailureCount++;
+        if (resourceFailureLogCount < 20) {
+            resourceFailureLogCount++;
+            System.err.println("[MetalMod] Metal resource creation failed: " + what
+                    + " (further failures counted silently)");
+        }
+    }
+
+    public static synchronized int resourceFailureCount() {
+        return resourceFailureCount;
+    }
 
     // The engine clears its main render target with the sky/background colour; capture it so the
     // first-light clear on the drawable is the colour the renderer actually chose, not a constant.
@@ -108,10 +137,6 @@ public final class MetalDevice implements GpuDeviceBackend {
         return this.queue;
     }
 
-    public Arena arena() {
-        return this.arena;
-    }
-
     public MetalTransientMemory transientMemoryObject() {
         return this.transientMemory;
     }
@@ -159,46 +184,66 @@ public final class MetalDevice implements GpuDeviceBackend {
     public GpuSampler createSampler(AddressMode addressModeU, AddressMode addressModeV,
                                     FilterMode minFilter, FilterMode magFilter,
                                     int maxAnisotropy, OptionalDouble maxLod) {
-        return new MetalSampler(addressModeU, addressModeV, minFilter, magFilter, maxAnisotropy, maxLod);
+        SAMPLER_COUNT.incrementAndGet();
+        return new MetalSampler(this, addressModeU, addressModeV, minFilter, magFilter, maxAnisotropy, maxLod);
     }
 
     @Override
     public GpuTexture createTexture(Supplier<String> label, int usage, GpuFormat format,
                                     int width, int height, int depthOrLayers, int mipLevels) {
         String name = label == null ? "unnamed" : label.get();
-        return new MetalTexture(usage, name, format, width, height, depthOrLayers, mipLevels);
+        TEXTURE_COUNT.incrementAndGet();
+        return new MetalTexture(this, usage, name, format, width, height, depthOrLayers, mipLevels);
     }
 
     @Override
     public GpuTexture createTexture(String label, int usage, GpuFormat format,
                                     int width, int height, int depthOrLayers, int mipLevels) {
-        return new MetalTexture(usage, label, format, width, height, depthOrLayers, mipLevels);
+        TEXTURE_COUNT.incrementAndGet();
+        return new MetalTexture(this, usage, label, format, width, height, depthOrLayers, mipLevels);
     }
 
     @Override
     public GpuTextureView createTextureView(GpuTexture texture) {
+        TEXTURE_VIEW_COUNT.incrementAndGet();
         return new MetalTextureView(texture, 0, texture.getMipLevels());
     }
 
     @Override
     public GpuTextureView createTextureView(GpuTexture texture, int baseMipLevel, int mipLevels) {
+        TEXTURE_VIEW_COUNT.incrementAndGet();
         return new MetalTextureView(texture, baseMipLevel, mipLevels);
     }
 
     @Override
     public GpuBuffer createBuffer(Supplier<String> label, int usage, long size) {
-        long safeSize = Math.max(0L, size);
-        MemorySegment memory = this.arena.allocate(safeSize);
-        return new MetalBuffer(usage, safeSize, memory);
+        BUFFER_COUNT.incrementAndGet();
+        long safeSize = Math.max(1L, size);
+        MemorySegment handle = MetalNative.bufferCreate(this.device, safeSize);
+        MemorySegment memory = (handle.address() == 0)
+                ? MemorySegment.NULL
+                : MetalNative.bufferContents(handle, safeSize);
+        if (memory.address() == 0) {
+            reportResourceFailure("buffer size=" + safeSize + " usage=" + usage);
+        }
+        return new MetalBuffer(usage, safeSize, handle, memory, true, null);
     }
 
     @Override
     public GpuBuffer createBuffer(Supplier<String> label, int usage, ByteBuffer data) {
-        int size = data.remaining();
-        MemorySegment memory = this.arena.allocate(size);
-        ByteBuffer view = memory.asByteBuffer();
-        view.put(data.duplicate());
-        return new MetalBuffer(usage, size, memory);
+        BUFFER_COUNT.incrementAndGet();
+        int requested = data.remaining();
+        long safeSize = Math.max(1L, requested);
+        MemorySegment handle = MetalNative.bufferCreate(this.device, safeSize);
+        MemorySegment memory = (handle.address() == 0)
+                ? MemorySegment.NULL
+                : MetalNative.bufferContents(handle, safeSize);
+        if (memory.address() == 0) {
+            reportResourceFailure("buffer (initial data) size=" + safeSize + " usage=" + usage);
+        } else if (requested > 0) {
+            memory.asByteBuffer().put(data.duplicate());
+        }
+        return new MetalBuffer(usage, safeSize, handle, memory, true, null);
     }
 
     @Override
@@ -235,10 +280,10 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (this.queue != null && this.queue.address() != 0) {
             MetalNative.queueRelease(this.queue);
         }
+        this.transientMemory.close();
         if (this.device != null && this.device.address() != 0) {
             MetalNative.deviceRelease(this.device);
         }
-        this.arena.close();
     }
 
     @Override

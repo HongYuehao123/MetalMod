@@ -179,6 +179,202 @@ int mmm_texture_read(void* texture, void* out, size_t capacity, size_t rowBytes)
     return 0;
 }
 
+void* mmm_texture_create_full(void* device, int64_t pixelFormat, int32_t width, int32_t height,
+                              int32_t depthOrLayers, int32_t mipLevels, int32_t textureType,
+                              bool storageShared, uint32_t usageFlags) {
+    id<MTLDevice> dev = mmm_device(device);
+    if (dev == nil || width <= 0 || height <= 0) return NULL;
+
+    @autoreleasepool {
+        MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
+        descriptor.pixelFormat = (MTLPixelFormat)pixelFormat;
+        descriptor.width = (NSUInteger)width;
+        descriptor.height = (NSUInteger)height;
+        descriptor.mipmapLevelCount = (NSUInteger)(mipLevels < 1 ? 1 : mipLevels);
+        descriptor.textureType = (MTLTextureType)textureType;
+        descriptor.usage = (MTLTextureUsage)usageFlags;
+        descriptor.storageMode = storageShared ? MTLStorageModeShared : MTLStorageModePrivate;
+
+        if (textureType == MTLTextureTypeCube || textureType == MTLTextureTypeCubeArray) {
+            descriptor.arrayLength = (NSUInteger)((depthOrLayers < 6 ? 6 : depthOrLayers) / 6);
+        } else if (textureType == MTLTextureType2DArray) {
+            descriptor.arrayLength = (NSUInteger)(depthOrLayers < 1 ? 1 : depthOrLayers);
+        } else if (textureType == MTLTextureType3D) {
+            descriptor.depth = (NSUInteger)(depthOrLayers < 1 ? 1 : depthOrLayers);
+        }
+
+        id<MTLTexture> texture = [dev newTextureWithDescriptor:descriptor];
+        return (__bridge_retained void*)texture;
+    }
+}
+
+void* mmm_texture_create_view(void* texture, int64_t pixelFormat, int32_t textureType,
+                              int32_t baseMipLevel, int32_t mipLevels,
+                              int32_t baseLayer, int32_t layerCount) {
+    id<MTLTexture> tex = mmm_texture(texture);
+    if (tex == nil) return NULL;
+
+    @autoreleasepool {
+        NSRange levels = NSMakeRange((NSUInteger)(baseMipLevel < 0 ? 0 : baseMipLevel),
+                                     (NSUInteger)(mipLevels < 1 ? 1 : mipLevels));
+        NSRange slices = NSMakeRange((NSUInteger)(baseLayer < 0 ? 0 : baseLayer),
+                                     (NSUInteger)(layerCount < 1 ? 1 : layerCount));
+        id<MTLTexture> view = [tex newTextureViewWithPixelFormat:(MTLPixelFormat)pixelFormat
+                                                     textureType:(MTLTextureType)textureType
+                                                          levels:levels
+                                                          slices:slices];
+        return (__bridge_retained void*)view;
+    }
+}
+
+int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
+                               int32_t x, int32_t y, int32_t width, int32_t height,
+                               const void* data, size_t bytesPerRow) {
+    id<MTLTexture> tex = mmm_texture(texture);
+    if (tex == nil || data == NULL || width <= 0 || height <= 0) return -1;
+    if (tex.storageMode == MTLStorageModePrivate) return -2;  // not CPU-writable
+
+    @autoreleasepool {
+        MTLRegion region = MTLRegionMake2D(x, y, width, height);
+        [tex replaceRegion:region
+               mipmapLevel:mipLevel
+                     slice:slice
+                 withBytes:data
+               bytesPerRow:bytesPerRow
+              bytesPerImage:bytesPerRow * (size_t)height];
+    }
+    return 0;
+}
+
+int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t slice,
+                            int32_t x, int32_t y, int32_t width, int32_t height,
+                            void* out, size_t capacity, size_t bytesPerRow) {
+    id<MTLTexture> tex = mmm_texture(texture);
+    if (tex == nil || out == NULL || width <= 0 || height <= 0) return -1;
+    if (tex.storageMode != MTLStorageModeShared) return -2;  // private textures are not CPU-readable
+    if (bytesPerRow * (size_t)height > capacity) return -3;
+
+    @autoreleasepool {
+        MTLRegion region = MTLRegionMake2D(x, y, width, height);
+        [tex getBytes:out
+          bytesPerRow:bytesPerRow
+         bytesPerImage:bytesPerRow * (size_t)height
+            fromRegion:region
+           mipmapLevel:mipLevel
+                 slice:slice];
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Buffers
+// ---------------------------------------------------------------------------------------------
+
+void* mmm_buffer_create(void* device, int64_t length) {
+    id<MTLDevice> dev = mmm_device(device);
+    if (dev == nil || length < 0) return NULL;
+
+    @autoreleasepool {
+        // Shared keeps the buffer CPU-visible, which is what the engine's mapping and upload paths
+        // need. Apple silicon has unified memory, so the cost is lower than on discrete GPUs; a
+        // private/staging split is a Phase 3 performance task.
+        id<MTLBuffer> buffer = [dev newBufferWithLength:(NSUInteger)length
+                                                options:MTLResourceStorageModeShared];
+        return (__bridge_retained void*)buffer;
+    }
+}
+
+void* mmm_buffer_contents(void* buffer) {
+    id<MTLBuffer> buf = (__bridge id<MTLBuffer>)buffer;
+    return (buf == nil) ? NULL : buf.contents;
+}
+
+int64_t mmm_buffer_length(void* buffer) {
+    id<MTLBuffer> buf = (__bridge id<MTLBuffer>)buffer;
+    return (buf == nil) ? 0 : (int64_t)buf.length;
+}
+
+void mmm_buffer_release(void* buffer) {
+    if (buffer == NULL) return;
+    @autoreleasepool {
+        id<MTLBuffer> released = (__bridge_transfer id<MTLBuffer>)buffer;
+        (void)released;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Samplers
+// ---------------------------------------------------------------------------------------------
+
+void* mmm_sampler_create(void* device, int32_t addressU, int32_t addressV,
+                         int32_t minFilter, int32_t magFilter,
+                         int32_t maxAnisotropy, bool hasMaxLod, double maxLod) {
+    id<MTLDevice> dev = mmm_device(device);
+    if (dev == nil) return NULL;
+
+    @autoreleasepool {
+        MTLSamplerDescriptor* descriptor = [[MTLSamplerDescriptor alloc] init];
+        descriptor.sAddressMode = (MTLSamplerAddressMode)addressU;
+        descriptor.tAddressMode = (MTLSamplerAddressMode)addressV;
+        descriptor.minFilter = (MTLSamplerMinMagFilter)minFilter;
+        descriptor.magFilter = (MTLSamplerMinMagFilter)magFilter;
+        descriptor.mipFilter = (minFilter == MTLSamplerMinMagFilterLinear)
+                                   ? MTLSamplerMipFilterLinear
+                                   : MTLSamplerMipFilterNearest;
+        descriptor.maxAnisotropy = (NSUInteger)(maxAnisotropy < 1 ? 1 : maxAnisotropy);
+        descriptor.lodMinClamp = 0.0f;
+        if (hasMaxLod) {
+            descriptor.lodMaxClamp = (float)maxLod;
+        }
+        id<MTLSamplerState> sampler = [dev newSamplerStateWithDescriptor:descriptor];
+        return (__bridge_retained void*)sampler;
+    }
+}
+
+void mmm_sampler_release(void* sampler) {
+    if (sampler == NULL) return;
+    @autoreleasepool {
+        id<MTLSamplerState> released = (__bridge_transfer id<MTLSamplerState>)sampler;
+        (void)released;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Clear
+// ---------------------------------------------------------------------------------------------
+
+int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
+                       float r, float g, float b, float a,
+                       void* depthTexture, bool hasDepth, double depthValue) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    id<MTLTexture> color = mmm_texture(colorTexture);
+    id<MTLTexture> depth = mmm_texture(depthTexture);
+    if (metalQueue == nil) return -1;
+    if (!hasColor && !hasDepth) return 0;
+
+    @autoreleasepool {
+        MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (hasColor && color != nil) {
+            descriptor.colorAttachments[0].texture = color;
+            descriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
+            descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+            descriptor.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, a);
+        }
+        if (hasDepth && depth != nil) {
+            descriptor.depthAttachment.texture = depth;
+            descriptor.depthAttachment.loadAction = MTLLoadActionClear;
+            descriptor.depthAttachment.storeAction = MTLStoreActionStore;
+            descriptor.depthAttachment.clearDepth = depthValue;
+        }
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod clear";
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        [encoder endEncoding];
+        [commandBuffer commit];
+    }
+    return 0;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Surface
 // ---------------------------------------------------------------------------------------------
