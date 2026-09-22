@@ -1,6 +1,11 @@
 package net.metalmod.backend;
 
 import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.platform.BlendFactor;
+import com.mojang.blaze3d.platform.BlendOp;
+import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.platform.PolygonMode;
 import com.mojang.blaze3d.textures.AddressMode;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuTexture;
@@ -153,5 +158,97 @@ public final class MetalFormat {
                  RGB32_UINT, RGB32_SINT, RGB32_FLOAT -> false;
             default -> true;
         };
+    }
+
+    /** Map a vertex element's GpuFormat to an MTLVertexFormat raw value. */
+    public static int mtlVertexFormat(GpuFormat format) {
+        int count = Math.max(1, format.componentCount());
+        return switch (format.componentType()) {
+            case UNORM_8 -> count <= 2 ? 7 : count == 3 ? 8 : 9;      // UChar[2-4]Normalized
+            case SNORM_8 -> count <= 2 ? 10 : count == 3 ? 11 : 12;   // Char[2-4]Normalized
+            case UINT_8 -> count <= 2 ? 1 : count == 3 ? 2 : 3;       // UChar[2-4]
+            case SINT_8 -> count <= 2 ? 4 : count == 3 ? 5 : 6;       // Char[2-4]
+            case UINT_16 -> count <= 2 ? 13 : count == 3 ? 14 : 15;   // UShort[2-4]
+            case SINT_16 -> count <= 2 ? 16 : count == 3 ? 17 : 18;   // Short[2-4]
+            case UNORM_16 -> count <= 2 ? 19 : count == 3 ? 20 : 21;  // UShort[2-4]Normalized
+            case SNORM_16 -> count <= 2 ? 22 : count == 3 ? 23 : 24;  // Short[2-4]Normalized
+            case FLOAT_16 -> count == 1 ? 28 : count == 2 ? 25 : count == 3 ? 26 : 27;
+            case UINT_32 -> count == 1 ? 36 : count == 2 ? 37 : count == 3 ? 38 : 39;
+            case SINT_32 -> count == 1 ? 32 : count == 2 ? 33 : count == 3 ? 34 : 35;
+            case FLOAT_32 -> count == 1 ? 28 : count == 2 ? 29 : count == 3 ? 30 : 31;
+            default -> 31; // OPAQUE formats never appear as vertex elements
+        };
+    }
+
+    /** MTLCompareFunction. */
+    public static int mtlCompare(CompareOp op) {
+        return switch (op) {
+            case NEVER_PASS -> 0;
+            case LESS_THAN -> 1;
+            case EQUAL -> 2;
+            case LESS_THAN_OR_EQUAL -> 3;
+            case GREATER_THAN -> 4;
+            case NOT_EQUAL -> 5;
+            case GREATER_THAN_OR_EQUAL -> 6;
+            case ALWAYS_PASS -> 7;
+        };
+    }
+
+    /** MTLBlendFactor. */
+    public static int mtlBlendFactor(BlendFactor factor) {
+        return switch (factor) {
+            case ZERO -> 0;
+            case ONE -> 1;
+            case SRC_COLOR -> 2;
+            case ONE_MINUS_SRC_COLOR -> 3;
+            case SRC_ALPHA -> 4;
+            case ONE_MINUS_SRC_ALPHA -> 5;
+            case DST_COLOR -> 6;
+            case ONE_MINUS_DST_COLOR -> 7;
+            case DST_ALPHA -> 8;
+            case ONE_MINUS_DST_ALPHA -> 9;
+            case CONSTANT_COLOR -> 10;
+            case ONE_MINUS_CONSTANT_COLOR -> 11;
+            case CONSTANT_ALPHA -> 12;
+            case ONE_MINUS_CONSTANT_ALPHA -> 13;
+            case SRC_ALPHA_SATURATE -> 14;
+        };
+    }
+
+    /** MTLBlendOperation. */
+    public static int mtlBlendOp(BlendOp op) {
+        return switch (op) {
+            case ADD -> 0;
+            case SUBTRACT -> 1;
+            case REVERSE_SUBTRACT -> 2;
+            case MIN -> 3;
+            case MAX -> 4;
+        };
+    }
+
+    /** MTLPrimitiveType. */
+    public static int mtlTopology(PrimitiveTopology topology) {
+        return switch (topology) {
+            case POINTS -> 0;
+            case LINES, DEBUG_LINES -> 1;
+            case DEBUG_LINE_STRIP -> 2;
+            case TRIANGLES, TRIANGLE_FAN, QUADS -> 3;
+            case TRIANGLE_STRIP -> 4;
+        };
+    }
+
+    /** MTLTriangleFillMode. */
+    public static int mtlFillMode(PolygonMode mode) {
+        return mode == PolygonMode.WIREFRAME ? 1 : 0;
+    }
+
+    /** MC write-mask bits (R=1,G=2,B=4,A=8) to MTLColorWriteMask (A=1,B=2,G=4,R=8). */
+    public static int mtlWriteMask(int mcMask) {
+        int mask = 0;
+        if ((mcMask & 1) != 0) mask |= 8;
+        if ((mcMask & 2) != 0) mask |= 4;
+        if ((mcMask & 4) != 0) mask |= 2;
+        if ((mcMask & 8) != 0) mask |= 1;
+        return mask;
     }
 }

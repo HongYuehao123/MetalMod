@@ -219,6 +219,82 @@ static void test_resources(void) {
     mmm_device_release(device);
 }
 
+// Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
+static void test_draw(void) {
+    printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const char* msl =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct VOut { float4 pos [[position]]; float4 color; };\n"
+        "vertex VOut vmain(uint vid [[vertex_id]], const device float2* positions [[buffer(0)]]) {\n"
+        "    VOut o; o.pos = float4(positions[vid], 0.0, 1.0); o.color = float4(1.0, 0.0, 0.0, 1.0); return o;\n"
+        "}\n"
+        "fragment float4 fmain(VOut in [[stage_in]]) { return in.color; }\n";
+
+    void* library = mmm_library_create(device, msl, strlen(msl));
+    check("MSL library compiles", library != NULL, "");
+
+    // No vertex descriptor entries: the vertex function indexes a device buffer directly.
+    void* pipeline = mmm_render_pipeline_create(device, library, "vmain", library, "fmain",
+            70 /*RGBA8Unorm*/, 15 /*write all*/, 0,
+            0, 0, 0, 0, 0, 0,
+            0 /*no depth*/, 1, 0,
+            3 /*triangle*/, 1 /*ccw*/, 0 /*no cull*/, 0 /*fill*/, 0.0f, 0.0f,
+            NULL, 0, NULL, 0);
+    check("render pipeline created", pipeline != NULL, "");
+
+    const int W = 64, H = 64;
+    void* target = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, 1u | 4u);
+    check("draw target texture", target != NULL, "");
+
+    void* vertexBuffer = mmm_buffer_create(device, 24);
+    float* positions = (float*)mmm_buffer_contents(vertexBuffer);
+    if (positions != NULL) {
+        positions[0] = -0.8f; positions[1] = -0.8f;
+        positions[2] =  0.8f; positions[3] = -0.8f;
+        positions[4] =  0.0f; positions[5] =  0.8f;
+    }
+
+    void* cb = mmm_command_buffer_create(queue);
+    void* colors[1] = { target };
+    int32_t clears[1] = { 1 };
+    float clearColor[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    void* encoder = mmm_render_pass_begin(cb, 1, colors, clears, clearColor, NULL, 0, 0.0, W, H);
+    check("render pass begins", encoder != NULL, "");
+    if (encoder != NULL) {
+        mmm_render_pass_set_pipeline(encoder, pipeline);
+        mmm_render_pass_set_vertex_buffer(encoder, vertexBuffer, 0, 0);
+        mmm_render_pass_draw(encoder, 3, 0, 3, 1, 0);
+        mmm_render_pass_end(encoder);
+    }
+    mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb);
+
+    unsigned char pixels[64 * 64 * 4];
+    int rc = mmm_texture_read_region(target, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+    check("draw readback", rc == 0, "");
+    if (rc == 0) {
+        unsigned char* center = pixels + (32 * W + 32) * 4;
+        unsigned char* corner = pixels + (1 * W + 1) * 4;
+        printf("     center = R%d G%d B%d A%d   corner = R%d G%d B%d A%d\n",
+               center[0], center[1], center[2], center[3], corner[0], corner[1], corner[2], corner[3]);
+        check("triangle covered the centre (red)", center[0] > 200 && center[1] < 40 && center[2] < 40, "");
+        check("clear preserved outside (blue)", corner[0] < 40 && corner[1] < 40 && corner[2] > 200, "");
+    }
+
+    mmm_command_buffer_release(cb);
+    if (vertexBuffer) mmm_buffer_release(vertexBuffer);
+    mmm_texture_release(target);
+    mmm_render_pipeline_release(pipeline);
+    mmm_library_release(library);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -227,6 +303,7 @@ int main(void) {
         test_device();
         test_clear_and_readback();
         test_resources();
+        test_draw();
         test_surface();
     }
     printf("\n==================================================\n");

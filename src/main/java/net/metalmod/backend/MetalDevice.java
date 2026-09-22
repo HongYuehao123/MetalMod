@@ -22,8 +22,10 @@ import com.mojang.blaze3d.textures.GpuTextureView;
 
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -41,6 +43,8 @@ public final class MetalDevice implements GpuDeviceBackend {
     private final MemorySegment queue;
     private final DeviceInfo info;
     private final MetalTransientMemory transientMemory;
+    private final MetalShaderCompiler shaderCompiler = new MetalShaderCompiler();
+    private final Map<RenderPipeline, MetalRenderPipeline> pipelines = new HashMap<>();
 
     private final Set<String> placeholderPipelines = new HashSet<>();
     private int placeholderLogCount;
@@ -259,15 +263,37 @@ public final class MetalDevice implements GpuDeviceBackend {
     @Override
     public CompiledRenderPipeline precompilePipeline(RenderPipeline pipeline, ShaderSource shaderSource) {
         String key = pipeline.getLocation().toString();
-        if (this.placeholderPipelines.add(key) && this.placeholderLogCount < 40) {
+        MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline, shaderSource);
+        if (compiled != null) {
+            MetalRenderPipeline previous = this.pipelines.put(pipeline, compiled);
+            if (previous != null) {
+                previous.close();
+            }
+            if (this.placeholderLogCount < 30) {
+                this.placeholderLogCount++;
+                System.out.println("[MetalMod] metal pipeline compiled: " + key);
+            }
+        } else if (this.placeholderLogCount < 30) {
             this.placeholderLogCount++;
-            System.out.println("[MetalMod] placeholder pipeline (valid, draws inert): " + key);
+            System.err.println("[MetalMod] metal pipeline FAILED (draws with it are skipped): " + key);
         }
+        // Always valid: ShaderManager throws when a precompiled pipeline reports invalid, which would
+        // take the game down before it can render anything. A failed pipeline simply has no native
+        // state, and draws through it are skipped.
         return new MetalCompiledPipeline(true);
+    }
+
+    /** The compiled pipeline for a RenderPipeline, or null when compilation failed. */
+    public MetalRenderPipeline pipelineFor(RenderPipeline pipeline) {
+        return this.pipelines.get(pipeline);
     }
 
     @Override
     public void clearPipelineCache() {
+        for (MetalRenderPipeline compiled : this.pipelines.values()) {
+            compiled.close();
+        }
+        this.pipelines.clear();
         this.placeholderPipelines.clear();
     }
 
@@ -280,6 +306,8 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (this.queue != null && this.queue.address() != 0) {
             MetalNative.queueRelease(this.queue);
         }
+        this.clearPipelineCache();
+        this.shaderCompiler.close();
         this.transientMemory.close();
         if (this.device != null && this.device.address() != 0) {
             MetalNative.deviceRelease(this.device);

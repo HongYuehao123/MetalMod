@@ -1,0 +1,217 @@
+package net.metalmod.backend;
+
+import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.shaders.ShaderSource;
+import com.mojang.blaze3d.shaders.ShaderType;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexFormatElement;
+
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemoryLayout;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.util.Map;
+
+/**
+ * A compiled Metal render pipeline: MTLRenderPipelineState + MTLDepthStencilState, the MSL
+ * libraries it came from, and the name to binding-index maps the render pass needs.
+ */
+public final class MetalRenderPipeline {
+
+    private static final java.util.concurrent.atomic.AtomicInteger DEBUG_LOGGED = new java.util.concurrent.atomic.AtomicInteger();
+
+    private static final MemoryLayout LAYOUT_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.JAVA_INT.withName("bufferIndex"),
+            ValueLayout.JAVA_INT.withName("stride"),
+            ValueLayout.JAVA_INT.withName("stepFunction"),
+            ValueLayout.JAVA_INT.withName("stepRate"));
+    private static final MemoryLayout ATTRIBUTE_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.JAVA_INT.withName("location"),
+            ValueLayout.JAVA_INT.withName("bufferIndex"),
+            ValueLayout.JAVA_INT.withName("format"),
+            ValueLayout.JAVA_INT.withName("offset"));
+
+    private final MemorySegment handle;
+    private final MemorySegment vertexLibrary;
+    private final MemorySegment fragmentLibrary;
+    private final Map<String, Integer> vertexBuffers;
+    private final Map<String, Integer> fragmentBuffers;
+    private final Map<String, Integer> vertexTextures;
+    private final Map<String, Integer> fragmentTextures;
+    private final Map<String, Integer> vertexSamplers;
+    private final Map<String, Integer> fragmentSamplers;
+    private final int topology;
+    private boolean closed;
+
+    private MetalRenderPipeline(MemorySegment handle, MemorySegment vertexLibrary, MemorySegment fragmentLibrary,
+                                Map<String, Integer> vertexBuffers, Map<String, Integer> fragmentBuffers,
+                                Map<String, Integer> vertexTextures, Map<String, Integer> fragmentTextures,
+                                Map<String, Integer> vertexSamplers, Map<String, Integer> fragmentSamplers,
+                                int topology) {
+        this.handle = handle;
+        this.vertexLibrary = vertexLibrary;
+        this.fragmentLibrary = fragmentLibrary;
+        this.vertexBuffers = vertexBuffers;
+        this.fragmentBuffers = fragmentBuffers;
+        this.vertexTextures = vertexTextures;
+        this.fragmentTextures = fragmentTextures;
+        this.vertexSamplers = vertexSamplers;
+        this.fragmentSamplers = fragmentSamplers;
+        this.topology = topology;
+    }
+
+    /** Compile both stages and build the native pipeline. Returns null on any failure. */
+    public static MetalRenderPipeline create(MetalDevice device, MetalShaderCompiler compiler,
+                                             RenderPipeline pipeline, ShaderSource source) {
+        try {
+            // Inject the pipeline's own shader defines on top of the source the ShaderManager
+            // produced. Without these, defines like PORTAL_LAYERS are undefined, and worse, a
+            // vertex and fragment stage can end up with different defines and therefore different
+            // varyings.
+            String vertexSource = com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
+                    source.get(pipeline.getVertexShader(), ShaderType.VERTEX), pipeline.getShaderDefines());
+            String fragmentSource = com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
+                    source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT), pipeline.getShaderDefines());
+            MetalShaderCompiler.CompiledShader vs = compiler.compile(
+                    pipeline.getVertexShader().toString(), vertexSource, ShaderType.VERTEX);
+            MetalShaderCompiler.CompiledShader fs = compiler.compile(
+                    pipeline.getFragmentShader().toString(), fragmentSource, ShaderType.FRAGMENT);
+
+            if (DEBUG_LOGGED.incrementAndGet() <= 3) {
+                System.out.println("[MetalMod] pipeline debug " + pipeline.getLocation()
+                        + " vsInputs=" + vs.inputs());
+                VertexFormat[] debugFormats = pipeline.getVertexFormatBindings();
+                for (int slot = 0; slot < debugFormats.length; slot++) {
+                    if (debugFormats[slot] != null && debugFormats[slot].getVertexSize() > 0) {
+                        System.out.println("[MetalMod]   slot " + slot + " size=" + debugFormats[slot].getVertexSize()
+                                + " elements=" + debugFormats[slot].getElements());
+                    }
+                }
+            }
+
+            MemorySegment vlib = MetalNative.libraryCreate(device.deviceHandle(), vs.msl());
+            if (vlib.address() == 0) {
+                System.err.println("[MetalMod] vertex MSL failed for " + pipeline.getLocation());
+                return null;
+            }
+            MemorySegment flib = MetalNative.libraryCreate(device.deviceHandle(), fs.msl());
+            if (flib.address() == 0) {
+                MetalNative.libraryRelease(vlib);
+                System.err.println("[MetalMod] fragment MSL failed for " + pipeline.getLocation());
+                return null;
+            }
+
+            ColorTargetState color = pipeline.getColorTargetState();
+            long colorFormat = color != null ? MetalFormat.mtlPixelFormat(color.format()) : 0L;
+            int writeMask = color != null ? MetalFormat.mtlWriteMask(color.writeMask()) : 15;
+            int blendEnabled = 0;
+            int srcColor = 1, dstColor = 0, opColor = 0, srcAlpha = 1, dstAlpha = 0, opAlpha = 0;
+            if (color != null && color.blendFunction().isPresent()) {
+                var blend = color.blendFunction().get();
+                blendEnabled = 1;
+                srcColor = MetalFormat.mtlBlendFactor(blend.color().sourceFactor());
+                dstColor = MetalFormat.mtlBlendFactor(blend.color().destFactor());
+                opColor = MetalFormat.mtlBlendOp(blend.color().op());
+                srcAlpha = MetalFormat.mtlBlendFactor(blend.alpha().sourceFactor());
+                dstAlpha = MetalFormat.mtlBlendFactor(blend.alpha().destFactor());
+                opAlpha = MetalFormat.mtlBlendOp(blend.alpha().op());
+            }
+
+            DepthStencilState depth = pipeline.getDepthStencilState();
+            long depthFormat = (depth != null && pipeline.wantsDepthTexture())
+                    ? MetalFormat.mtlPixelFormat(GpuFormat.D32_FLOAT) : 0L;
+            int depthCompare = depth != null ? MetalFormat.mtlCompare(depth.depthTest()) : 7;
+            int depthWrite = depth != null && depth.writeDepth() ? 1 : 0;
+            float biasScale = depth != null ? depth.depthBiasScaleFactor() : 0.0f;
+            float biasConstant = depth != null ? depth.depthBiasConstant() : 0.0f;
+
+            int topology = MetalFormat.mtlTopology(pipeline.getPrimitiveTopology());
+            int cullMode = pipeline.isCull() ? 2 : 0;
+            int fillMode = MetalFormat.mtlFillMode(pipeline.getPolygonMode());
+
+            try (Arena arena = Arena.ofConfined()) {
+                VertexFormat[] formats = pipeline.getVertexFormatBindings();
+                MemorySegment layouts = arena.allocate(LAYOUT_LAYOUT.byteSize() * Math.max(1, formats.length));
+                MemorySegment attributes = arena.allocate(ATTRIBUTE_LAYOUT.byteSize() * 64);
+                int layoutCount = 0;
+                int attributeCount = 0;
+
+                for (int slot = 0; slot < formats.length; slot++) {
+                    VertexFormat format = formats[slot];
+                    if (format == null || format.getVertexSize() <= 0) {
+                        continue;
+                    }
+                    MemorySegment layout = layouts.asSlice(LAYOUT_LAYOUT.byteSize() * layoutCount, LAYOUT_LAYOUT.byteSize());
+                    layout.set(ValueLayout.JAVA_INT, 0, slot);
+                    layout.set(ValueLayout.JAVA_INT, 4, format.getVertexSize());
+                    layout.set(ValueLayout.JAVA_INT, 8, format.getStepRate() > 0 ? 2 : 1);
+                    layout.set(ValueLayout.JAVA_INT, 12, Math.max(1, format.getStepRate()));
+                    layoutCount++;
+
+                    for (VertexFormatElement element : format.getElements()) {
+                        Integer location = vs.inputs().get(element.name());
+                        if (location == null || attributeCount >= 64) {
+                            continue;
+                        }
+                        MemorySegment attribute = attributes.asSlice(
+                                ATTRIBUTE_LAYOUT.byteSize() * attributeCount, ATTRIBUTE_LAYOUT.byteSize());
+                        attribute.set(ValueLayout.JAVA_INT, 0, location);
+                        attribute.set(ValueLayout.JAVA_INT, 4, slot);
+                        attribute.set(ValueLayout.JAVA_INT, 8, MetalFormat.mtlVertexFormat(element.format()));
+                        attribute.set(ValueLayout.JAVA_INT, 12, element.offset());
+                        attributeCount++;
+                    }
+                }
+
+                MemorySegment pipe = MetalNative.renderPipelineCreate(device.deviceHandle(),
+                        vlib, "main0", flib, "main0",
+                        colorFormat, writeMask, blendEnabled,
+                        srcColor, dstColor, opColor, srcAlpha, dstAlpha, opAlpha,
+                        depthFormat, depthCompare, depthWrite,
+                        topology, 1 /* CCW */, cullMode, fillMode,
+                        biasScale, biasConstant,
+                        layouts, layoutCount, attributes, attributeCount);
+                if (pipe.address() == 0) {
+                    MetalNative.libraryRelease(vlib);
+                    MetalNative.libraryRelease(flib);
+                    System.err.println("[MetalMod] native pipeline creation failed for " + pipeline.getLocation());
+                    return null;
+                }
+                return new MetalRenderPipeline(pipe, vlib, flib,
+                        vs.vertexBuffers(), fs.fragmentBuffers(),
+                        vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology);
+            }
+        } catch (Throwable t) {
+            System.err.println("[MetalMod] pipeline compile failed for " + pipeline.getLocation() + ": " + t);
+            return null;
+        }
+    }
+
+    public MemorySegment handle() { return this.handle; }
+    public int topology() { return this.topology; }
+    public int vertexBuffer(String name) { return this.vertexBuffers.getOrDefault(name, -1); }
+    public int fragmentBuffer(String name) { return this.fragmentBuffers.getOrDefault(name, -1); }
+    public int vertexTexture(String name) { return this.vertexTextures.getOrDefault(name, -1); }
+    public int fragmentTexture(String name) { return this.fragmentTextures.getOrDefault(name, -1); }
+    public int vertexSampler(String name) { return this.vertexSamplers.getOrDefault(name, -1); }
+    public int fragmentSampler(String name) { return this.fragmentSamplers.getOrDefault(name, -1); }
+
+    public void close() {
+        if (this.closed) {
+            return;
+        }
+        this.closed = true;
+        if (this.handle.address() != 0) {
+            MetalNative.renderPipelineRelease(this.handle);
+        }
+        if (this.vertexLibrary.address() != 0) {
+            MetalNative.libraryRelease(this.vertexLibrary);
+        }
+        if (this.fragmentLibrary.address() != 0) {
+            MetalNative.libraryRelease(this.fragmentLibrary);
+        }
+    }
+}

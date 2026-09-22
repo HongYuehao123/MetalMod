@@ -121,6 +121,71 @@ MMM_API int mmm_clear_textures(void* queue,
                                void* depthTexture, bool hasDepth, double depthValue);
 
 // ---------------------------------------------------------------------------------------------
+// Shader libraries, pipelines and drawing (Phase 3)
+// ---------------------------------------------------------------------------------------------
+
+/// Vertex buffer layout and attribute records mirror MTLVertexDescriptor. The Java side fills the
+/// Metal enum values, because MetalFormat owns that mapping.
+typedef struct {
+    int32_t bufferIndex;
+    int32_t stride;
+    int32_t stepFunction;   // MTLVertexStepFunction: 1 = per vertex, 2 = per instance
+    int32_t stepRate;
+} MMMVertexBufferLayout;
+
+typedef struct {
+    int32_t location;
+    int32_t bufferIndex;
+    int32_t format;         // MTLVertexFormat raw value
+    int32_t offset;
+} MMMVertexAttribute;
+
+/// Compile an MSL source string into an MTLLibrary. Returns NULL and logs on failure.
+MMM_API void* mmm_library_create(void* device, const char* source, size_t length);
+MMM_API void  mmm_library_release(void* library);
+
+/// Build a render pipeline state (and its depth-stencil state) from two MSL libraries.
+/// Returns an opaque MMMPipeline* or NULL. Colour/depth formats are MTLPixelFormat values; the
+/// blend/compare/topology/winding/cull/fill values are Metal enum raw values.
+MMM_API void* mmm_render_pipeline_create(
+    void* device,
+    void* vertexLibrary, const char* vertexFunction,
+    void* fragmentLibrary, const char* fragmentFunction,
+    int64_t colorFormat, int32_t colorWriteMask, int32_t blendEnabled,
+    int32_t blendSrcColor, int32_t blendDstColor, int32_t blendOpColor,
+    int32_t blendSrcAlpha, int32_t blendDstAlpha, int32_t blendOpAlpha,
+    int64_t depthFormat, int32_t depthCompare, int32_t depthWrite,
+    int32_t topology, int32_t winding, int32_t cullMode, int32_t triangleFill,
+    float depthBiasScale, float depthBiasConstant,
+    const MMMVertexBufferLayout* buffers, int32_t bufferCount,
+    const MMMVertexAttribute* attributes, int32_t attributeCount);
+MMM_API void mmm_render_pipeline_release(void* pipeline);
+
+/// Begin a render pass. colorTextures/colorLoadClear/clearColors are parallel arrays of length
+/// colorCount; clearColors holds 4 floats per attachment. Returns an encoder or NULL.
+MMM_API void* mmm_render_pass_begin(
+    void* commandBuffer,
+    int32_t colorCount, void* const* colorTextures,
+    const int32_t* colorLoadClear, const float* clearColors,
+    void* depthTexture, int32_t depthLoadClear, double depthValue,
+    int32_t width, int32_t height);
+MMM_API void mmm_render_pass_end(void* encoder);
+MMM_API void mmm_render_pass_set_pipeline(void* encoder, void* pipeline);
+MMM_API void mmm_render_pass_set_vertex_buffer(void* encoder, void* buffer, int64_t offset, int32_t index);
+MMM_API void mmm_render_pass_set_fragment_buffer(void* encoder, void* buffer, int64_t offset, int32_t index);
+MMM_API void mmm_render_pass_set_vertex_texture(void* encoder, void* texture, int32_t index);
+MMM_API void mmm_render_pass_set_fragment_texture(void* encoder, void* texture, int32_t index);
+MMM_API void mmm_render_pass_set_vertex_sampler(void* encoder, void* sampler, int32_t index);
+MMM_API void mmm_render_pass_set_fragment_sampler(void* encoder, void* sampler, int32_t index);
+MMM_API void mmm_render_pass_set_scissor(void* encoder, int32_t x, int32_t y, int32_t width, int32_t height);
+MMM_API void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart,
+                                  int32_t vertexCount, int32_t instanceCount, int32_t firstInstance);
+MMM_API void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBuffer,
+                                          int64_t indexBufferOffset, int32_t indexType,
+                                          int32_t indexCount, int32_t instanceCount,
+                                          int32_t firstIndex, int32_t baseVertex, int32_t firstInstance);
+
+// ---------------------------------------------------------------------------------------------
 // Surface (CAMetalLayer)
 // ---------------------------------------------------------------------------------------------
 
@@ -151,6 +216,11 @@ MMM_API void* mmm_layer_create_for_ns_window(void* nsWindow);
 /// Returns 0 on success, non-zero on failure.
 MMM_API int mmm_layer_present_clear(void* layer, void* drawable,
                                     float r, float g, float b, float a);
+
+/// Render sourceTexture into the drawable with a built-in full-screen blit pipeline, then present
+/// it. Encoding the blit and the present in one command buffer on the present queue is what keeps
+/// them ordered. Pass a NULL source to clear instead.
+MMM_API int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture);
 
 // ---------------------------------------------------------------------------------------------
 // Command buffers and render passes

@@ -34,6 +34,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     private int width;
     private int height;
     private MemorySegment drawable = MemorySegment.NULL;
+    private MemorySegment sourceTexture = MemorySegment.NULL;
     private final float[] clearColor = FIRST_LIGHT_CLEAR.clone();
     private boolean closed;
 
@@ -88,13 +89,14 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     @Override
     public void blitFromTexture(CommandEncoderBackend encoder, GpuTextureView colorTextureView) {
-        // Draws are inert, so the blit source is empty. Pulse the first-light colour so a frozen
-        // window is visibly distinguishable from a live present loop.
-        float pulse = 0.80f + 0.20f * (float) Math.sin(this.acquiredFrames * 0.06);
-        this.clearColor[0] = FIRST_LIGHT_CLEAR[0] * pulse;
-        this.clearColor[1] = FIRST_LIGHT_CLEAR[1] * pulse;
-        this.clearColor[2] = FIRST_LIGHT_CLEAR[2] * pulse;
-        this.clearColor[3] = 1.0f;
+        // The engine hands us its main render target's colour view; present() blits it into the
+        // drawable. Falls back to a clear when there is no source (or no draws produced one).
+        this.sourceTexture = colorTextureView instanceof MetalTextureView metal
+                ? metal.handle() : MemorySegment.NULL;
+        if (this.sourceTexture.address() == 0) {
+            float[] last = this.device.copyLastClearColor();
+            System.arraycopy(last, 0, this.clearColor, 0, 4);
+        }
     }
 
     @Override
@@ -103,13 +105,19 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             return;
         }
         float[] color = this.clearColor;
-        int rc = MetalNative.layerPresentClear(this.layer, this.drawable,
-                color[0], color[1], color[2], color[3]);
+        int rc;
+        if (this.sourceTexture.address() != 0) {
+            rc = MetalNative.layerPresentTexture(this.layer, this.drawable, this.sourceTexture);
+        } else {
+            rc = MetalNative.layerPresentClear(this.layer, this.drawable,
+                    color[0], color[1], color[2], color[3]);
+        }
+        this.sourceTexture = MemorySegment.NULL;
         if (rc != 0) {
             System.err.println("[MetalMod] CAMetalLayer present failed with status " + rc);
         } else {
             this.presentedFrames++;
-            if (this.presentedFrames == 1 || this.presentedFrames % 600 == 0) {
+            if (this.presentedFrames == 1 || this.presentedFrames % 60 == 0) {
                 System.out.println("[MetalMod] presented " + this.presentedFrames
                         + " frame(s) on Metal | surface " + this.width + "x" + this.height
                         + " | clear RGBA(" + color[0] + ", " + color[1] + ", " + color[2]

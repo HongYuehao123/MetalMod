@@ -343,6 +343,310 @@ void mmm_sampler_release(void* sampler) {
 // Clear
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// Shader libraries, pipelines and drawing
+// ---------------------------------------------------------------------------------------------
+
+void* mmm_library_create(void* device, const char* source, size_t length) {
+    id<MTLDevice> dev = mmm_device(device);
+    if (dev == nil || source == NULL) return NULL;
+
+    @autoreleasepool {
+        NSString* text = [[NSString alloc] initWithBytes:source
+                                                  length:length
+                                                encoding:NSUTF8StringEncoding];
+        NSError* error = nil;
+        id<MTLLibrary> library = [dev newLibraryWithSource:text options:nil error:&error];
+        if (library == nil) {
+            NSLog(@"[MetalMod] MSL compilation failed: %@", error.localizedDescription);
+            return NULL;
+        }
+        return (__bridge_retained void*)library;
+    }
+}
+
+void mmm_library_release(void* library) {
+    if (library == NULL) return;
+    @autoreleasepool {
+        id<MTLLibrary> released = (__bridge_transfer id<MTLLibrary>)library;
+        (void)released;
+    }
+}
+
+// A pipeline plus the depth-stencil state it must be used with (Metal keeps them separate).
+typedef struct MMMPipeline {
+    void* pipelineState;
+    void* depthStencilState;
+    int32_t topology;
+    int32_t cullMode;
+    int32_t triangleFill;
+    float depthBiasScale;
+    float depthBiasConstant;
+} MMMPipeline;
+
+void* mmm_render_pipeline_create(
+    void* device,
+    void* vertexLibrary, const char* vertexFunction,
+    void* fragmentLibrary, const char* fragmentFunction,
+    int64_t colorFormat, int32_t colorWriteMask, int32_t blendEnabled,
+    int32_t blendSrcColor, int32_t blendDstColor, int32_t blendOpColor,
+    int32_t blendSrcAlpha, int32_t blendDstAlpha, int32_t blendOpAlpha,
+    int64_t depthFormat, int32_t depthCompare, int32_t depthWrite,
+    int32_t topology, int32_t winding, int32_t cullMode, int32_t triangleFill,
+    float depthBiasScale, float depthBiasConstant,
+    const MMMVertexBufferLayout* buffers, int32_t bufferCount,
+    const MMMVertexAttribute* attributes, int32_t attributeCount) {
+    id<MTLDevice> dev = mmm_device(device);
+    id<MTLLibrary> vlib = (__bridge id<MTLLibrary>)vertexLibrary;
+    id<MTLLibrary> flib = (__bridge id<MTLLibrary>)fragmentLibrary;
+    if (dev == nil || vlib == nil || flib == nil || vertexFunction == NULL || fragmentFunction == NULL) {
+        return NULL;
+    }
+
+    @autoreleasepool {
+        id<MTLFunction> vfn = [vlib newFunctionWithName:[NSString stringWithUTF8String:vertexFunction]];
+        id<MTLFunction> ffn = [flib newFunctionWithName:[NSString stringWithUTF8String:fragmentFunction]];
+        if (vfn == nil || ffn == nil) {
+            NSLog(@"[MetalMod] MSL function not found: %s / %s", vertexFunction, fragmentFunction);
+            return NULL;
+        }
+
+        MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
+        for (int32_t i = 0; i < bufferCount; i++) {
+            const MMMVertexBufferLayout* layout = &buffers[i];
+            if (layout->bufferIndex < 0 || layout->bufferIndex >= 31) continue;
+            vertexDescriptor.layouts[layout->bufferIndex].stride = (NSUInteger)layout->stride;
+            vertexDescriptor.layouts[layout->bufferIndex].stepFunction =
+                (MTLVertexStepFunction)layout->stepFunction;
+            vertexDescriptor.layouts[layout->bufferIndex].stepRate = (NSUInteger)layout->stepRate;
+        }
+        for (int32_t i = 0; i < attributeCount; i++) {
+            const MMMVertexAttribute* attribute = &attributes[i];
+            if (attribute->location < 0 || attribute->location >= 31) continue;
+            vertexDescriptor.attributes[attribute->location].format =
+                (MTLVertexFormat)attribute->format;
+            vertexDescriptor.attributes[attribute->location].offset = (NSUInteger)attribute->offset;
+            vertexDescriptor.attributes[attribute->location].bufferIndex = (NSUInteger)attribute->bufferIndex;
+        }
+
+        MTLRenderPipelineDescriptor* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        descriptor.vertexFunction = vfn;
+        descriptor.fragmentFunction = ffn;
+        descriptor.vertexDescriptor = vertexDescriptor;
+        descriptor.rasterSampleCount = 1;
+        descriptor.colorAttachments[0].pixelFormat = (MTLPixelFormat)colorFormat;
+        descriptor.colorAttachments[0].writeMask = (MTLColorWriteMask)colorWriteMask;
+        if (blendEnabled) {
+            descriptor.colorAttachments[0].blendingEnabled = YES;
+            descriptor.colorAttachments[0].sourceRGBBlendFactor = (MTLBlendFactor)blendSrcColor;
+            descriptor.colorAttachments[0].destinationRGBBlendFactor = (MTLBlendFactor)blendDstColor;
+            descriptor.colorAttachments[0].rgbBlendOperation = (MTLBlendOperation)blendOpColor;
+            descriptor.colorAttachments[0].sourceAlphaBlendFactor = (MTLBlendFactor)blendSrcAlpha;
+            descriptor.colorAttachments[0].destinationAlphaBlendFactor = (MTLBlendFactor)blendDstAlpha;
+            descriptor.colorAttachments[0].alphaBlendOperation = (MTLBlendOperation)blendOpAlpha;
+        }
+        if (depthFormat != 0) {
+            descriptor.depthAttachmentPixelFormat = (MTLPixelFormat)depthFormat;
+        }
+
+        NSError* error = nil;
+        id<MTLRenderPipelineState> state = [dev newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        if (state == nil) {
+            NSLog(@"[MetalMod] Render pipeline creation failed: %@", error.localizedDescription);
+            return NULL;
+        }
+
+        MTLDepthStencilDescriptor* depthDescriptor = [[MTLDepthStencilDescriptor alloc] init];
+        depthDescriptor.depthCompareFunction = (MTLCompareFunction)depthCompare;
+        depthDescriptor.depthWriteEnabled = depthWrite ? YES : NO;
+        id<MTLDepthStencilState> depthState = [dev newDepthStencilStateWithDescriptor:depthDescriptor];
+
+        MMMPipeline* pipeline = (MMMPipeline*)calloc(1, sizeof(MMMPipeline));
+        if (pipeline == NULL) return NULL;
+        pipeline->pipelineState = (__bridge_retained void*)state;
+        pipeline->depthStencilState = (__bridge_retained void*)depthState;
+        pipeline->topology = topology;
+        pipeline->cullMode = cullMode;
+        pipeline->triangleFill = triangleFill;
+        pipeline->depthBiasScale = depthBiasScale;
+        pipeline->depthBiasConstant = depthBiasConstant;
+        return pipeline;
+    }
+}
+
+void mmm_render_pipeline_release(void* pipeline) {
+    if (pipeline == NULL) return;
+    MMMPipeline* metalPipeline = (MMMPipeline*)pipeline;
+    @autoreleasepool {
+        if (metalPipeline->pipelineState) {
+            id<MTLRenderPipelineState> released = (__bridge_transfer id<MTLRenderPipelineState>)metalPipeline->pipelineState;
+            (void)released;
+        }
+        if (metalPipeline->depthStencilState) {
+            id<MTLDepthStencilState> released = (__bridge_transfer id<MTLDepthStencilState>)metalPipeline->depthStencilState;
+            (void)released;
+        }
+    }
+    free(metalPipeline);
+}
+
+void* mmm_render_pass_begin(void* commandBuffer, int32_t colorCount, void* const* colorTextures,
+                            const int32_t* colorLoadClear, const float* clearColors,
+                            void* depthTexture, int32_t depthLoadClear, double depthValue,
+                            int32_t width, int32_t height) {
+    id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
+    if (buffer == nil) return NULL;
+
+    @autoreleasepool {
+        MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        for (int32_t i = 0; i < colorCount && i < 8; i++) {
+            id<MTLTexture> texture = mmm_texture(colorTextures[i]);
+            if (texture == nil) continue;
+            descriptor.colorAttachments[i].texture = texture;
+            bool clear = colorLoadClear != NULL && colorLoadClear[i] != 0;
+            descriptor.colorAttachments[i].loadAction = clear ? MTLLoadActionClear : MTLLoadActionLoad;
+            descriptor.colorAttachments[i].storeAction = MTLStoreActionStore;
+            if (clear) {
+                if (clearColors != NULL) {
+                    descriptor.colorAttachments[i].clearColor = MTLClearColorMake(
+                        clearColors[i * 4 + 0], clearColors[i * 4 + 1],
+                        clearColors[i * 4 + 2], clearColors[i * 4 + 3]);
+                } else {
+                    descriptor.colorAttachments[i].clearColor = MTLClearColorMake(0, 0, 0, 0);
+                }
+            }
+        }
+        id<MTLTexture> depth = mmm_texture(depthTexture);
+        if (depth != nil) {
+            descriptor.depthAttachment.texture = depth;
+            descriptor.depthAttachment.loadAction = depthLoadClear ? MTLLoadActionClear : MTLLoadActionLoad;
+            descriptor.depthAttachment.storeAction = MTLStoreActionStore;
+            if (depthLoadClear) {
+                descriptor.depthAttachment.clearDepth = depthValue;
+            }
+        }
+
+        id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:descriptor];
+        if (encoder == nil) return NULL;
+        [encoder setViewport:(MTLViewport){0.0, 0.0, (double)width, (double)height, 0.0, 1.0}];
+        [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
+        return (__bridge_retained void*)encoder;
+    }
+}
+
+void mmm_render_pass_end(void* encoder) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    @autoreleasepool {
+        [metalEncoder endEncoding];
+        id<MTLRenderCommandEncoder> released = (__bridge_transfer id<MTLRenderCommandEncoder>)encoder;
+        (void)released;
+    }
+}
+
+void mmm_render_pass_set_pipeline(void* encoder, void* pipeline) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    MMMPipeline* metalPipeline = (MMMPipeline*)pipeline;
+    if (metalEncoder == nil || metalPipeline == NULL) return;
+    @autoreleasepool {
+        if (metalPipeline->pipelineState) {
+            [metalEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)metalPipeline->pipelineState];
+        }
+        if (metalPipeline->depthStencilState) {
+            [metalEncoder setDepthStencilState:(__bridge id<MTLDepthStencilState>)metalPipeline->depthStencilState];
+        }
+        [metalEncoder setCullMode:(MTLCullMode)metalPipeline->cullMode];
+        [metalEncoder setTriangleFillMode:(MTLTriangleFillMode)metalPipeline->triangleFill];
+        if (metalPipeline->depthBiasScale != 0.0f || metalPipeline->depthBiasConstant != 0.0f) {
+            [metalEncoder setDepthBias:metalPipeline->depthBiasConstant
+                            slopeScale:metalPipeline->depthBiasScale
+                                 clamp:0.0f];
+        }
+    }
+}
+
+void mmm_render_pass_set_vertex_buffer(void* encoder, void* buffer, int64_t offset, int32_t index) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLBuffer> metalBuffer = (__bridge id<MTLBuffer>)buffer;
+    if (metalEncoder == nil || metalBuffer == nil) return;
+    [metalEncoder setVertexBuffer:metalBuffer offset:(NSUInteger)offset atIndex:(NSUInteger)index];
+}
+
+void mmm_render_pass_set_fragment_buffer(void* encoder, void* buffer, int64_t offset, int32_t index) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLBuffer> metalBuffer = (__bridge id<MTLBuffer>)buffer;
+    if (metalEncoder == nil || metalBuffer == nil) return;
+    [metalEncoder setFragmentBuffer:metalBuffer offset:(NSUInteger)offset atIndex:(NSUInteger)index];
+}
+
+void mmm_render_pass_set_vertex_texture(void* encoder, void* texture, int32_t index) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLTexture> metalTexture = mmm_texture(texture);
+    if (metalEncoder == nil || metalTexture == nil) return;
+    [metalEncoder setVertexTexture:metalTexture atIndex:(NSUInteger)index];
+}
+
+void mmm_render_pass_set_fragment_texture(void* encoder, void* texture, int32_t index) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLTexture> metalTexture = mmm_texture(texture);
+    if (metalEncoder == nil || metalTexture == nil) return;
+    [metalEncoder setFragmentTexture:metalTexture atIndex:(NSUInteger)index];
+}
+
+void mmm_render_pass_set_vertex_sampler(void* encoder, void* sampler, int32_t index) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLSamplerState> metalSampler = (__bridge id<MTLSamplerState>)sampler;
+    if (metalEncoder == nil || metalSampler == nil) return;
+    [metalEncoder setVertexSamplerState:metalSampler atIndex:(NSUInteger)index];
+}
+
+void mmm_render_pass_set_fragment_sampler(void* encoder, void* sampler, int32_t index) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLSamplerState> metalSampler = (__bridge id<MTLSamplerState>)sampler;
+    if (metalEncoder == nil || metalSampler == nil) return;
+    [metalEncoder setFragmentSamplerState:metalSampler atIndex:(NSUInteger)index];
+}
+
+void mmm_render_pass_set_scissor(void* encoder, int32_t x, int32_t y, int32_t width, int32_t height) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    MTLScissorRect rect = {(NSUInteger)MAX(0, x), (NSUInteger)MAX(0, y),
+                           (NSUInteger)MAX(1, width), (NSUInteger)MAX(1, height)};
+    [metalEncoder setScissorRect:rect];
+}
+
+void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart, int32_t vertexCount,
+                          int32_t instanceCount, int32_t firstInstance) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (metalEncoder == nil) return;
+    [metalEncoder drawPrimitives:(MTLPrimitiveType)topology
+                     vertexStart:(NSUInteger)MAX(0, vertexStart)
+                     vertexCount:(NSUInteger)MAX(0, vertexCount)
+                   instanceCount:(NSUInteger)MAX(1, instanceCount)
+                    baseInstance:(NSUInteger)MAX(0, firstInstance)];
+}
+
+void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBuffer,
+                                  int64_t indexBufferOffset, int32_t indexType, int32_t indexCount,
+                                  int32_t instanceCount, int32_t firstIndex, int32_t baseVertex,
+                                  int32_t firstInstance) {
+    id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    id<MTLBuffer> indices = (__bridge id<MTLBuffer>)indexBuffer;
+    if (metalEncoder == nil || indices == nil) return;
+    NSUInteger offset = (NSUInteger)indexBufferOffset;
+    if (firstIndex > 0) {
+        offset += (NSUInteger)firstIndex * (indexType == MTLIndexTypeUInt16 ? 2u : 4u);
+    }
+    [metalEncoder drawIndexedPrimitives:(MTLPrimitiveType)topology
+                             indexCount:(NSUInteger)MAX(0, indexCount)
+                              indexType:(MTLIndexType)indexType
+                            indexBuffer:indices
+                      indexBufferOffset:offset
+                          instanceCount:(NSUInteger)MAX(1, instanceCount)
+                             baseVertex:(NSInteger)baseVertex
+                           baseInstance:(NSUInteger)MAX(0, firstInstance)];
+}
+
 int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
                        float r, float g, float b, float a,
                        void* depthTexture, bool hasDepth, double depthValue) {
@@ -552,6 +856,99 @@ void* mmm_layer_create_for_ns_window(void* nsWindow) {
         if (view == nil) return NULL;
         return mmm_layer_create((__bridge void*)view);
     }
+}
+
+// Built-in blit pipeline: a full-screen triangle sampling the engine's render target. Cached
+// because the drawable format is fixed (BGRA8) and the pipeline is identical every frame.
+static id<MTLRenderPipelineState> g_BlitPipeline = nil;
+static id<MTLSamplerState> g_BlitSampler = nil;
+
+static bool mmm_ensure_blit_pipeline(id<MTLDevice> device) {
+    if (g_BlitPipeline != nil) return true;
+
+    @autoreleasepool {
+        static const char* kMsl =
+            "#include <metal_stdlib>\n"
+            "using namespace metal;\n"
+            "struct VOut { float4 pos [[position]]; float2 uv; };\n"
+            "vertex VOut blit_v(uint vid [[vertex_id]]) {\n"
+            "    float2 p = float2((float)((vid << 1) & 2), (float)(vid & 2));\n"
+            "    VOut o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); o.uv = float2(p.x, 1.0 - p.y); return o;\n"
+            "}\n"
+            "fragment float4 blit_f(texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]],\n"
+            "                       VOut in [[stage_in]]) { return src.sample(s, in.uv); }\n";
+
+        NSError* error = nil;
+        NSString* text = [NSString stringWithUTF8String:kMsl];
+        id<MTLLibrary> library = [device newLibraryWithSource:text options:nil error:&error];
+        if (library == nil) {
+            NSLog(@"[MetalMod] blit MSL failed: %@", error.localizedDescription);
+            return false;
+        }
+        id<MTLFunction> vertexFn = [library newFunctionWithName:@"blit_v"];
+        id<MTLFunction> fragmentFn = [library newFunctionWithName:@"blit_f"];
+        if (vertexFn == nil || fragmentFn == nil) return false;
+
+        MTLRenderPipelineDescriptor* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+        descriptor.vertexFunction = vertexFn;
+        descriptor.fragmentFunction = fragmentFn;
+        descriptor.rasterSampleCount = 1;
+        descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        id<MTLRenderPipelineState> pipeline =
+            [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        if (pipeline == nil) {
+            NSLog(@"[MetalMod] blit pipeline failed: %@", error.localizedDescription);
+            return false;
+        }
+
+        MTLSamplerDescriptor* samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
+        samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
+        samplerDescriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        g_BlitSampler = [device newSamplerStateWithDescriptor:samplerDescriptor];
+        g_BlitPipeline = pipeline;
+        return g_BlitSampler != nil;
+    }
+}
+
+int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) {
+    CAMetalLayer* metalLayer = mmm_layer(layer);
+    id<CAMetalDrawable> metalDrawable = (__bridge id<CAMetalDrawable>)drawable;
+    id<MTLTexture> source = mmm_texture(sourceTexture);
+    if (metalLayer == nil || metalDrawable == nil) return -1;
+    if (source == nil) return -2;
+
+    @autoreleasepool {
+        id<MTLDevice> dev = metalLayer.device;
+        if (dev == nil) return -3;
+        if (!mmm_ensure_blit_pipeline(dev)) return -4;
+
+        if (g_PresentQueue == nil) {
+            g_PresentQueue = [dev newCommandQueue];
+            g_PresentQueue.label = @"MetalMod present queue";
+        }
+        id<MTLCommandBuffer> commandBuffer = [g_PresentQueue commandBuffer];
+        commandBuffer.label = @"MetalMod present (blit)";
+
+        MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+        descriptor.colorAttachments[0].texture = metalDrawable.texture;
+        descriptor.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        [encoder setRenderPipelineState:g_BlitPipeline];
+        [encoder setFragmentTexture:source atIndex:0];
+        [encoder setFragmentSamplerState:g_BlitSampler atIndex:0];
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [encoder endEncoding];
+
+        [commandBuffer presentDrawable:metalDrawable];
+        [commandBuffer commit];
+
+        id<CAMetalDrawable> released = (__bridge_transfer id<CAMetalDrawable>)drawable;
+        (void)released;
+    }
+    return 0;
 }
 
 int mmm_layer_present_clear(void* layer, void* drawable,

@@ -5,37 +5,57 @@ import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.buffers.GpuFence;
 import com.mojang.blaze3d.systems.CommandEncoderBackend;
 import com.mojang.blaze3d.systems.GpuQueryPool;
-import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.systems.RenderPassDescriptor;
+import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.systems.TransientMemory;
 import com.mojang.blaze3d.textures.GpuTexture;
+import com.mojang.blaze3d.textures.GpuTextureView;
 import org.joml.Vector4fc;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalDouble;
 
-/**
- * Phase 2 command encoder.
- *
- * <p>Uploads, copies, clears and readbacks are real now. All resources use shared storage on this
- * backend, so they are implemented as CPU copies via `replaceRegion`/`getBytes` rather than blit
- * or render encoders. That is correct and simple; a GPU-side blit and private storage for
- * GPU-only resources are Phase 3 performance work.
- */
+/** Phase 3 command encoder: owns a Metal command buffer, records render passes into it, submits. */
 public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     private final MetalDevice device;
+    private MemorySegment commandBuffer = MemorySegment.NULL;
+    private MemorySegment currentEncoder = MemorySegment.NULL;
 
     public MetalCommandEncoderBackend(MetalDevice device) {
         this.device = device;
     }
 
-    private static MetalBuffer bufferOf(GpuBufferSlice slice) {
-        if (slice == null || !(slice.buffer() instanceof MetalBuffer buffer)) {
-            return null;
+    public MetalDevice device() {
+        return this.device;
+    }
+
+    private MemorySegment ensureCommandBuffer() {
+        if (this.commandBuffer.address() == 0) {
+            this.commandBuffer = MetalNative.commandBufferCreate(this.device.queueHandle());
         }
-        return buffer;
+        return this.commandBuffer;
+    }
+
+    static MemorySegment handleOf(GpuBuffer buffer) {
+        return buffer instanceof MetalBuffer metal ? metal.handle() : MemorySegment.NULL;
+    }
+
+    static MemorySegment handleOf(GpuBufferSlice slice) {
+        return slice == null ? MemorySegment.NULL : handleOf(slice.buffer());
+    }
+
+    static MemorySegment handleOf(GpuTextureView view) {
+        return view instanceof MetalTextureView metal ? metal.handle() : MemorySegment.NULL;
+    }
+
+    private static MetalBuffer bufferOf(GpuBufferSlice slice) {
+        return slice != null && slice.buffer() instanceof MetalBuffer metal ? metal : null;
     }
 
     private static MetalTexture textureOf(GpuTexture texture) {
@@ -53,7 +73,11 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public void submit() {
-        // CPU-side copies complete before this call; there is no queued GPU work of our own yet.
+        if (this.commandBuffer.address() != 0) {
+            MetalNative.commandBufferCommit(this.commandBuffer);
+            MetalNative.commandBufferRelease(this.commandBuffer);
+            this.commandBuffer = MemorySegment.NULL;
+        }
     }
 
     @Override
@@ -63,23 +87,91 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public RenderPassBackend createRenderPass(RenderPassDescriptor descriptor) {
-        return new MetalRenderPassBackend();
+        MemorySegment cb = ensureCommandBuffer();
+        List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colors = descriptor.colorAttachments();
+        int count = colors.size();
+        int width = 0;
+        int height = 0;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment colorTextures = arena.allocate(ValueLayout.ADDRESS, Math.max(1, count));
+            MemorySegment loadClear = arena.allocate(ValueLayout.JAVA_INT, Math.max(1, count));
+            MemorySegment clearColors = arena.allocate(ValueLayout.JAVA_FLOAT, Math.max(4, count * 4));
+
+            for (int i = 0; i < count; i++) {
+                RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment = colors.get(i);
+                GpuTextureView view = attachment.textureView();
+                if (view == null) {
+                    colorTextures.setAtIndex(ValueLayout.ADDRESS, i, MemorySegment.NULL);
+                    loadClear.setAtIndex(ValueLayout.JAVA_INT, i, 0);
+                    continue;
+                }
+                colorTextures.setAtIndex(ValueLayout.ADDRESS, i, handleOf(view));
+                Optional<Vector4fc> clear = attachment.clearValue();
+                if (clear != null && clear.isPresent()) {
+                    Vector4fc value = clear.get();
+                    loadClear.setAtIndex(ValueLayout.JAVA_INT, i, 1);
+                    clearColors.setAtIndex(ValueLayout.JAVA_FLOAT, i * 4, value.x());
+                    clearColors.setAtIndex(ValueLayout.JAVA_FLOAT, i * 4 + 1, value.y());
+                    clearColors.setAtIndex(ValueLayout.JAVA_FLOAT, i * 4 + 2, value.z());
+                    clearColors.setAtIndex(ValueLayout.JAVA_FLOAT, i * 4 + 3, value.w());
+                } else {
+                    loadClear.setAtIndex(ValueLayout.JAVA_INT, i, 0);
+                }
+                if (width == 0) {
+                    width = view.getWidth(0);
+                    height = view.getHeight(0);
+                }
+            }
+
+            MemorySegment depthTexture = MemorySegment.NULL;
+            boolean depthClear = false;
+            double depthValue = 0.0;
+            RenderPassDescriptor.Attachment<OptionalDouble> depth = descriptor.depthAttachment();
+            if (depth != null && depth.textureView() != null) {
+                depthTexture = handleOf(depth.textureView());
+                OptionalDouble clear = depth.clearValue();
+                if (clear != null && clear.isPresent()) {
+                    depthClear = true;
+                    depthValue = clear.getAsDouble();
+                }
+                if (width == 0) {
+                    width = depth.textureView().getWidth(0);
+                    height = depth.textureView().getHeight(0);
+                }
+            }
+            if (descriptor.renderArea != null) {
+                width = descriptor.renderArea.width();
+                height = descriptor.renderArea.height();
+            }
+
+            MemorySegment encoder = MetalNative.renderPassBegin(cb, count, colorTextures, loadClear,
+                    clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
+            this.currentEncoder = encoder;
+            if (encoder.address() == 0) {
+                System.err.println("[MetalMod] render pass begin failed");
+            }
+            return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height));
+        }
     }
 
     @Override
     public void submitRenderPass() {
+        if (this.currentEncoder.address() != 0) {
+            MetalNative.renderPassEnd(this.currentEncoder);
+            this.currentEncoder = MemorySegment.NULL;
+        }
     }
+
+    // Clears -------------------------------------------------------------------------------------
 
     @Override
     public void clearColorTexture(GpuTexture colorTexture, Vector4fc color) {
         recordClear(color);
         MetalTexture metal = textureOf(colorTexture);
-        if (metal == null) {
-            return;
+        if (metal != null) {
+            MetalNative.clearTextures(this.device.queueHandle(), metal.handle(), true,
+                    color.x(), color.y(), color.z(), color.w(), MemorySegment.NULL, false, 0.0);
         }
-        MetalNative.clearTextures(this.device.queueHandle(), metal.handle(), true,
-                color.x(), color.y(), color.z(), color.w(),
-                MemorySegment.NULL, false, 0.0);
     }
 
     @Override
@@ -88,12 +180,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         recordClear(color);
         MetalTexture colorMetal = textureOf(colorTexture);
         MetalTexture depthMetal = textureOf(depthTexture);
-        if (colorMetal == null && depthMetal == null) {
-            return;
-        }
         MetalNative.clearTextures(this.device.queueHandle(),
                 colorMetal == null ? MemorySegment.NULL : colorMetal.handle(), colorMetal != null,
-                color.x(), color.y(), color.z(), color.w(),
+                color == null ? 0f : color.x(), color == null ? 0f : color.y(),
+                color == null ? 0f : color.z(), color == null ? 0f : color.w(),
                 depthMetal == null ? MemorySegment.NULL : depthMetal.handle(), depthMetal != null, depth);
     }
 
@@ -101,32 +191,27 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     public void clearColorAndDepthTextures(GpuTexture colorTexture, Vector4fc color,
                                            GpuTexture depthTexture, double depth,
                                            int x, int y, int width, int height) {
-        // Metal clears whole attachments; the scissored variant is only used for partial clears,
-        // which no current caller does. Fall back to the full clear.
         clearColorAndDepthTextures(colorTexture, color, depthTexture, depth);
     }
 
     @Override
     public void clearDepthTexture(GpuTexture depthTexture, double depth) {
         MetalTexture metal = textureOf(depthTexture);
-        if (metal == null) {
-            return;
+        if (metal != null) {
+            MetalNative.clearTextures(this.device.queueHandle(), MemorySegment.NULL, false,
+                    0f, 0f, 0f, 0f, metal.handle(), true, depth);
         }
-        MetalNative.clearTextures(this.device.queueHandle(), MemorySegment.NULL, false,
-                0f, 0f, 0f, 0f, metal.handle(), true, depth);
     }
+
+    // Copies -------------------------------------------------------------------------------------
 
     @Override
     public void writeToBuffer(GpuBufferSlice slice, ByteBuffer data) {
         MetalBuffer buffer = bufferOf(slice);
-        if (buffer == null || !buffer.isMapped() || data == null) {
+        if (buffer == null || !buffer.isMapped() || data == null || data.remaining() <= 0) {
             return;
         }
-        int length = data.remaining();
-        if (length <= 0) {
-            return;
-        }
-        buffer.dataSlice(slice.offset(), length).asByteBuffer().put(data.duplicate());
+        buffer.dataSlice(slice.offset(), data.remaining()).asByteBuffer().put(data.duplicate());
     }
 
     @Override
@@ -140,9 +225,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (length <= 0) {
             return;
         }
-        MemorySegment from = src.dataSlice(source.offset(), length);
-        MemorySegment to = dst.dataSlice(target.offset(), length);
-        MemorySegment.copy(from, 0L, to, 0L, length);
+        MemorySegment.copy(src.dataSlice(source.offset(), length), 0L,
+                dst.dataSlice(target.offset(), length), 0L, length);
     }
 
     @Override
@@ -152,9 +236,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (metal == null || data == null) {
             return;
         }
-        long bytesPerRow = (long) width * metal.bytesPerPixel();
         MetalNative.textureReplaceRegion(metal.handle(), mipLevel, depthOrLayers, x, y, width, height,
-                data.duplicate(), bytesPerRow);
+                data.duplicate(), (long) width * metal.bytesPerPixel());
     }
 
     @Override
@@ -174,9 +257,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (offsetBytes < 0 || offsetBytes + needed > src.data().byteSize()) {
             return;
         }
-        MemorySegment data = src.dataSlice(offsetBytes, needed);
         MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, targetDepthOrLayers,
-                targetX, targetY, targetWidth, targetHeight, data, rowBytes);
+                targetX, targetY, targetWidth, targetHeight, src.dataSlice(offsetBytes, needed), rowBytes);
     }
 
     @Override
@@ -195,9 +277,8 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             long rowBytes = (long) width * metal.bytesPerPixel();
             long needed = rowBytes * height;
             if (targetOffset >= 0 && targetOffset + needed <= buffer.data().byteSize()) {
-                MemorySegment destination = buffer.dataSlice(targetOffset, needed);
                 MetalNative.textureReadRegion(metal.handle(), sourceMipLevel, 0, x, y, width, height,
-                        destination, needed, rowBytes);
+                        buffer.dataSlice(targetOffset, needed), needed, rowBytes);
             }
         }
         if (onComplete != null) {
@@ -218,11 +299,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         long size = rowBytes * height;
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment temp = arena.allocate(size);
-            int rc = MetalNative.textureReadRegion(src.handle(), sourceMipLevel, depthOrLayers,
-                    x, y, width, height, temp, size, rowBytes);
-            if (rc == 0) {
-                MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, depthOrLayers,
-                        x, y, width, height, temp, rowBytes);
+            if (MetalNative.textureReadRegion(src.handle(), sourceMipLevel, depthOrLayers, x, y, width,
+                    height, temp, size, rowBytes) == 0) {
+                MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, depthOrLayers, x, y,
+                        width, height, temp, rowBytes);
             }
         }
     }
@@ -234,6 +314,5 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public void writeTimestamp(GpuQueryPool pool, int index) {
-        // GPU timestamps land with the render-pass encoding in Phase 3.
     }
 }
