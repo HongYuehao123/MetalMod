@@ -86,7 +86,11 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
-## BUG-003 — Small black silhouettes float in the sky (world is unlit/flat black)
+## BUG-003 — Entities (squids/fish) and terrain render as flat black silhouettes
+
+> **Not a mystery artifact:** the small black shapes in the sky are **squids and fish** — real
+> entities that are being drawn, but without their textures/lighting. They only look unrecognisable
+> because entity rendering is unfinished. Filed so the missing entity/world shading is tracked.
 
 **Status:** open, unfixed.
 **Severity:** low / cosmetic, but it is the most visible sign that Phase 4/5 shader work is unfinished.
@@ -95,16 +99,16 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ### Symptoms
 
-Dozens of small solid-black shapes (item-like silhouettes) hang in the sky, and the terrain renders
-as flat black silhouettes against the sky with no textures or lightmap. GUI, text and the hotbar
+Squids and fish (and other entities) render as **solid black silhouettes**, and terrain renders the
+same way — geometry is there, but flat black with no textures or lightmap. GUI, text and the hotbar
 render correctly, and the sky colour is right.
 
 ### Suspected cause (unconfirmed)
 
-World rendering is geometry with textures/lighting still incomplete: entities/items and terrain are
-likely sampling an unbound lightmap/texture or using a shader whose inputs are not all bound yet.
-Tracked as the Phase 4/5 (shaders + vanilla parity) work rather than a Phase 3 regression.
+Entity and terrain shaders are not fully bound yet: they are likely sampling an unbound
+lightmap/texture or using a shader variant whose inputs are not all mapped. This is the Phase 4
+(shaders) / Phase 5 (vanilla parity) work, not a Phase 3 regression.
 
 ### Workaround
 
-None. use the default backend for normal play until Phase 5.
+None. Use the default backend for normal play until Phase 5.
