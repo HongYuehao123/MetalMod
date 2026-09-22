@@ -221,6 +221,11 @@ public final class RenderCheck {
             // backend cannot render - the pipeline builds state for one target.
             colorTargetLimitCheck();
 
+            // The two topologies nothing else draws. Both are live: DEBUG_POINTS for the debug
+            // renderers and TRIANGLE_STRIP for the leash. This table has already produced two real
+            // defects (BUG-014, BUG-015), so the remaining entries are worth a render.
+            topologyCheck(device, source);
+
             // The lightmap pass. It renders a full-screen triangle into a 16x16 target from a uniform
             // block, and world lighting is the lightmap, so a wrong block layout or a wrong
             // texel-to-light-level mapping is a wrong-looking world. The block is six floats
@@ -1265,6 +1270,206 @@ public final class RenderCheck {
         info.close();
         targetView.close();
         target.close();
+    }
+
+    /**
+     * Draw a point list and a triangle strip through the real backend and check the shapes.
+     *
+     * <p>These are the two topologies the other checks never touch. {@code POINTS} backs the debug
+     * renderers and {@code TRIANGLE_STRIP} backs the leash, and the topology table has already been
+     * wrong twice in ways that "looked close" - {@code LINES} mapped to line primitives and
+     * {@code TRIANGLE_FAN} to a triangle list - so the remaining entries get a picture rather than a
+     * table entry.
+     *
+     * <p>Points are placed at NDC +/-31/64 so each lands squarely inside one pixel, and the check
+     * reads those four pixels plus the centre: a topology that drew triangles or lines between them
+     * would light the centre instead. The strip is four vertices down the left edge, which covers the
+     * left half as a strip and only the lower-left triangle as a list.
+     */
+    private static void topologyCheck(MetalDevice device, ShaderSource source) throws Exception {
+        // POINTS, through the real DEBUG_POINTS pipeline. Its vertex shader sets
+        // gl_PointSize = LineWidth, and that matters: Metal leaves the point size *undefined* when
+        // the vertex function does not write [[point_size]]. A synthetic pipeline over core/gui -
+        // which does not - measured a 19x19 block for one point on one run, a 47x47 block for four
+        // points on another, and nothing at all on a third, all from identical code.
+        RenderPipeline points = (RenderPipeline) Class
+                .forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("DEBUG_POINTS").get(null);
+        device.precompilePipeline(points, source);
+        check("DEBUG_POINTS pipeline compiled", device.pipelineFor(points) != null, "");
+        if (device.pipelineFor(points) != null) {
+            ByteBuffer pixels = renderPoints(device, points, pointVertex(8.0f));
+            int minX = 999, maxX = -1, minY = 999, maxY = -1, total = 0;
+            for (int y = 0; y < HEIGHT; y++) {
+                for (int x = 0; x < WIDTH; x++) {
+                    if (red(pixels, x, y) > 60) {
+                        total++;
+                        minX = Math.min(minX, x);
+                        maxX = Math.max(maxX, x);
+                        minY = Math.min(minY, y);
+                        maxY = Math.max(maxY, y);
+                    }
+                }
+            }
+            int wide = maxX - minX + 1;
+            int tall = maxY - minY + 1;
+            check("DEBUG_POINTS draws one gl_PointSize-sized point: " + wide + "x" + tall + " pixels, "
+                            + total + " lit, at x " + minX + ".." + maxX + " y " + minY + ".." + maxY,
+                    wide == 8 && tall == 8 && total == 64, "");
+        }
+
+        // TRIANGLE_STRIP. Four vertices down the left edge: a strip covers the left half, a list
+        // would cover only the lower-left triangle.
+        RenderPipeline strip = topologyPipeline("strip", PrimitiveTopology.TRIANGLE_STRIP);
+        device.precompilePipeline(strip, source);
+        check("triangle strip pipeline compiled", device.pipelineFor(strip) != null, "");
+        if (device.pipelineFor(strip) != null) {
+            ByteBuffer pixels = renderTopology(device, strip, stripVertices(), 4);
+            int left = red(pixels, WIDTH / 4, HEIGHT / 2);
+            int right = red(pixels, 3 * WIDTH / 4, HEIGHT / 2);
+            check("TRIANGLE_STRIP covers the left half (R" + left + ") and not the right (R" + right
+                            + ") - a triangle list over the same four vertices would miss the"
+                            + " upper-left", left > 200 && right < 60, "");
+        }
+    }
+
+    /** A gui-shaded pipeline with the given topology, no depth state and no blending. */
+    private static RenderPipeline topologyPipeline(String name, PrimitiveTopology topology) throws Exception {
+        VertexFormat format = ((RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("GUI").get(null)).getVertexFormatBinding(0);
+        return RenderPipeline.builder()
+                .withLocation("topology_check/" + name)
+                .withVertexShader(Identifier.parse("minecraft:core/gui"))
+                .withFragmentShader(Identifier.parse("minecraft:core/gui"))
+                .withVertexBinding(0, format)
+                .withPrimitiveTopology(topology)
+                .withCull(false)
+                .withColorTargetState(new ColorTargetState(Optional.empty(),
+                        GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+                .build();
+    }
+
+    /** Draw a non-indexed topology into a fresh target over black and return the pixels. */
+    private static ByteBuffer renderTopology(MetalDevice device, RenderPipeline pipeline,
+                                             ByteBuffer vertexData, int vertexCount) {
+        GpuTexture target = device.createTexture("topology", GpuBuffer.USAGE_COPY_SRC
+                | GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuBuffer vertices = device.createBuffer(() -> "topology vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, vertexData);
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "topology")
+                .withColorAttachment(view, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.draw(vertexCount, 1, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        // The readback's bytes are copied out before the buffer is released: a ByteBuffer view over a
+        // closed MetalBuffer reads freed memory, and the resulting garbage changes run to run, which
+        // is exactly what it looks like - a backend that draws something different every time.
+        byte[] copy = new byte[WIDTH * HEIGHT * 4];
+        ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder()).get(copy);
+        readback.close();
+        transforms.close();
+        projection.close();
+        vertices.close();
+        view.close();
+        target.close();
+        return ByteBuffer.wrap(copy).order(ByteOrder.nativeOrder());
+    }
+
+    /**
+     * One 20-byte debug_point vertex at NDC (0,0): Position RGB32_FLOAT, Color RGBA8_UNORM, and the
+     * LineWidth the shader copies into gl_PointSize.
+     */
+    private static ByteBuffer pointVertex(float lineWidth) {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(20).order(ByteOrder.nativeOrder());
+        buffer.putFloat(0.0f).putFloat(0.0f).putFloat(0.0f);
+        buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        buffer.putFloat(lineWidth);
+        buffer.flip();
+        return buffer;
+    }
+
+    /**
+     * Draw one debug point through the real DEBUG_POINTS pipeline and return the pixels.
+     *
+     * <p>DEBUG_POINTS has a depth test and reads Globals, so this is not the same pass shape as
+     * {@link #renderTopology}.
+     */
+    private static ByteBuffer renderPoints(MetalDevice device, RenderPipeline pipeline,
+                                           ByteBuffer vertexData) {
+        GpuTexture target = device.createTexture("points", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuTexture depth = device.createTexture("points depth", GpuTexture.USAGE_RENDER_ATTACHMENT,
+                GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView depthView = device.createTextureView(depth);
+        GpuBuffer vertices = device.createBuffer(() -> "point vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, vertexData);
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+        GpuBuffer globals = device.createBuffer(() -> "Globals",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, globals());
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "points")
+                .withColorAttachment(view, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withDepthAttachment(depthView, OptionalDouble.of(0.0))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setUniform("Globals", globals.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.draw(1, 1, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        byte[] copy = new byte[WIDTH * HEIGHT * 4];
+        ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder()).get(copy);
+        readback.close();
+        globals.close();
+        transforms.close();
+        projection.close();
+        vertices.close();
+        depthView.close();
+        depth.close();
+        view.close();
+        target.close();
+        return ByteBuffer.wrap(copy).order(ByteOrder.nativeOrder());
+    }
+
+    /** Four strip vertices down the left edge: two triangles covering the left half. */
+    private static ByteBuffer stripVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {0, -1}, {-1, 1}, {0, 1}};
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(0.0f);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /** Compare one lightmap texel against the colour the shader's maths should produce for it. */
