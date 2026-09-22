@@ -78,9 +78,35 @@ PASS  a 2x2 copy at (1,1) changes exactly that rectangle
 
 so both the stride and the region handling are correct.
 
-What is left for a runtime look is the *atlas compositing* path itself (`uploadInitialContents`
-renders every sprite into the atlas) and text rendering, neither of which an offscreen harness can
-reach without a full client bootstrap.
+The atlas compositing *flip* is ruled out as well. `TextureAtlas` composites with
+`ortho2D(0, w, 0, h)`, putting atlas row 0 at NDC y = -1 — a Y-down assumption — so the engine flips
+the viewport for targets labelled `/atlas/`. The render check draws a quad covering only NDC y in
+[-1, 0] into such a target and reads it back:
+
+```
+PASS  atlas target: NDC y=-1 lands in framebuffer row 0 (red at the top, was green if unflipped)
+      -> top R255 G0 / bottom R0 G255
+```
+
+so the flip does what it claims — and because the pipeline used culls, that also proves the winding
+flip a negative viewport requires.
+
+### Most likely already fixed
+
+This was reported against build `ab30f94` (Phase 3), before any of the Phase 5 work. Three of the
+fixes since are all plausible causes of exactly these symptoms, and none had been made yet:
+
+- **BUG-007** (sampler address modes were swapped) — every atlas would have sampled with `REPEAT`
+  instead of `CLAMP_TO_EDGE`, so sprites bleed into their neighbours. That is precisely "the wrong
+  sprite is drawn" and "the panel is missing".
+- **BUG-010** (sub-rectangle clears wiped the whole attachment) — every GUI atlas slot already
+  rendered was erased.
+- **BUG-012** (uniform blocks shared a Metal slot) — GUI uniform values would be wrong.
+
+So the leading hypothesis is that BUG-001 is already fixed by the batch and simply has not been seen
+since. What would settle it is a run, not more code: the remaining unexplained piece is text
+rendering and the sprite stitching itself, neither of which an offscreen harness can reach without a
+full client bootstrap.
 
 ### Workaround
 

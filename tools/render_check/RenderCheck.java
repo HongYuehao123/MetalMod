@@ -137,6 +137,13 @@ public final class RenderCheck {
             // series of these - and the engine asks for sub-rectangles of it. A wrong row stride or
             // a dropped region would show up as the coarse, blocky blur BUG-001 mentions.
             textureCopyCheck(device);
+
+            // The last mechanism BUG-001 implicates that is reachable offscreen: atlas compositing.
+            // TextureAtlas composites sprites with ortho2D(0, w, 0, h), which puts atlas row 0 at
+            // NDC y = -1 - a Y-down assumption. Metal's NDC is Y-up, so the engine flips the viewport
+            // for targets whose label contains "/atlas/". Verify that flip actually happens, and that
+            // the winding flip keeps a cull-enabled pipeline drawing through it.
+            atlasFlipCheck(device, pipeline);
         } finally {
             device.close();
         }
@@ -539,6 +546,79 @@ public final class RenderCheck {
         for (float[] c : corners) {
             buffer.putFloat(c[0]).putFloat(c[1]).putFloat(0.0f);
             buffer.putFloat(c[2]).putFloat(c[3]);
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /**
+     * Render a quad covering only NDC y in [-1, 0] into a target labelled as an atlas, and check
+     * where it lands.
+     *
+     * <p>MC's atlas projection maps its own row 0 to NDC y = -1. In a Y-down NDC that is the top row;
+     * in Metal's Y-up NDC it would be the bottom, so the engine flips the viewport for
+     * {@code /atlas/} targets. With the flip, NDC y = -1 must land in framebuffer row 0. The pipeline
+     * used here culls, so this also proves the winding flip that a negative viewport requires.
+     */
+    private static void atlasFlipCheck(MetalDevice device, RenderPipeline pipeline) {
+        // The label is what MetalCommandEncoderBackend keys the flip on, so it has to look like the
+        // engine's own atlas labels.
+        GpuTexture target = device.createTexture("minecraft:textures/atlas/render-check.png",
+                GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView view = device.createTextureView(target);
+        GpuBuffer vertices = device.createBuffer(() -> "half quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, halfQuadVertices());
+        GpuBuffer indices = device.createBuffer(() -> "half quad indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 0.0f, 0.0f, 1.0f}));   // red
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "atlas")
+                .withColorAttachment(view, Optional.of(new Vector4f(0.0f, 1.0f, 0.0f, 1.0f)))  // green
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int topRow = pixels.get((8 * WIDTH + WIDTH / 2) * 4) & 0xFF;
+        int topRowG = pixels.get((8 * WIDTH + WIDTH / 2) * 4 + 1) & 0xFF;
+        int bottomRow = pixels.get((56 * WIDTH + WIDTH / 2) * 4) & 0xFF;
+        int bottomRowG = pixels.get((56 * WIDTH + WIDTH / 2) * 4 + 1) & 0xFF;
+        check("atlas target: NDC y=-1 lands in framebuffer row 0 (red at the top, was green if unflipped)"
+                        + " -> top R" + topRow + " G" + topRowG + " / bottom R" + bottomRow + " G"
+                        + bottomRowG,
+                topRow > 200 && topRowG < 60 && bottomRowG > 200 && bottomRow < 60, "");
+
+        readback.close();
+        transforms.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        view.close();
+        target.close();
+    }
+
+    /** GUI-layout vertices covering only NDC y in [-1, 0]: the "top half" in a Y-down convention. */
+    private static ByteBuffer halfQuadVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {1, -1}, {1, 0}, {-1, 0}};
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(0.0f);
             buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);
         }
         buffer.flip();

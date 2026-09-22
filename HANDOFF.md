@@ -251,7 +251,11 @@ Also for Phase 5:
   texel of a 2x2 texture through `gui_textured`, which confirms `texCoord0` samples the right texel
   in the right orientation - ruling out a Y flip as the cause of BUG-001's "wrong sprite". It also
   copies a 4x4 texture whole and as a 2x2 rectangle at (1,1), which rules out the post-processing
-  blit behind the blur as the cause of the "coarse/blocky" background.
+  blit behind the blur as the cause of the "coarse/blocky" background. It also draws into a target
+  labelled `/atlas/` and checks that NDC y = -1 lands in framebuffer row 0, verifying the atlas
+  compositing flip and the winding flip a negative viewport needs. BUG-001's leading hypothesis is
+  therefore that it is already fixed by BUG-007 (atlas samplers bleeding), BUG-010 (region clears)
+  or BUG-012 (uniform slots) - all reported against a build predating them.
 
 **To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
 BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been
