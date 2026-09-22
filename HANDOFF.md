@@ -269,13 +269,22 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-- **Thirteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
+- **Fourteen rendering mechanisms are verified offline.** `tools/render_check` covers uniform values
   reaching a shader as colour, uniform blocks placing geometry, the entity vertex format with
   per-face lighting and four uniform blocks, screen-space line expansion, triangle-fan expansion, UV
   orientation, texture copies (whole and by rectangle), the atlas compositing flip,
-  `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, and
-  16-bit indices with non-zero `firstIndex`/base-vertex offsets. Each one is a mechanism one of the
-  open bugs implicates, and the harness has eliminated five BUG-001 theories.
+  `multiDrawIndexed` through Minecraft's own `RenderPass`, scissor clipping, alpha blending, every
+  blend state vanilla uses, and 16-bit indices with non-zero `firstIndex`/base-vertex offsets. Each
+  one is a mechanism one of the open bugs implicates, and the harness has eliminated five BUG-001
+  theories.
+- **Blending is verified by equation, not by inspection.** The blend matrix renders all ten blend
+  functions vanilla uses - the pipeline for each is read from a real vanilla pipeline, so it cannot
+  drift - plus the five factors BUG-006 corrected, which nothing in vanilla uses and which are
+  therefore Phase 7's problem. It compares each result against the blend equation evaluated on the
+  CPU, with the inputs rounded to 8 bits first so the expectation matches the attachment exactly
+  instead of within a tolerance that could hide an off-by-one. That is what settled
+  `SRC_ALPHA_SATURATE`: GL defines the factor as `(i, i, i, 1)`, so on the alpha channel it is 1, not
+  `min(As, 1 - Ad)`. Breaking any one factor mapping fails precisely the cases that use it.
 - **Census the pipeline space before trusting a mapping.** Tabulating all 87 pipelines by topology,
   blend function, colour format, depth state and vertex stride found two live defects that reading
   the code had missed, because both mappings *look* right: `LINES` is quad geometry (`rendertype_lines`

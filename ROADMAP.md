@@ -296,6 +296,15 @@ more than one colour target (so the single-attachment assumption is safe for van
 geometry and `TRIANGLE_FAN` has no Metal equivalent at all. Reading the code would not have found
 either; `VulkanConst.toVk` and `PrimitiveTopology.indexCount` said so outright.
 
+The census also drove the opposite conclusion for blending. Vanilla uses ten distinct blend
+functions, and the harness exercised exactly one of them, so all eight factors vanilla actually
+blends with rested on an SDK-header table and nothing else - the same kind of evidence that let
+BUG-006 hide. Every one of the ten is now rendered and compared against the blend equation evaluated
+on the CPU, along with the five factors BUG-006 corrected that vanilla never uses but Phase 7's
+shaderpacks will. The CPU model rounds its inputs to 8 bits first, so the expectation matches the
+attachment exactly rather than within a tolerance that could hide an off-by-one; breaking any single
+factor mapping now fails precisely the cases that use it.
+
 Verification moved from "it compiles" to "it renders the right pixel", which is what caught that
 three of those fixes were incomplete. Five offline gates now cover the phase:
 
@@ -304,7 +313,7 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 | `scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `scripts/run_smoke.sh` | native device/pipeline/draw/surface, 11 sections |
 | `tools/shader_inventory/run.sh` | `total=87 ok=87 failed=0`, no diagnostics from any pipeline |
-| `tools/render_check/run.sh` | 31 pixel assertions over 13 mechanisms, real vanilla pipelines |
+| `tools/render_check/run.sh` | 46 pixel assertions over 14 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 
 What remains for Phase 5 is the part that needs a running game: BUG-001 (missing GUI sprites),

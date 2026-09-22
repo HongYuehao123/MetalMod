@@ -1,6 +1,12 @@
 import com.mojang.blaze3d.GpuFormat;
+import com.mojang.blaze3d.PrimitiveTopology;
 import com.mojang.blaze3d.buffers.GpuBuffer;
+import com.mojang.blaze3d.pipeline.BlendEquation;
+import com.mojang.blaze3d.pipeline.BlendFunction;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.BlendFactor;
+import com.mojang.blaze3d.platform.BlendOp;
 import com.mojang.blaze3d.preprocessor.GlslPreprocessor;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
@@ -13,6 +19,8 @@ import com.mojang.blaze3d.textures.AddressMode;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import com.mojang.blaze3d.vertex.VertexFormat;
+import net.minecraft.resources.Identifier;
 import net.metalmod.backend.MetalBuffer;
 import net.metalmod.backend.MetalDevice;
 import net.metalmod.backend.MetalNative;
@@ -28,7 +36,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -189,6 +199,12 @@ public final class RenderCheck {
             // Blend state. Half-alpha white over black must land halfway between the two, which
             // exercises blendEnabled, the factors and the op together.
             blendCheck(device, pipeline);
+
+            // Every blend state vanilla actually uses. The single blend case above covers one
+            // function; vanilla has ten, and BUG-006 corrected five blend-factor values that
+            // vanilla never uses but a shaderpack would. All fifteen are rendered here and
+            // compared against the blend equation evaluated on the CPU.
+            blendMatrixCheck(device, source);
 
             // Index width and draw offsets. Every other check draws 32-bit indices from position 0,
             // but chunk and entity meshes are indexed with IndexType.SHORT and each chunk of a
@@ -1116,6 +1132,211 @@ public final class RenderCheck {
     }
 
     /**
+     * Render every blend state vanilla uses, plus the five factors BUG-006 corrected, and compare
+     * each result against the blend equation evaluated on the CPU.
+     *
+     * <p>This is the one place where a wrong {@code MTLBlendFactor} or {@code MTLBlendOperation}
+     * cannot hide. Wrong blending never throws and is easy to miss in a still frame, which is how
+     * BUG-006 survived an SDK-header audit of every other table: the factors are only wrong for
+     * pipelines that use them, and vanilla's ten blend functions happen to use the eight factors that
+     * were already right.
+     *
+     * <p>The ten vanilla functions are read from a real pipeline that uses each one, so the test
+     * cannot drift from what the engine asks for. The five extra cases are built here because
+     * nothing in vanilla uses them - they are exactly what Phase 7's shaderpacks will hit, and this
+     * is their only render-level evidence. The blend colour is not exposed by the {@code RenderPass}
+     * API, so it stays at Metal's default of {@code (0,0,0,0)} and the four constant factors reduce
+     * to 0 or 1 - which is still enough to tell each of them from the value BUG-006 had in its slot.
+     *
+     * <p>Every case draws through the same {@code core/gui} shader pair, so only the blend state
+     * differs: source colour {@code (0.75, 0.5, 0.25, 0.75)} over a clear of
+     * {@code (0.25, 0.5, 0.75, 0.5)}, chosen so the factors pull the four channels apart.
+     */
+    private static void blendMatrixCheck(MetalDevice device, ShaderSource source) throws Exception {
+        List<Object[]> cases = new ArrayList<>();
+        for (String[] entry : new String[][]{
+                {"CRUMBLING", "solid terrain-adjacent multiply"},
+                {"ENERGY_SWIRL", "additive"},
+                {"GUI_TEXTURED_PREMULTIPLIED_ALPHA", "premultiplied alpha"},
+                {"GUI_INVERT", "invert"},
+                {"WORLD_BORDER", "additive by alpha"},
+                {"LIGHTNING", "additive, alpha in both equations"},
+                {"TRANSLUCENT_TERRAIN", "translucent"},
+                {"ENTITY_OUTLINE_BLIT", "translucent colour, keep destination alpha"},
+                {"GLINT", "source colour over destination"},
+                {"VIGNETTE", "destination faded by the inverse source"},
+        }) {
+            RenderPipeline vanilla = (RenderPipeline) Class
+                    .forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField(entry[0]).get(null);
+            cases.add(new Object[]{entry[0] + " (" + entry[1] + ")",
+                    vanilla.getColorTargetState().blendFunction().orElseThrow()});
+        }
+        // The five factors BUG-006 corrected, in the same slots vanilla would have got wrong.
+        cases.add(new Object[]{"SRC_ALPHA_SATURATE (was OneMinusBlendAlpha)",
+                new BlendFunction(BlendFactor.SRC_ALPHA_SATURATE, BlendFactor.ONE_MINUS_SRC_ALPHA)});
+        cases.add(new Object[]{"CONSTANT_COLOR (was SourceAlphaSaturated)",
+                new BlendFunction(BlendFactor.CONSTANT_COLOR, BlendFactor.ONE_MINUS_SRC_ALPHA)});
+        cases.add(new Object[]{"ONE_MINUS_CONSTANT_COLOR (was BlendColor)",
+                new BlendFunction(BlendFactor.ONE_MINUS_CONSTANT_COLOR, BlendFactor.ONE_MINUS_SRC_ALPHA)});
+        cases.add(new Object[]{"CONSTANT_ALPHA (was OneMinusBlendColor)",
+                new BlendFunction(BlendFactor.CONSTANT_ALPHA, BlendFactor.ONE_MINUS_SRC_ALPHA)});
+        cases.add(new Object[]{"ONE_MINUS_CONSTANT_ALPHA (was BlendAlpha)",
+                new BlendFunction(BlendFactor.ONE_MINUS_CONSTANT_ALPHA, BlendFactor.ONE_MINUS_SRC_ALPHA)});
+
+        VertexFormat format = ((RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("GUI").get(null)).getVertexFormatBinding(0);
+        GpuBuffer vertices = device.createBuffer(() -> "blend vertices",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, blendVertices());
+        GpuBuffer indices = device.createBuffer(() -> "blend indices",
+                GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transforms = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", projection);
+        uniforms.put("DynamicTransforms", transforms);
+
+        int caseNumber = 0;
+        for (Object[] entry : cases) {
+            String label = (String) entry[0];
+            BlendFunction blend = (BlendFunction) entry[1];
+            // withLocation(String) is a path under minecraft:, so only lower-case [a-z0-9/._-].
+            RenderPipeline pipeline = RenderPipeline.builder()
+                    .withLocation("blend_check/case_" + caseNumber++)
+                    .withVertexShader(Identifier.parse("minecraft:core/gui"))
+                    .withFragmentShader(Identifier.parse("minecraft:core/gui"))
+                    .withVertexBinding(0, format)
+                    .withPrimitiveTopology(PrimitiveTopology.QUADS)
+                    .withCull(false)
+                    .withColorTargetState(new ColorTargetState(Optional.of(blend),
+                            GpuFormat.RGBA8_UNORM, ColorTargetState.WRITE_ALL))
+                    .build();
+            device.precompilePipeline(pipeline, source);
+            if (device.pipelineFor(pipeline) == null) {
+                check("blend " + label + " compiled", false, "");
+                continue;
+            }
+            ByteBuffer pixels = renderQuadPixels(device, pipeline, vertices, indices, uniforms,
+                    new LinkedHashMap<>(), SOURCE_BLEND_DESTINATION);
+            int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+            float[] got = {channel(pixels, at), channel(pixels, at + 1),
+                    channel(pixels, at + 2), channel(pixels, at + 3)};
+            float[] want = blend(BLEND_SOURCE, BLEND_DESTINATION, blend);
+            for (int c = 0; c < 4; c++) {
+                want[c] *= 255.0f;
+            }
+            boolean ok = true;
+            for (int c = 0; c < 4 && ok; c++) {
+                ok = Math.abs(got[c] - want[c]) <= 1.0f;
+            }
+            check("blend " + label + " -> " + hex(got) + " (expected " + hex(want) + ")", ok, "");
+        }
+
+        transforms.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+    }
+
+    /**
+     * Source and destination for the blend matrix, far enough apart to separate the factors.
+     *
+     * <p>Rounded to what an RGBA8 attachment can hold before the equation is evaluated. The clear
+     * colour and the vertex attribute both land in 8 bits, so modelling them as exact floats makes
+     * the expectation miss by one wherever a factor multiplies two of them together - which would
+     * hide a real off-by-one behind the tolerance.
+     */
+    private static final float[] BLEND_SOURCE = quantise(0.75f, 0.5f, 0.25f, 0.75f);
+    private static final float[] BLEND_DESTINATION = quantise(0.25f, 0.5f, 0.75f, 0.5f);
+    private static final float[] SOURCE_BLEND_DESTINATION = BLEND_DESTINATION;
+
+    /** Round each component to the nearest value an 8-bit channel can represent. */
+    private static float[] quantise(float... values) {
+        float[] out = new float[values.length];
+        for (int i = 0; i < values.length; i++) {
+            out[i] = Math.round(values[i] * 255.0f) / 255.0f;
+        }
+        return out;
+    }
+
+    private static float channel(ByteBuffer pixels, int at) {
+        return pixels.get(at) & 0xFF;
+    }
+
+    /** Format four 0..255 channel values. */
+    private static String hex(float[] rgba) {
+        StringBuilder out = new StringBuilder();
+        for (float value : rgba) {
+            out.append(String.format("%3d ", Math.round(value)));
+        }
+        return out.toString().trim();
+    }
+
+    /**
+     * Evaluate a blend function the way GL and Vulkan define it.
+     *
+     * <p>Written out rather than read from the backend, so it is an independent statement of what
+     * the answer should be. {@code SRC_COLOR} and friends are per-channel; on the alpha channel
+     * {@code SRC_COLOR} means the source alpha, which is what GL specifies.
+     */
+    private static float[] blend(float[] source, float[] destination, BlendFunction blend) {
+        float[] out = new float[4];
+        for (int c = 0; c < 4; c++) {
+            BlendEquation equation = c < 3 ? blend.color() : blend.alpha();
+            float s = blendFactor(equation.sourceFactor(), c, source, destination) * source[c];
+            float d = blendFactor(equation.destFactor(), c, source, destination) * destination[c];
+            out[c] = switch (equation.op()) {
+                case ADD -> s + d;
+                case SUBTRACT -> s - d;
+                case REVERSE_SUBTRACT -> d - s;
+                case MIN -> Math.min(s, d);
+                case MAX -> Math.max(s, d);
+            };
+            out[c] = Math.max(0.0f, Math.min(1.0f, out[c]));
+        }
+        return out;
+    }
+
+    private static float blendFactor(BlendFactor factor, int channel, float[] source, float[] destination) {
+        return switch (factor) {
+            case ZERO -> 0.0f;
+            case ONE -> 1.0f;
+            case SRC_COLOR -> source[channel];
+            case ONE_MINUS_SRC_COLOR -> 1.0f - source[channel];
+            case DST_COLOR -> destination[channel];
+            case ONE_MINUS_DST_COLOR -> 1.0f - destination[channel];
+            case SRC_ALPHA -> source[3];
+            case ONE_MINUS_SRC_ALPHA -> 1.0f - source[3];
+            case DST_ALPHA -> destination[3];
+            case ONE_MINUS_DST_ALPHA -> 1.0f - destination[3];
+            // GL defines this factor as (i, i, i, 1) with i = min(As, 1 - Ad), so on the alpha
+            // channel it is 1, not i. Metal matches; the check below confirms it.
+            case SRC_ALPHA_SATURATE -> channel == 3 ? 1.0f : Math.min(source[3], 1.0f - destination[3]);
+            // The RenderPass API never sets the blend colour, so it is Metal's default of zero.
+            case CONSTANT_COLOR, CONSTANT_ALPHA -> 0.0f;
+            case ONE_MINUS_CONSTANT_COLOR, ONE_MINUS_CONSTANT_ALPHA -> 1.0f;
+        };
+    }
+
+    /** GUI-layout vertices: Position RGB32_FLOAT then Color RGBA8_UNORM, the blend matrix's source. */
+    private static ByteBuffer blendVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 16).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+        for (float[] p : positions) {
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(0.0f);
+            buffer.put((byte) Math.round(BLEND_SOURCE[0] * 255.0f));
+            buffer.put((byte) Math.round(BLEND_SOURCE[1] * 255.0f));
+            buffer.put((byte) Math.round(BLEND_SOURCE[2] * 255.0f));
+            buffer.put((byte) Math.round(BLEND_SOURCE[3] * 255.0f));
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    /**
      * Draw both halves of a shared vertex buffer with 16-bit indices, a non-zero {@code firstIndex}
      * and a non-zero base vertex.
      *
@@ -1237,18 +1458,27 @@ public final class RenderCheck {
         return buffer;
     }
 
-    /** Render the quad and return the whole colour buffer, for checks that sample several points. */
+    /** Render the quad over black and return the whole colour buffer. */
     private static ByteBuffer renderQuadPixels(MetalDevice device, RenderPipeline pipeline,
                                                GpuBuffer vertices, GpuBuffer indices,
                                                Map<String, GpuBuffer> uniforms,
                                                Map<String, GpuTextureView> textures) {
+        return renderQuadPixels(device, pipeline, vertices, indices, uniforms, textures,
+                new float[]{0.0f, 0.0f, 0.0f, 1.0f});
+    }
+
+    /** Render the quad over the given clear colour and return the whole colour buffer. */
+    private static ByteBuffer renderQuadPixels(MetalDevice device, RenderPipeline pipeline,
+                                               GpuBuffer vertices, GpuBuffer indices,
+                                               Map<String, GpuBuffer> uniforms,
+                                               Map<String, GpuTextureView> textures, float[] clear) {
         GpuTexture color = device.createTexture("quad", GpuTexture.USAGE_RENDER_ATTACHMENT
                 | GpuTexture.USAGE_COPY_SRC, pipeline.getColorTargetState().format(), WIDTH, HEIGHT, 1, 1);
         GpuTextureView colorView = device.createTextureView(color);
         GpuBuffer readback = device.createBuffer(() -> "readback",
                 GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
         RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "quad")
-                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withColorAttachment(colorView, Optional.of(new Vector4f(clear[0], clear[1], clear[2], clear[3])))
                 .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
         CommandEncoderBackend encoder = device.createCommandEncoder();
         RenderPassBackend pass = encoder.createRenderPass(descriptor);
