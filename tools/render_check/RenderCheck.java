@@ -132,6 +132,11 @@ public final class RenderCheck {
             if (device.pipelineFor(textured) != null) {
                 textureOrientationCheck(device, textured);
             }
+
+            // copyTextureToTexture feeds the post-processing chain - the blur behind the menu is a
+            // series of these - and the engine asks for sub-rectangles of it. A wrong row stride or
+            // a dropped region would show up as the coarse, blocky blur BUG-001 mentions.
+            textureCopyCheck(device);
         } finally {
             device.close();
         }
@@ -407,6 +412,118 @@ public final class RenderCheck {
         boolean ok = Math.abs(r - expectR) <= 3 && Math.abs(g - expectG) <= 3 && Math.abs(b - expectB) <= 3;
         check("texCoord samples " + where + " -> R" + r + " G" + g + " B" + b + " (expected R"
                 + expectR + " G" + expectG + " B" + expectB + ")", ok, "");
+    }
+
+    /**
+     * Verify texture-to-texture copies, both whole and by rectangle.
+     *
+     * <p>The pattern is distinct per texel so a wrong row stride, a shifted origin or a region
+     * written to the wrong place all produce a visible mismatch rather than an accidental pass.
+     */
+    private static void textureCopyCheck(MetalDevice device) {
+        final int SIZE = 4;
+        byte[] pattern = new byte[SIZE * SIZE * 4];
+        for (int y = 0; y < SIZE; y++) {
+            for (int x = 0; x < SIZE; x++) {
+                int at = (y * SIZE + x) * 4;
+                pattern[at] = (byte) (x * 60 + 10);
+                pattern[at + 1] = (byte) (y * 60 + 20);
+                pattern[at + 2] = (byte) (x * 16 + y * 4 + 30);
+                pattern[at + 3] = (byte) 255;
+            }
+        }
+        GpuTexture source = device.createTexture("copy source", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
+        GpuTexture target = device.createTexture("copy target", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
+        upload(source, pattern, SIZE);
+
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        encoder.copyTextureToTexture(source, target, 0, 0, 0, 0, SIZE, SIZE, 0);
+        check("copyTextureToTexture copies the whole texture byte for byte",
+                java.util.Arrays.equals(pattern, readback(target, SIZE)), "");
+
+        // Now a 2x2 rectangle at (1,1): only those texels may change in the target.
+        byte[] replacement = new byte[SIZE * SIZE * 4];
+        for (int y = 1; y < 3; y++) {
+            for (int x = 1; x < 3; x++) {
+                int at = (y * SIZE + x) * 4;
+                replacement[at] = (byte) 200;
+                replacement[at + 1] = (byte) 100;
+                replacement[at + 2] = (byte) 50;
+                replacement[at + 3] = (byte) 255;
+            }
+        }
+        // The source must actually differ in that rectangle, or the copy has nothing to change.
+        byte[] sourcePattern = pattern.clone();
+        for (int y = 1; y < 3; y++) {
+            for (int x = 1; x < 3; x++) {
+                int at = (y * SIZE + x) * 4;
+                sourcePattern[at] = (byte) 200;
+                sourcePattern[at + 1] = (byte) 100;
+                sourcePattern[at + 2] = (byte) 50;
+            }
+        }
+        upload(source, sourcePattern, SIZE);
+        CommandEncoderBackend encoder2 = device.createCommandEncoder();
+        encoder2.copyTextureToTexture(source, target, 0, 0, 1, 1, 2, 2, 0);
+
+        byte[] expected = pattern.clone();
+        for (int y = 1; y < 3; y++) {
+            for (int x = 1; x < 3; x++) {
+                int at = (y * SIZE + x) * 4;
+                expected[at] = (byte) 200;
+                expected[at + 1] = (byte) 100;
+                expected[at + 2] = (byte) 50;
+                expected[at + 3] = (byte) 255;
+            }
+        }
+        byte[] got = readback(target, SIZE);
+        boolean onlyRect = java.util.Arrays.equals(expected, got);
+        check("a 2x2 copy at (1,1) changes exactly that rectangle", onlyRect, describe(got, SIZE));
+
+        source.close();
+        target.close();
+    }
+
+    private static void upload(GpuTexture texture, byte[] bytes, int size) {
+        try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+            java.lang.foreign.MemorySegment segment = arena.allocate(bytes.length);
+            java.lang.foreign.MemorySegment.copy(
+                    java.lang.foreign.MemorySegment.ofArray(bytes), 0L, segment, 0L, bytes.length);
+            MetalNative.textureReplaceRegionRaw(((MetalTexture) texture).handle(), 0, 0, 0, 0, size, size,
+                    segment, (long) size * 4);
+        }
+    }
+
+    private static byte[] readback(GpuTexture texture, int size) {
+        byte[] bytes = new byte[size * size * 4];
+        try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+            java.lang.foreign.MemorySegment segment = arena.allocate(bytes.length);
+            if (MetalNative.textureReadRegion(((MetalTexture) texture).handle(), 0, 0, 0, 0, size, size,
+                    segment, bytes.length, (long) size * 4) != 0) {
+                return new byte[0];
+            }
+            java.lang.foreign.MemorySegment.copy(segment, 0L,
+                    java.lang.foreign.MemorySegment.ofArray(bytes), 0L, bytes.length);
+        }
+        return bytes;
+    }
+
+    /** Render the difference as a grid of 0/1 so a mismatch says where, not just that. */
+    private static String describe(byte[] got, int size) {
+        if (got.length == 0) {
+            return "(readback failed)";
+        }
+        StringBuilder out = new StringBuilder();
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                out.append(String.format("%02x%02x ", got[(y * size + x) * 4] & 0xFF,
+                        got[(y * size + x) * 4 + 1] & 0xFF));
+            }
+            out.append("\n      ");
+        }
+        return out.toString();
     }
 
     /** 24-byte position_tex_color vertex: Position RGB32_FLOAT, UV0 RG32_FLOAT, Color RGBA8_UNORM. */

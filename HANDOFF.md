@@ -249,7 +249,9 @@ Also for Phase 5:
   mis-bound `Globals` turned the outline into a screen-filling quad. BUG-002's root cause is
   therefore BUG-012, confirmed at render level. It also maps each corner of the screen onto one
   texel of a 2x2 texture through `gui_textured`, which confirms `texCoord0` samples the right texel
-  in the right orientation - ruling out a Y flip as the cause of BUG-001's "wrong sprite".
+  in the right orientation - ruling out a Y flip as the cause of BUG-001's "wrong sprite". It also
+  copies a 4x4 texture whole and as a 2x2 rectangle at (1,1), which rules out the post-processing
+  blit behind the blur as the cause of the "coarse/blocky" background.
 
 **To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
 BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been

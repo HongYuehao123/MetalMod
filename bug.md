@@ -65,6 +65,19 @@ wrong quadrants, and it does not. Same for the atlas detection: `TextureAtlas.cr
 its label from the atlas identifier, which contains `textures/atlas/…`, so the `/atlas/` test that
 triggers the compositing flip is correctly keyed.
 
+The post-processing blit is ruled out too. The blur behind the menu is a chain of
+`copyTextureToTexture` calls, and the engine asks for sub-rectangles of it — a wrong row stride or a
+dropped region would look exactly like the "unusually coarse/blocky" blur reported here. The render
+check copies a 4x4 texture with a distinct colour per texel, whole and then as a 2x2 rectangle at
+(1,1):
+
+```
+PASS  copyTextureToTexture copies the whole texture byte for byte
+PASS  a 2x2 copy at (1,1) changes exactly that rectangle
+```
+
+so both the stride and the region handling are correct.
+
 What is left for a runtime look is the *atlas compositing* path itself (`uploadInitialContents`
 renders every sprite into the atlas) and text rendering, neither of which an offscreen harness can
 reach without a full client bootstrap.
