@@ -432,6 +432,20 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (src == null || dst == null) {
             return;
         }
+        // A blit, not a CPU round trip. This call initialises each translucency layer's depth buffer
+        // from the main depth buffer, so where it lands in the frame is load-bearing:
+        // queueSynchronize plus a readback plus an upload is a separate, synchronised CPU operation
+        // that stalls on a full-size depth buffer and does not sit at the point the engine assumes.
+        // It also copies mipmapped atlas regions, where a readback of the wrong level silently
+        // corrupts the atlas.
+        //
+        // Slice before level, matching mmm_copy_texture_to_texture: passing them the other way round
+        // copies the wrong mip and an out-of-range slice for any texture with more than one level.
+        // NOT YET USED - mmm_copy_texture_to_texture exists and is bound, but switching to it makes
+        // the colour copy tests read back zeros, so the blit is wrong somewhere and the CPU path
+        // below is kept until that is found. The blit is the right answer (see BUG-023): it handles
+        // depth, joins the frame's queue order, and does not stall on a readback. Delete this path
+        // once the blit passes tools/render_check's two colour copy cases.
         MetalNative.queueSynchronize(this.device.queueHandle());
         long rowBytes = (long) width * src.bytesPerPixel();
         long size = rowBytes * height;

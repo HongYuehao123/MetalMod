@@ -1550,21 +1550,31 @@ public final class RenderCheck {
         // 0.75 into the source, with a throwaway colour attachment.
         int[] wrote = depthDraw(device, pipeline, sourceView, true, vertices, indices, projection,
                 white);
-        check("the depth-copy source renders a 0.75 quad (control)", wrote[0] > 200, "");
+        check("the depth-copy source renders a 0.75 quad -> R" + wrote[0], wrote[0] > 200, "");
+
+        // Define the target's starting state as 0.0 (far, reversed-Z), so "the copy did nothing" has
+        // a known answer rather than leaving the texture uninitialised.
+        GpuBuffer zeroVertices = device.createBuffer(() -> "depth copy zero quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(0.0f));
+        depthDraw(device, pipeline, targetView, true, zeroVertices, indices, projection, white);
 
         CommandEncoderBackend encoder = device.createCommandEncoder();
-        encoder.copyTextureToTexture(source, target, 0, 0, 0, 0, WIDTH, HEIGHT, 1);
+        encoder.copyTextureToTexture(source, target, 0, 0, 0, 0, WIDTH, HEIGHT, 0);
 
-        int[] copied = depthDraw(device, pipeline, targetView, true, lowVertices, indices, projection,
+        // Load the copied depth: 0.5 against a copied 0.75 must be rejected, leaving the green clear.
+        int[] copied = depthDraw(device, pipeline, targetView, false, lowVertices, indices, projection,
                 white);
-        check("a copied depth buffer still depth-tests: 0.5 against a copied 0.75 is rejected",
-                copied[0] > 200, "centre R" + copied[0]);
+        check("a copied depth buffer rejects a nearer.. no: a farther draw: 0.5 against a copied 0.75"
+                        + " leaves the clear -> R" + copied[0] + " (a copied depth of 0.0 would draw"
+                        + " the white quad instead)",
+                copied[0] < 60, "");
 
-        depthDraw(device, pipeline, targetView, true, vertices, indices, projection, white);
         int[] control = depthDraw(device, pipeline, targetView, true, lowVertices, indices, projection,
                 white);
-        check("...and 0.5 against an uncopied 0.0 is accepted, so the draw itself works",
-                control[0] > 200, "centre R" + control[0]);
+        check("control: 0.5 against a cleared 0.0 is accepted, so the draw itself works -> R"
+                        + control[0], control[0] > 200, "");
+
+        zeroVertices.close();
 
         white.close();
         projection.close();

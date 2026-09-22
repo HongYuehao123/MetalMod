@@ -348,12 +348,34 @@ it into the destination. That is a separate, synchronised CPU operation rather t
 frame's command buffer, so it cannot be ordered the way the engine assumes it is, and it stalls the
 pipeline for a full-size depth buffer on every frame that uses it.
 
-### Fix
+### Correction: the depth copy was never the cause
 
-`copyTextureToTexture` is now a `MTLBlitCommandEncoder` texture-to-texture copy
-(`mmm_copy_texture_to_texture`), committed on the device queue so it is ordered with the frame by
-commit order the way the clear path already was. A blit handles depth formats, needs no CPU access,
-and removes a stall that read back and re-uploaded a full-size depth buffer on every use.
+A behavioural check now proves the CPU round trip **does** copy depth. It defines the target's
+starting state (a 0.0 quad), copies a source holding 0.75, then loads the target and draws at 0.5:
+
+```
+PASS  the depth-copy source renders a 0.75 quad -> R255
+PASS  a copied depth buffer ... 0.5 against a copied 0.75 leaves the clear -> R0
+PASS  control: 0.5 against a cleared 0.0 is accepted, so the draw itself works -> R255
+```
+
+So the earlier claim in this entry - that a CPU round trip left the translucent layers depth-testing
+against an empty buffer - is **wrong**, and BUG-023's cause is still open. The first version of this
+check was vacuous on two counts: it cleared the depth *before* loading it, so it never sampled the
+copied data, and its assertion was inverted, so it passed only when the copy failed.
+
+What the round trip genuinely costs is a synchronised stall on a full-size depth buffer, which is
+worth removing for its own sake but is not what the glaze is.
+
+### The blit is written but not yet usable
+
+`mmm_copy_texture_to_texture` exists, is declared and is bound, and `copyTextureToTexture` is
+deliberately still on the CPU path with a comment saying why. Wiring the blit in makes both colour
+copy cases in `tools/render_check` read back **zeros**, so the blit itself is wrong somewhere -
+origin, size, slice or level - and it must not replace a working path until that is found. The two
+colour copy cases are the reproducer. Note the argument order: the native signature is
+`(sourceSlice, sourceLevel)` and passing `(level, slice)` silently copies the wrong mip for any
+texture with more than one level, which is a trap worth keeping in mind while debugging it.
 
 ### Verified
 

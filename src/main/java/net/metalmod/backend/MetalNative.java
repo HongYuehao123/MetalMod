@@ -235,11 +235,11 @@ public final class MetalNative {
      * order. The only correct path for depth attachments, and the only one that lands in the frame
      * where the engine expects it.
      */
-    public static int copyTextureToTexture(MemorySegment queue, MemorySegment source, int sourceMip,
-            int sourceSlice, int sourceX, int sourceY, MemorySegment target, int targetMip,
-            int targetSlice, int targetX, int targetY, int width, int height, int depth) {
-        return i(mhCopyTextureToTexture, queue, source, sourceMip, sourceSlice, sourceX, sourceY,
-                target, targetMip, targetSlice, targetX, targetY, width, height, depth);
+    public static int copyTextureToTexture(MemorySegment queue, MemorySegment source, int sourceSlice,
+            int sourceLevel, int sourceX, int sourceY, MemorySegment target, int targetSlice,
+            int targetLevel, int targetX, int targetY, int width, int height, int depth) {
+        return i(mhCopyTextureToTexture, queue, source, sourceSlice, sourceLevel, sourceX, sourceY,
+                target, targetSlice, targetLevel, targetX, targetY, width, height, depth);
     }
 
     public static int textureReplaceRegion(MemorySegment tex, int mip, int slice, int x, int y, int w, int h, ByteBuffer data, long rowBytes) {
