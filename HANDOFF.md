@@ -314,6 +314,11 @@ Also for Phase 5:
   because `core/screenquad` has no projection matrix to carry Minecraft's Y convention and only
   `/atlas/` targets were being flipped. `setPipeline` now flips for any `screenquad` pass, which also
   puts the whole post-processing chain into Vulkan's orientation. See BUG-022.
+- **BUG-023 is open and its cause is NOT the texture copy** - that was fixed with a blit, installed
+  and re-run, and the artefact is unchanged. The recording shows large block-aligned patches in the
+  water whose brightness flips between frames in the same region, which is a per-section per-frame
+  colour error: the per-draw `ChunkSection` uniform and the dynamic-uniform ring buffer / fence
+  (BUG-004 and BUG-011 territory), not water. Water is where it is visible, not where it is caused.
 - **Open from the second run, with the reports narrowed.** See BUG-023 and BUG-024.
   - **Water:** the glaze is *local to the water*, and flying through a water edge leaves the edge
     displaced from the surface for about a second. A single frame cannot show that, so it is a

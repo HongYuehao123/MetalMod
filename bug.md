@@ -367,7 +367,42 @@ copied data, and its assertion was inverted, so it passed only when the copy fai
 What the round trip genuinely costs is a synchronised stall on a full-size depth buffer, which is
 worth removing for its own sake but is not what the glaze is.
 
-### Fix (finally) - and why it was reverted once
+### Refuted: the copy was not it either
+
+Installed, run, and **the artefact is unchanged**. The build in the report is the blit build
+(`dd7cd561cf4b`, installed 14:11, recorded 14:11:33). So the race in the CPU copy was worth removing
+for its own sake but is not the cause.
+
+### What the recording actually shows
+
+Two frames extracted from the video (2 fps), six seconds apart:
+
+- the water carries **large, block-aligned patches** - straight edges, section-sized, not texel-scale;
+- the **same region changes brightness between frames**: a patch that is dark in one frame is light in
+  the next.
+
+That is a per-frame, per-**region** colour error. It is not a texture fault (the patches are too large
+and too aligned), not a UV fault (they would be static), and not a sampling fault (RGSS off changes
+nothing).
+
+### Where that points
+
+Per-region, per-frame, block-aligned colour means the data that differs *per section per frame*:
+
+1. **The per-draw `ChunkSection` uniform**, which `drawMultipleIndexed` uploads per draw - the same
+   path as BUG-004, and the value that carries `TextureSize` into the terrain shader.
+2. **The dynamic uniform ring buffer and its fence** (BUG-011): if the slot for this frame is reused
+   while the GPU is still reading the previous frame's, a section renders with another section's
+   data. That is per-region, per-frame, and shows up as soon as the camera moves - which is the
+   reported trigger.
+3. The lightmap, though that is per-fragment and would not respect section boundaries.
+
+Water is where it is *visible* rather than where it is caused: a few percent of brightness error is
+glaring on a large flat plane and invisible on noisy terrain. The next step is to check the ring
+buffer rotation against the fence - whether an upload for frame N can land while frame N-1's draws
+are still in flight - rather than to look at water again.
+
+### Superseded: the fix and why it was reverted once
 
 `copyTextureToTexture` is now `mmm_copy_texture_to_texture`, a `MTLBlitCommandEncoder` copy committed
 on the device queue. It replaced a CPU round trip, and the round trip's defect is a **race**, not a
