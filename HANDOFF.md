@@ -140,13 +140,37 @@ terrain are fixed:
   *instance* name; the engine binds by block *type* name (`BindGroupLayouts` declares
   `LightmapInfo`). `lightmap.fsh` is the only vanilla shader that names its instance, which is why
   the lightmap was the one thing the diagnostic caught.
+- **BUG-007 — sampler address modes were swapped (fixed, live for vanilla).** `MTLSamplerAddressMode`
+  is ClampToEdge=0, Repeat=2, but the constants had Repeat=0, ClampToEdge=2, so every sampler in the
+  game used the opposite mode: atlases sampled with Repeat (sprites bleeding into their neighbours,
+  mip tails smearing across the atlas) and tiling textures clamped. Found by auditing the mapping
+  tables against the macOS SDK headers — which is where the next two came from as well.
+- **BUG-006 — five `MTLBlendFactor` values were wrong (fixed, latent for vanilla).** Metal is not in
+  GL order: SourceAlphaSaturated is 10 and the constant factors are 11..14. No vanilla pipeline uses
+  those five, but a shaderpack blending with a constant alpha would have blended wrongly and
+  silently.
+- **BUG-008 — mip filtering is disabled by a `// TEST: force mip 0` hack (open).** No sampler reads a
+  mip level, so all minification aliases. Recorded with the one-line fix; it wants an in-game A/B,
+  because flipping it changes sampling for every texture at once.
+- **BUG-009 — transient-arena slices bind the wrong GPU offset (open, latent).** Sub-buffers share
+  the parent's handle while `slice(0, size)` reports offset 0 — right for the CPU upload paths, which
+  read through the offset `data` segment, and wrong for GPU binding. Vanilla only uploads through
+  `TransientMemory`, so it never shows; it would bite anything streaming vertices or uniforms.
 
 Also for Phase 5:
 
+- **Enum tables are now pinned rather than trusted.** `MetalFormatTest` asserts every blend factor,
+  blend op, compare function, primitive topology, sampler address/filter, texture type/usage and the
+  write-mask bits against the SDK header values, plus all 55 `GpuFormat` → `MTLPixelFormat` entries
+  (all verified correct). These tables give no runtime feedback — a wrong entry merely renders
+  differently — which is why the two bugs above stayed invisible until they were read.
 - **New diagnostic:** a `VertexFormat` element with no matching shader input is now reported instead
   of silently dropped from the vertex descriptor. All 87 vanilla pipelines report none.
 - **F3 now shows `unbound/unmapped/failed`** counters, so a black or missing object can be explained
   without reading the log.
+- **Checked and found correct** (so not worth re-investigating): the hardcoded `D32_FLOAT` depth
+  format is what MC actually creates; every vertex element format vanilla uses (`FLOAT_32` x1/2/3,
+  `SINT_16` x2, `SNORM_8` x4, `UNORM_8` x4) maps correctly; vertex attributes all resolve.
 - **BUG-002's candidate causes were checked and ruled out** (topology mapping, front-face winding,
   atlas-only viewport flip, vertex descriptor, missing bindings). What remains is the *values* on the
   outline draw — most plausibly `LineWidth` vertex data or the `ScreenSize` uniform, since the
@@ -155,17 +179,14 @@ Also for Phase 5:
   is the conservative direction given the paths that are not implemented.
 
 **To make progress past this point, an in-game run is needed.** Every remaining item (BUG-001,
-BUG-002, BUG-003 visual confirmation) is a runtime observation, not something that can be settled by
-reading code.
+BUG-002, BUG-003, and confirming BUG-008) is a runtime observation, not something that can be settled
+by reading code.
 
 ## What does not work
 
 - **Vanilla visual parity (Phase 5):** terrain and entities render unlit/flat (BUG-003), some GUI
   screens are missing sprites (BUG-001), and the block-selection outline is wrong (BUG-002).
-  BUG-003 is Phase 5 work, not a Phase 4 shader item.
-- **Multi-draw uniforms (BUG-004, Phase 5):** `drawMultipleIndexed` ignores each draw's
-  `uniformUploaderConsumer()` and per-draw index buffer. Vanilla's chunk terrain path uses it, so
-  this is likely a direct cause of the flat world.
+  All three are recorded in `bug.md` for Phase 5.
 - **Upscaling / frame generation:** inactive until the mod owns presentation and the later phases.
 - **Shaderpacks, MetalFX, ray tracing:** not started.
 
