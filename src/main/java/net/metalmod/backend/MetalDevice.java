@@ -261,8 +261,30 @@ public final class MetalDevice implements GpuDeviceBackend {
                 maxBuffer,
                 /* maxMultiDrawDirectInterleavedDrawCount */ 0,
                 /* maxColorAttachments */ 8);
+        // Reported per feature rather than all-false, because the engine uses these to decide which
+        // paths it may take. Each value is a claim about what this backend actually implements:
+        //
+        //   shaderDrawParameters         no vanilla consumer; MetalMod neither provides nor needs it.
+        //   multiDrawDirectInterleaved   } not implemented - MetalRenderPassBackend's indirect draws
+        //   multiDrawDirectSeparate      } are no-ops, so these must stay false or the engine would
+        //   multiDrawIndirect            } take a path that silently draws nothing.
+        //   drawIndirect                 }
+        //   nonZeroFirstInstance         TRUE: both native draws forward firstInstance as
+        //                                baseInstance, and metalmod_smoke proves [[instance_id]]
+        //                                includes it (instance colour 3 comes back for
+        //                                firstInstance=3). Reporting false made the engine refuse to
+        //                                pass a non-zero firstInstance at all - a needless limit.
+        //   persistentMapping            false is correct: buffers are shared storage and written
+        //                                directly, which is why writeToBufferIsSlow is also false and
+        //                                StagingBuffer picks its CPU path.
         DeviceFeatures features = new DeviceFeatures(
-                false, false, false, false, false, false, false);
+                /* shaderDrawParameters */ false,
+                /* multiDrawDirectInterleaved */ false,
+                /* multiDrawDirectSeparate */ false,
+                /* multiDrawIndirect */ false,
+                /* drawIndirect */ false,
+                /* nonZeroFirstInstance */ true,
+                /* persistentMapping */ false);
         DeviceInfo info = new DeviceInfo(
                 strings[0], strings[1], strings[2],
                 /* isZZeroToOne */ true,

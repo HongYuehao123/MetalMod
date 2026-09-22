@@ -155,6 +155,15 @@ terrain are fixed:
   texel, and the natural fix — an `MTLTextureTypeTextureBuffer` — *aborts* Metal for `R8_SINT`. The
   working path is the one SPIRV-Cross already emits (`texture2d<int>` + `spvTexelBufferCoord`), so
   the bytes are presented as a 2D texture, cached per backing buffer.
+- **Device capabilities are reported per feature, and one was wrong.** `DeviceFeatures` is what the
+  engine uses to decide which paths it may take, so each value is now a claim about what this backend
+  implements. `nonZeroFirstInstance` was reported `false`, which made the engine refuse to pass a
+  non-zero `firstInstance` at all — but both native draws already forward it as `baseInstance`, and
+  `metalmod_smoke` proves Metal honours it (`[[instance_id]]` includes it: instance colour 3 comes
+  back for `firstInstance = 3`). It is now `true`. The rest stay false for stated reasons: the
+  indirect and multi-draw-indirect paths are unimplemented no-ops, `shaderDrawParameters` has no
+  vanilla consumer, and `persistentMapping` is correctly false because buffers are shared storage
+  written directly.
 - **The shader binding layer now reports clean.** With BUG-012 and BUG-013 fixed, the inventory
   compiles all 87 pipelines and reports **no diagnostics at all** — no slot collisions, no
   reflection/MSL mismatches for uniform buffers, textures or vertex attributes, and no binding-kind

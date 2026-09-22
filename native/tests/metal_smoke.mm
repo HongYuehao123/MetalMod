@@ -681,6 +681,94 @@ static void test_texel_buffer_emulation(void) {
     mmm_device_release(device);
 }
 
+// MetalMod reports DeviceFeatures.nonZeroFirstInstance = false, which makes Minecraft refuse to
+// pass a non-zero firstInstance at all. Both native draws already forward it as baseInstance, so
+// check Metal really honours it: instance_id must include the base instance.
+static void test_base_instance(void) {
+    printf("\n== base instance (does [[instance_id]] include firstInstance?) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const char* msl =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct VOut { float4 pos [[position]]; float4 color; };\n"
+        "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
+        "                  const device float2* positions [[buffer(0)]],\n"
+        "                  const device float4* colors [[buffer(1)]]) {\n"
+        "    VOut o; o.pos = float4(positions[vid], 0.0, 1.0); o.color = colors[iid]; return o;\n"
+        "}\n"
+        "fragment float4 fmain(VOut in [[stage_in]]) { return in.color; }\n";
+    void* library = mmm_library_create(device, msl, strlen(msl));
+    check("base-instance MSL compiles", library != NULL, "");
+    void* pipeline = mmm_render_pipeline_create(device, library, "vmain", library, "fmain",
+            70, 15, 0, 0, 0, 0, 0, 0, 0,
+            0, 1, 0,
+            3, 1, 0, 0, 0.0f, 0.0f,
+            NULL, 0, NULL, 0);
+    check("base-instance pipeline created", pipeline != NULL, "");
+
+    void* vertexBuffer = mmm_buffer_create(device, 24);
+    float* positions = (float*)mmm_buffer_contents(vertexBuffer);
+    if (positions != NULL) {
+        positions[0] = -0.8f; positions[1] = -0.8f;
+        positions[2] =  0.8f; positions[3] = -0.8f;
+        positions[4] =  0.0f; positions[5] =  0.8f;
+    }
+    // Four instance colours: index 0 red, index 3 green.
+    void* colorBuffer = mmm_buffer_create(device, 4 * 16);
+    float* colours = (float*)mmm_buffer_contents(colorBuffer);
+    if (colours != NULL) {
+        colours[0] = 1; colours[1] = 0; colours[2] = 0; colours[3] = 1;
+        colours[4] = 0; colours[5] = 0; colours[6] = 1; colours[7] = 1;
+        colours[8] = 1; colours[9] = 1; colours[10] = 0; colours[11] = 1;
+        colours[12] = 0; colours[13] = 1; colours[14] = 0; colours[15] = 1;   // index 3 green
+    }
+
+    const int W = 16, H = 16;
+    unsigned char baseZero[4] = { 0, 0, 0, 0 };
+    unsigned char baseThree[4] = { 0, 0, 0, 0 };
+    for (int pass = 0; pass < 2; pass++) {
+        int firstInstance = pass == 0 ? 0 : 3;
+        void* target = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, 1u | 4u);
+        void* cb = mmm_command_buffer_create(queue);
+        void* colorsToClear[1] = { target };
+        int32_t clears[1] = { 1 };
+        float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        void* encoder = mmm_render_pass_begin(cb, 1, colorsToClear, clears, clear, NULL, 0, 0.0, W, H);
+        if (encoder != NULL) {
+            mmm_render_pass_set_pipeline(encoder, pipeline);
+            mmm_render_pass_set_vertex_buffer(encoder, vertexBuffer, 0, 0);
+            mmm_render_pass_set_vertex_buffer(encoder, colorBuffer, 0, 1);
+            mmm_render_pass_draw(encoder, 3, 0, 3, 1, firstInstance);
+            mmm_render_pass_end(encoder);
+        }
+        mmm_command_buffer_commit(cb);
+        mmm_command_buffer_wait(cb);
+        unsigned char pixels[16 * 16 * 4];
+        int rc = mmm_texture_read_region(target, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+        unsigned char* center = pixels + ((H / 2) * W + (W / 2)) * 4;
+        unsigned char* out = pass == 0 ? baseZero : baseThree;
+        if (rc == 0) { out[0] = center[0]; out[1] = center[1]; out[2] = center[2]; out[3] = center[3]; }
+        mmm_command_buffer_release(cb);
+        mmm_texture_release(target);
+    }
+    printf("     firstInstance=0 -> R%d G%d B%d\n", baseZero[0], baseZero[1], baseZero[2]);
+    printf("     firstInstance=3 -> R%d G%d B%d\n", baseThree[0], baseThree[1], baseThree[2]);
+    check("firstInstance=0 reads instance colour 0 (red)",
+          baseZero[0] > 200 && baseZero[1] < 60, "");
+    check("firstInstance=3 reads instance colour 3 (green), so [[instance_id]] includes it",
+          baseThree[1] > 200 && baseThree[0] < 60, "");
+
+    if (colorBuffer) mmm_buffer_release(colorBuffer);
+    if (vertexBuffer) mmm_buffer_release(vertexBuffer);
+    mmm_render_pipeline_release(pipeline);
+    mmm_library_release(library);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 // Phase 3 draw path: compile MSL, build a pipeline, render a triangle into a texture, read it back.
 static void test_draw(void) {
     printf("\n== draw (MSL pipeline, triangle, readback) ==\n");
@@ -771,6 +859,7 @@ int main(void) {
         test_fence();
         test_texture_buffer();
         test_texel_buffer_emulation();
+        test_base_instance();
         test_draw();
         test_surface();
     }
