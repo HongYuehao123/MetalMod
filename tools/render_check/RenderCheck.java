@@ -227,6 +227,10 @@ public final class RenderCheck {
             // backend cannot render - the pipeline builds state for one target.
             colorTargetLimitCheck();
 
+            // A depth copy. This is what the engine uses to initialise each translucency layer's
+            // depth buffer from the main one, and it is the call that has to be a blit.
+            depthCopyCheck(device);
+
             // Write masks. WATER_MASK declares WRITE_NONE and is drawn while water is on screen, so
             // a mask that is ignored paints the whole view with the water pass.
             writeMaskCheck(device, source);
@@ -1500,6 +1504,113 @@ public final class RenderCheck {
         buffer.putFloat(lineWidth);
         buffer.flip();
         return buffer;
+    }
+
+    /**
+     * Copy a depth texture and check the copied depths actually depth-test.
+     *
+     * <p>Minecraft initialises each translucency layer's depth buffer by copying the main depth
+     * buffer into it, so the translucent pass depth-tests against the opaque scene. The copy used to
+     * be a CPU round trip - {@code queueSynchronize}, a readback, an upload - which is a separate
+     * synchronised operation rather than part of the frame; the layers ended up depth-testing against
+     * an empty buffer and water behind a hill composited over it (BUG-023). Colour copies passed
+     * either way, so only a depth copy tests anything.
+     *
+     * <p>It is checked by behaviour rather than by reading the depth back, because reading and
+     * writing a depth texture from the CPU is exactly the path that was wrong - asserting through it
+     * would test the harness. A quad is rendered at depth 0.75 into the source, the source is copied
+     * into a target that was cleared to 0.0, and then a quad at 0.5 is drawn against the target with
+     * {@code GREATER_THAN_OR_EQUAL}. With the copy the stored 0.75 rejects it and the clear survives;
+     * without it the 0.0 accepts it and the quad appears. The same draw against an uncopied target is
+     * run as a control, so a quad that never draws at all cannot pass this.
+     */
+    private static void depthCopyCheck(MetalDevice device) throws Exception {
+        RenderPipeline pipeline = depthPipeline("depth_copy", CompareOp.GREATER_THAN_OR_EQUAL);
+        GpuBuffer vertices = device.createBuffer(() -> "depth copy quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(0.75f));
+        GpuBuffer lowVertices = device.createBuffer(() -> "depth copy low quad",
+                GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, quadAtDepth(0.5f));
+        GpuBuffer indices = device.createBuffer(() -> "i", GpuBuffer.USAGE_INDEX
+                | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer white = device.createBuffer(() -> "DynamicTransforms",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+
+        GpuTexture source = device.createTexture("depth copy source",
+                GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView sourceView = device.createTextureView(source);
+        GpuTexture target = device.createTexture("depth copy target",
+                GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView targetView = device.createTextureView(target);
+
+        // 0.75 into the source, with a throwaway colour attachment.
+        int[] wrote = depthDraw(device, pipeline, sourceView, true, vertices, indices, projection,
+                white);
+        check("the depth-copy source renders a 0.75 quad (control)", wrote[0] > 200, "");
+
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        encoder.copyTextureToTexture(source, target, 0, 0, 0, 0, WIDTH, HEIGHT, 1);
+
+        int[] copied = depthDraw(device, pipeline, targetView, true, lowVertices, indices, projection,
+                white);
+        check("a copied depth buffer still depth-tests: 0.5 against a copied 0.75 is rejected",
+                copied[0] > 200, "centre R" + copied[0]);
+
+        depthDraw(device, pipeline, targetView, true, vertices, indices, projection, white);
+        int[] control = depthDraw(device, pipeline, targetView, true, lowVertices, indices, projection,
+                white);
+        check("...and 0.5 against an uncopied 0.0 is accepted, so the draw itself works",
+                control[0] > 200, "centre R" + control[0]);
+
+        white.close();
+        projection.close();
+        indices.close();
+        lowVertices.close();
+        vertices.close();
+        targetView.close();
+        target.close();
+        sourceView.close();
+        source.close();
+    }
+
+    /**
+     * Draw a quad into a depth attachment over a green clear and return the centre pixel. When
+     * {@code clearDepth} the depth is cleared to 0.0 (far, reversed-Z) first, which is what makes the
+     * uncopied case well defined.
+     */
+    private static int[] depthDraw(MetalDevice device, RenderPipeline pipeline, GpuTextureView depth,
+                                   boolean clearDepth, GpuBuffer vertices, GpuBuffer indices,
+                                   GpuBuffer projection, GpuBuffer transforms) {
+        GpuTexture color = device.createTexture("depth copy color", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView colorView = device.createTextureView(color);
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "depth copy")
+                .withColorAttachment(colorView, Optional.of(new Vector4f(0.0f, 1.0f, 0.0f, 1.0f)))
+                .withDepthAttachment(depth, clearDepth ? OptionalDouble.of(0.0) : OptionalDouble.empty())
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transforms.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int at = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
+        int[] rgb = {pixels.get(at) & 0xFF, pixels.get(at + 1) & 0xFF, pixels.get(at + 2) & 0xFF};
+        readback.close();
+        colorView.close();
+        color.close();
+        return rgb;
     }
 
     /**

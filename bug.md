@@ -348,12 +348,27 @@ it into the destination. That is a separate, synchronised CPU operation rather t
 frame's command buffer, so it cannot be ordered the way the engine assumes it is, and it stalls the
 pipeline for a full-size depth buffer on every frame that uses it.
 
-### The fix
+### Fix
 
-`copyTextureToTexture` should be a `MTLBlitCommandEncoder` texture-to-texture copy
-(`copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:...`). A blit handles
-depth formats, needs no CPU access, joins the frame's command buffer so its ordering is the engine's,
-and removes the stall. The native layer already has a blit encoder for the clear path.
+`copyTextureToTexture` is now a `MTLBlitCommandEncoder` texture-to-texture copy
+(`mmm_copy_texture_to_texture`), committed on the device queue so it is ordered with the frame by
+commit order the way the clear path already was. A blit handles depth formats, needs no CPU access,
+and removes a stall that read back and re-uploaded a full-size depth buffer on every use.
+
+### Verified
+
+The existing colour copy tests pass through the new path, and they were never able to catch this
+because a CPU round trip copies colour perfectly well. So the check is a **depth** copy, and it is
+asserted by behaviour rather than by reading depth back - reading and writing a depth texture from the
+CPU is exactly the path that was wrong, so asserting through it would have tested the harness:
+
+1. render a quad at depth 0.75 into the source (control: the write path works);
+2. copy the source into a target that was cleared to 0.0;
+3. draw a quad at 0.5 against the target with `GREATER_THAN_OR_EQUAL` - the copied 0.75 rejects it and
+   the clear survives;
+4. the same draw against an uncopied target accepts it, so a quad that never draws cannot pass this.
+
+All four pass.
 
 ### Superseded: the staleness hypothesis
 

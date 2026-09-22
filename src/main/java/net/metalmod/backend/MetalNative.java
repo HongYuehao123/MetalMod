@@ -28,7 +28,7 @@ public final class MetalNative {
     private static MethodHandle mhLayerCreateForNsWindow, mhLayerRelease, mhLayerConfigure,
             mhLayerAcquire, mhLayerPresentClear, mhLayerPresentTexture, mhLayerSetPresentQueue;
     private static MethodHandle mhTextureCreateFull, mhTextureCreateView, mhTextureReplaceRegion,
-            mhTextureReadRegion, mhTextureRelease;
+            mhTextureReadRegion, mhTextureRelease, mhCopyTextureToTexture;
     private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease;
     private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures, mhClearTexturesRegion;
     private static MethodHandle mhFenceCreate, mhFenceWait, mhFenceRelease;
@@ -103,6 +103,8 @@ public final class MetalNative {
                 FunctionDescriptor.of(A, A, L, I, I, I, I, I, B, I));
         mhTextureCreateView = linker.downcallHandle(symbol(lookup, "mmm_texture_create_view"),
                 FunctionDescriptor.of(A, A, L, I, I, I, I, I));
+        mhCopyTextureToTexture = linker.downcallHandle(symbol(lookup, "mmm_copy_texture_to_texture"),
+                FunctionDescriptor.of(I, A, A, I, I, I, I, A, I, I, I, I, I, I, I));
         mhTextureReplaceRegion = linker.downcallHandle(symbol(lookup, "mmm_texture_replace_region"),
                 FunctionDescriptor.of(I, A, I, I, I, I, I, I, A, L));
         mhTextureReadRegion = linker.downcallHandle(symbol(lookup, "mmm_texture_read_region"),
@@ -228,6 +230,18 @@ public final class MetalNative {
         return addr(mhTextureCreateView, tex, pf, type, baseMip, mips, baseLayer, layers);
     }
     public static void textureRelease(MemorySegment t) { v(mhTextureRelease, t); }
+    /**
+     * Copy a rectangle between textures with a blit encoder, on the device queue and committed in
+     * order. The only correct path for depth attachments, and the only one that lands in the frame
+     * where the engine expects it.
+     */
+    public static int copyTextureToTexture(MemorySegment queue, MemorySegment source, int sourceMip,
+            int sourceSlice, int sourceX, int sourceY, MemorySegment target, int targetMip,
+            int targetSlice, int targetX, int targetY, int width, int height, int depth) {
+        return i(mhCopyTextureToTexture, queue, source, sourceMip, sourceSlice, sourceX, sourceY,
+                target, targetMip, targetSlice, targetX, targetY, width, height, depth);
+    }
+
     public static int textureReplaceRegion(MemorySegment tex, int mip, int slice, int x, int y, int w, int h, ByteBuffer data, long rowBytes) {
         MemorySegment seg = MemorySegment.ofBuffer(data.duplicate());
         if (seg.isNative()) return i(mhTextureReplaceRegion, tex, mip, slice, x, y, w, h, seg, rowBytes);

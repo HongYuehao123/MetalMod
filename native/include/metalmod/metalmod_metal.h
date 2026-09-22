@@ -134,6 +134,20 @@ MMM_API int mmm_clear_textures(void* queue,
                                void* colorTexture, bool hasColor, float r, float g, float b, float a,
                                void* depthTexture, bool hasDepth, double depthValue);
 
+/// Copy a rectangle between textures with a blit encoder.
+///
+/// A blit is the only correct way to do this for depth attachments, and it is also the only way the
+/// copy joins the frame: a CPU readback (`queueSynchronize` + `replaceRegion`) is a separate
+/// synchronised operation whose position in the frame is not the engine's. Minecraft uses this to
+/// initialise the translucency layers' depth buffers from the main depth buffer, so a copy that
+/// lands at the wrong time leaves those layers depth-testing against an empty buffer.
+MMM_API int mmm_copy_texture_to_texture(void* queue,
+                                       void* source, int32_t sourceSlice, int32_t sourceLevel,
+                                       int32_t sourceX, int32_t sourceY,
+                                       void* target, int32_t targetSlice, int32_t targetLevel,
+                                       int32_t targetX, int32_t targetY,
+                                       int32_t width, int32_t height, int32_t depth);
+
 /// Clear only the given rectangle, leaving everything outside it untouched.
 ///
 /// A Metal render pass clears a whole attachment - the load action ignores the scissor - so a

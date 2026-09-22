@@ -1046,6 +1046,37 @@ int mmm_clear_textures_region(void* queue, void* colorTexture, bool hasColor,
     return 0;
 }
 
+int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
+                                int32_t sourceLevel, int32_t sourceX, int32_t sourceY,
+                                void* target, int32_t targetSlice, int32_t targetLevel,
+                                int32_t targetX, int32_t targetY, int32_t width, int32_t height,
+                                int32_t depth) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    id<MTLTexture> src = mmm_texture(source);
+    id<MTLTexture> dst = mmm_texture(target);
+    if (metalQueue == nil || src == nil || dst == nil) return -1;
+    if (width <= 0 || height <= 0 || depth <= 0) return -2;
+
+    @autoreleasepool {
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod texture copy";
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        if (blit == nil) return -3;
+        [blit copyFromTexture:src
+                 sourceSlice:(NSUInteger)MAX(0, sourceSlice)
+                 sourceLevel:(NSUInteger)MAX(0, sourceLevel)
+                sourceOrigin:MTLOriginMake((NSUInteger)MAX(0, sourceX), (NSUInteger)MAX(0, sourceY), 0)
+                  sourceSize:MTLSizeMake((NSUInteger)width, (NSUInteger)height, (NSUInteger)depth)
+                   toTexture:dst
+          destinationSlice:(NSUInteger)MAX(0, targetSlice)
+          destinationLevel:(NSUInteger)MAX(0, targetLevel)
+         destinationOrigin:MTLOriginMake((NSUInteger)MAX(0, targetX), (NSUInteger)MAX(0, targetY), 0)];
+        [blit endEncoding];
+        [commandBuffer commit];
+    }
+    return 0;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Surface
 // ---------------------------------------------------------------------------------------------
