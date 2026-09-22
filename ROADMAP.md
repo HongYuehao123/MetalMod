@@ -279,8 +279,8 @@ modern versions, so it should follow, but its terrain path is the performance-cr
 dedicated testing. Iris is the shaderpack loader and is a Phase 7 dependency.
 
 **Progress (in flight).** Phase 5 began with the draw-path defects rather than the visual ones,
-because they are what make a visual symptom fixable. Twenty-one bugs were found and fixed
-(BUG-004 … BUG-021; see `bug.md`). Most were in the *values* rather than the plumbing: per-draw chunk
+because they are what make a visual symptom fixable. Twenty-two bugs were found and fixed
+(BUG-004 … BUG-022; see `bug.md`). Most were in the *values* rather than the plumbing: per-draw chunk
 uniforms never uploaded, uniform blocks keyed by instance name, five wrong `MTLBlendFactor` values,
 swapped sampler address modes, a hardcoded mip filter, arena sub-buffers binding the parent's offset
 0, sub-rectangle clears wiping a whole attachment, a no-op `GpuFence`, duplicate SPIR-V bindings that
@@ -345,7 +345,7 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 | `scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `scripts/run_smoke.sh` | native device/pipeline/draw/surface, 11 sections |
 | `tools/shader_inventory/run.sh` | `static 87/87` and `post 9/9`, no diagnostics from any pipeline |
-| `tools/render_check/run.sh` | 74 assertions over 24 mechanisms, real vanilla pipelines |
+| `tools/render_check/run.sh` | 75 assertions over 24 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 
 What remains for Phase 5 is the part that needs a running game: BUG-001 (missing GUI sprites),
@@ -434,7 +434,7 @@ native Metal backend, since MoltenVK cannot express it at all.
 
 **Phase 5 — vanilla render parity, in progress.** Phases 0–4 are done, and Phase 4's exit criterion
 is met: all 87 vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`. Phase 5's
-twenty-one fixes (BUG-004 … BUG-021) are in and all four offline suites are green — see the
+twenty-two fixes (BUG-004 … BUG-022) are in and all four offline suites are green — see the
 progress note under Phase 5 above.
 
 The next step is **an in-game run on a current build**, not more static analysis. BUG-001, BUG-002

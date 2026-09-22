@@ -167,7 +167,7 @@ $JAVA --enable-native-access=ALL-UNNAMED \
 
 # render real vanilla pipelines offscreen and check the pixels
 # (gui, gui_textured, solid_terrain, entity_cutout, lines, sky fan, blits, multi-draw, scissor,
-#  atlas, mip selection, blending, every blend state vanilla uses, index width/offsets, colour-target limit, lightmap, post-processing, alpha cutout, topologies, texel buffers; 74 assertions)
+#  atlas, mip selection, blending, every blend state vanilla uses, index width/offsets, colour-target limit, lightmap, post-processing, alpha cutout, topologies, texel buffers; 75 assertions)
 ./tools/render_check/run.sh            # RENDER CHECK PASSED
 
 # print the generated MSL for the shader pairs whose name contains the substring, or for all of them

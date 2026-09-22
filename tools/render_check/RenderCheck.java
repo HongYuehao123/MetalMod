@@ -1344,10 +1344,20 @@ public final class RenderCheck {
         encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, SIZE, SIZE);
 
         ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
-        checkLightmapPixel(pixels, SIZE, 0, 0, "sky light only at texCoord (0.03, 0.97)", 64, 128, 255);
-        checkLightmapPixel(pixels, SIZE, 0, 15, "no light at texCoord (0.03, 0.03)", 0, 0, 0);
-        checkLightmapPixel(pixels, SIZE, 15, 15, "block light at texCoord (0.97, 0.97)",
+        // Orientated the way the engine samples it, not the way the shader happens to write it.
+        // Terrain reads the lightmap at v = skyLevel / 256 + 0.5/16, so a full sky level is sampled
+        // at v close to 1 - the *last* texture row, since v = 0 is the first row of the data. This
+        // pass has no projection matrix to carry Minecraft's Y convention (screenquad.vsh sets
+        // gl_Position straight from the vertex id), so the viewport has to, and an unflipped
+        // viewport put sky level 15 in row 0 instead: bright sky, night-dark ground in game.
+        checkLightmapPixel(pixels, SIZE, 0, 0, "no light at the first row, texCoord (0.03, 0.03)",
+                0, 0, 0);
+        checkLightmapPixel(pixels, SIZE, 0, 15, "sky light at the last row, texCoord (0.03, 0.97)",
+                64, 128, 255);
+        checkLightmapPixel(pixels, SIZE, 15, 0, "block light at texCoord (0.97, 0.03)",
                 255, 242, 236);
+        checkLightmapPixel(pixels, SIZE, 15, 15, "both lights at texCoord (0.97, 0.97)",
+                255, 255, 255);
 
         readback.close();
         info.close();

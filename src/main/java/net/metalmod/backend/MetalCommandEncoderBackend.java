@@ -26,6 +26,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     private final MetalDevice device;
     private MemorySegment commandBuffer = MemorySegment.NULL;
     private MemorySegment currentEncoder = MemorySegment.NULL;
+    private boolean viewportFlipped;
 
     public MetalCommandEncoderBackend(MetalDevice device) {
         this.device = device;
@@ -164,12 +165,26 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 // independently from the sprite's own mip image) so the stored atlas matches the UVs.
                 MetalNative.renderPassSetViewport(encoder, 0.0, (double) height, (double) width, -(double) height);
             }
+            this.viewportFlipped = atlasTarget;
             this.currentEncoder = encoder;
             if (encoder.address() == 0) {
                 System.err.println("[MetalMod] render pass begin failed");
             }
             return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height));
         }
+    }
+
+    /**
+     * Whether the current pass already has a Y-flipped viewport, so a second flip is not applied.
+     * The atlas path decides this when the pass is created; screenquad pipelines decide it later.
+     */
+    boolean viewportFlipped() {
+        return this.viewportFlipped;
+    }
+
+    /** Records that the current pass's viewport has been flipped. */
+    void markViewportFlipped() {
+        this.viewportFlipped = true;
     }
 
     @Override

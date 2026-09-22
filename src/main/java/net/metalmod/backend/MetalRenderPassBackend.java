@@ -84,7 +84,38 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (this.pipeline != null) {
             this.topology = this.pipeline.topology();
             MetalNative.renderPassSetPipeline(this.encoder, this.pipeline.handle());
+            flipViewportForScreenquad(pipeline);
         }
+    }
+
+    /** The vertex shader whose geometry is built from the vertex id with no projection matrix. */
+    private static final String SCREENQUAD = "minecraft:core/screenquad";
+
+    /**
+     * Flip the viewport for passes drawn with {@code core/screenquad}.
+     *
+     * <p>Every other pass carries Minecraft's Y convention in its projection matrix. {@code
+     * screenquad.vsh} builds the full-screen triangle from {@code gl_VertexID} and sets
+     * {@code gl_Position = uv * 2 - 1} directly, so there is nothing between it and the framebuffer
+     * - and Vulkan's NDC y = +1 is the *last* framebuffer row where Metal's is the first.
+     *
+     * <p>That made the lightmap store itself vertically mirrored. {@code core/lightmap} writes a
+     * full sky level at {@code texCoord.y = 1}, terrain samples it at {@code v = skyLevel/256 +
+     * 0.5/16} - close to 1, and {@code v = 0} is the first row of the data - so the ground sampled
+     * the row holding level 0. In game: a bright sky over a night-dark ground. The offscreen check
+     * shows it exactly, with every corner swapped.
+     *
+     * <p>It is the same correction as the atlas path, for the same reason, and the two are kept
+     * exclusive so a pass is never flipped twice.
+     */
+    private void flipViewportForScreenquad(RenderPipeline pipeline) {
+        if (this.owner.viewportFlipped()
+                || !SCREENQUAD.equals(pipeline.getVertexShader().toString())) {
+            return;
+        }
+        MetalNative.renderPassSetViewport(this.encoder, 0.0, (double) this.height,
+                (double) this.width, -(double) this.height);
+        this.owner.markViewportFlipped();
     }
 
     /** Resolve every recorded binding against the current pipeline and encode it. */

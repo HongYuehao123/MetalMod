@@ -206,6 +206,61 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-022 — Sky light never reached the ground: the lightmap was stored mirrored
+
+**Status:** **FIXED** (Phase 5) — pending a look on a fresh run.
+**Severity:** critical for appearance. The whole world rendered at night-time brightness under a
+daylight sky.
+**Found on:** the first successful in-game run, from "the lighting from the sky doesn't seem to work
+correctly" - a bright sky over a dark ground.
+
+### Cause
+
+Every pass except one carries Minecraft's Y convention in its projection matrix. `core/screenquad`
+does not: it builds the full-screen triangle from `gl_VertexID` and sets `gl_Position = uv * 2 - 1`
+directly. Vulkan's NDC `y = +1` is the **last** framebuffer row and Metal's is the **first**, so those
+passes came out vertically mirrored whenever the projection could not compensate - and the atlas
+viewport flip only covered targets whose label contains `/atlas/`.
+
+The lightmap is one of those passes, and the mirror is exactly what the symptom looks like:
+
+- `core/lightmap` writes a full sky level at `texCoord.y = 1`.
+- Terrain samples it at `v = skyLevel / 256 + 0.5 / 16`, which for a full sky level is close to 1.
+- `v = 0` is the first row of the data, so the ground was reading the row that holds level 0.
+
+Daylight sky, night-time ground. Block light was mirrored onto the same axis, which is why torches
+would have looked wrong too.
+
+### Fix
+
+`MetalRenderPassBackend.setPipeline` now flips the viewport for a pass whose pipeline uses
+`minecraft:core/screenquad`, which is the same correction as the atlas path and for the same reason.
+The two are kept exclusive, so a pass is never flipped twice. The native viewport call already flips
+the front-face winding with a negative height.
+
+This is general rather than a special case for the lightmap: every `screenquad` pass - the lightmap and
+the whole post-processing chain - now matches Vulkan's orientation, and an odd-length post chain (a
+single `invert`, say) was previously producing a mirrored image for the same reason.
+
+### Verified
+
+The offscreen check asserts the lightmap in **engine orientation** rather than shader orientation: no
+light in the first row, sky light in the last, block light in the first column. Against the unfixed
+build all four corners come back swapped, which is the bug reproduced exactly:
+
+```
+FAIL  no light at the first row, texCoord (0.03, 0.03) -> 64 128 255 (expected 0 0 0)
+FAIL  sky light at the last row, texCoord (0.03, 0.97) -> 0 0 0 (expected 64 128 255)
+FAIL  block light at texCoord (0.97, 0.03) -> 255 255 236 (expected 255 242 236)
+FAIL  both lights at texCoord (0.97, 0.97) -> 255 242 236 (expected 255 255 255)
+```
+
+and all four pass after it. The earlier version of this check asserted the *shader's* orientation,
+which passed happily while the game was wrong - a check written to agree with the code rather than
+with the engine is worse than no check.
+
+---
+
 ## BUG-021 — F3 said the backend was inactive while Metal was drawing every frame
 
 **Status:** **FIXED** (Phase 5) — diagnostic only, no rendering effect.
