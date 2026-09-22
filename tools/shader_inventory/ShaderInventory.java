@@ -118,14 +118,17 @@ public final class ShaderInventory {
         } finally {
             System.setErr(realErr);
         }
-        if (compiled != null) {
-            compiled.close();
-            return new Result(location, Status.OK, "");
-        }
         String detail = captured.toString(StandardCharsets.UTF_8).strip();
         int marker = detail.indexOf("[MetalMod]");
         if (marker > 0) {
             detail = detail.substring(marker);
+        }
+        if (compiled != null) {
+            compiled.close();
+            // A successful compile can still have produced diagnostics (a binding-kind mismatch, a
+            // slot collision). They are the point of running this, so keep them rather than
+            // discarding everything that is not a failure.
+            return new Result(location, Status.OK, detail);
         }
         return new Result(location, Status.FAILED, detail.isEmpty() ? "(no message)" : detail);
     }
@@ -142,11 +145,22 @@ public final class ShaderInventory {
         }
 
         System.out.println("=========== results ===========");
+        int diagnostics = 0;
         for (Result result : results) {
-            if (result.status() != Status.OK) {
-                System.out.printf("%-7s %s%n", result.status(), result.location());
+            boolean flagged = result.status() != Status.OK || !result.detail().isBlank();
+            if (!flagged) {
+                continue;
+            }
+            if (result.status() == Status.OK) {
+                diagnostics++;
+            }
+            System.out.printf("%-7s %s%n", result.status(), result.location());
+            if (!result.detail().isBlank()) {
                 System.out.println("        " + result.detail());
             }
+        }
+        if (diagnostics == 0) {
+            System.out.println("(no diagnostics from any pipeline)");
         }
         System.out.println();
         System.out.printf("total=%d ok=%d failed=%d no-source=%d%n",

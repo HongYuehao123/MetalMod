@@ -3,9 +3,11 @@ package net.metalmod.backend;
 import com.mojang.blaze3d.GpuFormat;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.BindGroupLayout;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.shaders.ShaderSource;
 import com.mojang.blaze3d.shaders.ShaderType;
+import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormatElement;
 
@@ -93,6 +95,7 @@ public final class MetalRenderPipeline {
                             pipeline.getShaderDefines()));
             MetalShaderCompiler.CompiledShader vs = pair.vertex();
             MetalShaderCompiler.CompiledShader fs = pair.fragment();
+            verifyBindingKinds(pipeline, vs, fs);
 
             MemorySegment vlib = MetalNative.libraryCreate(device.deviceHandle(), vs.msl());
             if (vlib.address() == 0) {
@@ -150,6 +153,7 @@ public final class MetalRenderPipeline {
                 MemorySegment attributes = arena.allocate(ATTRIBUTE_LAYOUT.byteSize() * 64);
                 int layoutCount = 0;
                 int attributeCount = 0;
+                java.util.Set<String> coveredInputs = new java.util.HashSet<>();
 
                 for (int slot = 0; slot < formats.length; slot++) {
                     VertexFormat format = formats[slot];
@@ -166,14 +170,9 @@ public final class MetalRenderPipeline {
                     for (VertexFormatElement element : format.getElements()) {
                         Integer location = vs.inputs().get(element.name());
                         if (location == null || attributeCount >= 64) {
-                            if (location == null) {
-                                // Silently dropping this would make the shader read undefined data
-                                // for that attribute; report it instead (see MetalDevice).
-                                MetalDevice.reportUnmappedVertexAttribute(
-                                        pipeline.getLocation().toString(), element.name());
-                            }
                             continue;
                         }
+                        coveredInputs.add(element.name());
                         MemorySegment attribute = attributes.asSlice(
                                 ATTRIBUTE_LAYOUT.byteSize() * attributeCount, ATTRIBUTE_LAYOUT.byteSize());
                         attribute.set(ValueLayout.JAVA_INT, 0, location);
@@ -181,6 +180,15 @@ public final class MetalRenderPipeline {
                         attribute.set(ValueLayout.JAVA_INT, 8, MetalFormat.mtlVertexFormat(element.format()));
                         attribute.set(ValueLayout.JAVA_INT, 12, element.offset());
                         attributeCount++;
+                    }
+                }
+
+                // Every attribute the vertex function reads must exist in the descriptor, or Metal
+                // refuses the pipeline; report which one rather than only surfacing Metal's message.
+                for (String input : vs.inputs().keySet()) {
+                    if (!coveredInputs.contains(input)) {
+                        MetalDevice.reportMissingVertexAttribute(
+                                pipeline.getLocation().toString(), input);
                     }
                 }
 
@@ -206,6 +214,50 @@ public final class MetalRenderPipeline {
         } catch (Throwable t) {
             System.err.println("[MetalMod] pipeline compile failed for " + pipeline.getLocation() + ": " + t);
             return null;
+        }
+    }
+
+    /**
+     * Cross-check the reflection against what the pipeline itself declares.
+     *
+     * <p>{@code BindGroupLayout} states how the engine will bind each uniform — {@code UNIFORM_BUFFER}
+     * means it passes a {@code GpuBufferSlice}, {@code TEXEL_BUFFER} means a {@code GpuBuffer}. If the
+     * reflection produced a different kind, the name is bound through the wrong path or not at all.
+     * That is the CloudFaces case (BUG-013): declared TEXEL_BUFFER, reflected as a texture, bound as
+     * neither. Checking it here means the whole pipeline set is covered rather than one shader at a
+     * time.
+     */
+    private static void verifyBindingKinds(RenderPipeline pipeline,
+                                           MetalShaderCompiler.CompiledShader vs,
+                                           MetalShaderCompiler.CompiledShader fs) {
+        String location = pipeline.getLocation().toString();
+        for (BindGroupLayout layout : pipeline.getBindGroupLayouts()) {
+            for (BindGroupLayout.UniformDescription uniform : layout.getUniforms()) {
+                String name = uniform.name();
+                boolean asBuffer = vs.vertexBuffers().containsKey(name)
+                        || fs.fragmentBuffers().containsKey(name);
+                boolean asTexture = vs.textures().containsKey(name)
+                        || fs.textures().containsKey(name);
+                if (asBuffer) {
+                    continue;
+                }
+                // A BindGroupLayout is a superset: it lists every uniform the pipeline *may* use, and
+                // SPIRV-Cross drops the ones a given shader does not reference. "Not reflected at
+                // all" therefore means unused, which is fine - Metal does not require an argument
+                // for a block the shader never reads. Only a resource reflected as the *wrong kind*
+                // is a real mismatch.
+                if (!asTexture && !vs.samplers().containsKey(name)
+                        && !fs.samplers().containsKey(name)) {
+                    continue;
+                }
+                MetalDevice.reportBindingKindMismatch(location, name, uniform.type().name(),
+                        "a texture/sampler");
+            }
+            for (String sampler : layout.getSamplers()) {
+                if (!vs.samplers().containsKey(sampler) && !fs.samplers().containsKey(sampler)) {
+                    MetalDevice.reportBindingKindMismatch(location, sampler, "SAMPLER", "nothing");
+                }
+            }
         }
     }
 

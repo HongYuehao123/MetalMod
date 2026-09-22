@@ -190,6 +190,22 @@ Also for Phase 5:
   (a clear is only visible after waiting on it).
   All three are in `metalmod_smoke`, which now covers mip selection, address modes, region clears,
   resources, draw and surface.
+- **Diagnostics are now cross-checked against the pipeline's own declaration.** `verifyBindingKinds`
+  compares the reflection against `BindGroupLayout`, which states authoritatively whether each uniform
+  is a `UNIFORM_BUFFER` (bound with a `GpuBufferSlice`) or a `TEXEL_BUFFER` (bound with a
+  `GpuBuffer`). Running it over all 87 pipelines names exactly two real problems - `CloudFaces` in
+  `clouds` and `flat_clouds` (BUG-013) - and nothing else.
+- **A tooling bug had been hiding diagnostics.** `tools/shader_inventory` captured `System.err` to
+  attribute failures per pipeline and then **discarded it for successful compiles** - which is exactly
+  where the new diagnostics write. So an earlier claim in this file that "all 87 vanilla pipelines
+  report no unmapped vertex attributes" was not evidence of anything. It now prints diagnostics for
+  successful pipelines too. Corrected finding: several pipelines (`entity_shadow`, `beacon_beam_*`)
+  declare vertex attributes their shader has no input for, which is harmless - the extras are dropped
+  and the shader never reads them.
+- **One diagnostic was inverted.** The unmapped-vertex-attribute check reported the harmless case and
+  described it as the shader reading undefined data, which is wrong. The real hazard is the opposite -
+  a shader input the vertex descriptor does not provide, which makes Metal reject the pipeline - and
+  that is what `reportMissingVertexAttribute` now checks.
 - **Enum tables are now pinned rather than trusted.** `MetalFormatTest` asserts every blend factor,
   blend op, compare function, primitive topology, sampler address/filter, texture type/usage and the
   write-mask bits against the SDK header values, plus all 55 `GpuFormat` → `MTLPixelFormat` entries

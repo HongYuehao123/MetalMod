@@ -79,7 +79,9 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " failures=" + resourceFailureCount
                 + " pipelineFailures=" + pipelineFailureCount
                 + " unboundBindings=" + unboundBindingCount()
-                + " unmappedVertexAttributes=" + unmappedAttributeCount()
+                + " missingVertexAttributes=" + missingVertexAttributeCount()
+                + " slotCollisions=" + slotCollisionCount()
+                + " bindingKindMismatches=" + bindingKindMismatchCount()
                 + " | " + SHADER_COMPILER_SUMMARY.get();
     }
 
@@ -124,29 +126,6 @@ public final class MetalDevice implements GpuDeviceBackend {
         return unboundCount;
     }
 
-    // A VertexFormat element whose name has no matching shader input is silently left out of the
-    // vertex descriptor, and Metal then feeds the shader whatever the buffer happens to hold at that
-    // attribute index. That is a nasty failure mode: the geometry is drawn, just wrongly. The line
-    // shader, for instance, reads LineWidth - garbage there means a line expands to a screen-filling
-    // quad rather than a hairline.
-    private static final java.util.Set<String> reportedUnmappedAttributes = new java.util.HashSet<>();
-    private static int unmappedAttributeCount;
-    private static int unmappedAttributeLogCount;
-
-    static synchronized void reportUnmappedVertexAttribute(String pipeline, String element) {
-        if (reportedUnmappedAttributes.size() >= 64
-                || !reportedUnmappedAttributes.add(pipeline + "|" + element)) {
-            return;
-        }
-        unmappedAttributeCount++;
-        if (unmappedAttributeLogCount < 20) {
-            unmappedAttributeLogCount++;
-            System.err.println("[MetalMod] vertex attribute '" + element + "' in " + pipeline
-                    + " has no matching shader input, so it is missing from the vertex descriptor "
-                    + "and the shader reads undefined data");
-        }
-    }
-
     // Two shader resources resolving to one Metal slot means whichever is bound last wins and the
     // other reads its data. glslang emits duplicate SPIR-V bindings (every shader importing
     // fog.glsl gets Fog at binding 0 alongside another block at binding 0), so slots are assigned
@@ -170,8 +149,52 @@ public final class MetalDevice implements GpuDeviceBackend {
         return slotCollisionCount;
     }
 
-    public static synchronized int unmappedAttributeCount() {
-        return unmappedAttributeCount;
+    // The pipeline's BindGroupLayouts state, authoritatively, how the engine will bind each uniform:
+    // UNIFORM_BUFFER means it hands us a GpuBufferSlice, TEXEL_BUFFER means a GpuBuffer. If the
+    // reflection produced a different kind, the name is bound through the wrong path - the
+    // CloudFaces case, where the engine passes a buffer and the reflection produced a texture.
+    private static final java.util.Set<String> reportedKindMismatches = new java.util.HashSet<>();
+    private static int bindingKindMismatchCount;
+
+    static synchronized void reportBindingKindMismatch(String pipeline, String name,
+                                                       String declared, String reflected) {
+        if (reportedKindMismatches.size() >= 64
+                || !reportedKindMismatches.add(pipeline + "|" + name)) {
+            return;
+        }
+        bindingKindMismatchCount++;
+        System.err.println("[MetalMod] binding kind mismatch in " + pipeline + ": '" + name
+                + "' is declared " + declared + " but reflected as " + reflected
+                + ", so it will not be bound correctly");
+    }
+
+    public static synchronized int bindingKindMismatchCount() {
+        return bindingKindMismatchCount;
+    }
+
+    // Metal rejects a pipeline whose vertex function reads an attribute the vertex descriptor does
+    // not provide ("Vertex attribute X(N) is missing from the vertex descriptor"). Catch it before
+    // Metal does, so the pipeline and the attribute are named.
+    //
+    // The inverse - a VertexFormat element the shader has no input for - is NOT a problem and is
+    // deliberately not reported: Minecraft's vertex formats declare more than a given shader uses
+    // (rendertype_entity_shadow carries UV1/UV2/Normal but its shader declares only
+    // Position/Color/UV0), and dropping the extras is correct.
+    private static final java.util.Set<String> reportedMissingAttributes = new java.util.HashSet<>();
+    private static int missingAttributeCount;
+
+    static synchronized void reportMissingVertexAttribute(String pipeline, String name) {
+        if (reportedMissingAttributes.size() >= 64
+                || !reportedMissingAttributes.add(pipeline + "|" + name)) {
+            return;
+        }
+        missingAttributeCount++;
+        System.err.println("[MetalMod] " + pipeline + " reads vertex attribute '" + name
+                + "' but its vertex descriptor does not provide it, so Metal will reject the pipeline");
+    }
+
+    public static synchronized int missingVertexAttributeCount() {
+        return missingAttributeCount;
     }
 
     public static synchronized int pipelineFailureCount() {
