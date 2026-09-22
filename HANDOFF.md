@@ -314,12 +314,16 @@ Also for Phase 5:
   because `core/screenquad` has no projection matrix to carry Minecraft's Y convention and only
   `/atlas/` targets were being flipped. `setPipeline` now flips for any `screenquad` pass, which also
   puts the whole post-processing chain into Vulkan's orientation. See BUG-022.
-- **Still open from the second run, and not yet diagnosed:** water and ice are reported to put a
-  translucent "glaze" over the view, and item textures look wrong in the inventory. `WATER_MASK`
-  declares `WRITE_NONE`, which looked like the obvious candidate for a water pass painting the scene,
-  but a render check now proves the mask is honoured - so that hypothesis is eliminated rather than
-  assumed. Both need a screenshot of the defect to go further; neither is reachable from the offline
-  harness as it stands.
+- **Open from the second run, with the reports narrowed.** See BUG-023 and BUG-024.
+  - **Water:** the glaze is *local to the water*, and flying through a water edge leaves the edge
+    displaced from the surface for about a second. A single frame cannot show that, so it is a
+    staleness or pass-ordering symptom rather than a UV or a blending one. `WATER_MASK`'s `WRITE_NONE`
+    was the obvious suspect and is now eliminated by measurement.
+  - **Inventory items:** some never appear and the ones that do are upside down, which is a Y flip in
+    the same family as BUG-022 and the atlas flip. `/atlas/` targets are flipped, so the question is
+    which target the *item* path uses - MC has a separate GUI item atlas and a `UiLightmap` of its own.
+  - Both are one diagnostic away: log the colour-target label at `createRenderPass` and see which
+    labels the flip misses. That is how BUG-022 was settled.
 - **The first in-game run immediately found a crash the offline suites could not.** Entering a world
   aborted Metal on `MTLTextureDescriptor has width (181818) greater than the maximum allowed size of
   16384`. The texel-buffer emulation built its texture `texels x 1`, and SPIRV-Cross bakes a 4096

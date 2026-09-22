@@ -206,6 +206,78 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ---
 
+## BUG-024 — Inventory item icons are upside down, and some never appear
+
+**Status:** open. Needs a screenshot with the inventory open showing which items fail.
+**Severity:** medium - the screen works, the icons are wrong.
+**Found on:** the second in-game run. Reported as "everything might not show up, and for those showed
+up, it is upside down."
+
+### Reading
+
+Upside down is a Y-flip, and this is the same family as BUG-022 and BUG-001's atlas flip: a surface is
+composited into a target without the flip that Minecraft's UV convention assumes, or read back with
+one too many.
+
+`/atlas/` targets are flipped (see the atlas comment in `MetalCommandEncoderBackend`). The block and
+particle atlases are named `minecraft:textures/atlas/*.png` and therefore covered. So the question is
+which target the **item** path uses, and whether its label is covered - MC has a separate GUI item
+atlas (cleared one slot at a time, which is what BUG-010 was about) and a `UiLightmap` class of its
+own, so the UI has paths the world does not.
+
+"Some never appear" is consistent with the same cause: a sprite composited into the wrong row reads
+back as the wrong sprite, and a sprite that lands outside its slot reads as transparent.
+
+### Next step
+
+Log the colour-target label at `createRenderPass` for every pass and look at which labels the flip
+misses among the ones that write an atlas, an item or a GUI target. That is a one-line diagnostic and
+it settles the question directly, the way the lightmap was settled: assert the orientation the
+*engine* samples at, not the orientation the shader happens to write.
+
+---
+
+## BUG-023 — Water puts a glaze on itself, and its edge lags the surface
+
+**Status:** open. Needs a frame sequence, not a screenshot.
+**Severity:** medium for appearance; it is the most visible remaining artefact.
+**Found on:** the second in-game run. Reported as "the water is more like only glaze where water is.
+It feels like the water is lagging a little bit, as if you fly through the edge of water in creative
+mode, you will find for one second that the edge is away from the surface."
+
+### Reading
+
+Two things follow from that description, and they point away from the guesses already eliminated:
+
+- **The glaze is local to the water**, so it is not a full-screen tint, not the lightmap (BUG-022),
+  and not a texture-sampling problem shared with other blocks.
+- **"For one second the edge is away from the surface" is a temporal symptom.** A single frame cannot
+  show it; something is being drawn from data that is a frame or more old, or a pass is reading a
+  texture that another pass writes later in the same frame.
+
+`WATER_MASK` declaring `WRITE_NONE` was the obvious candidate for a water pass painting the scene, and
+a render check now proves the mask is honoured - so that is eliminated, not assumed.
+
+### Where to look next
+
+1. **Pass ordering and staleness.** The lightmap and the water mask are each produced by their own
+   pass and sampled by the terrain pass. `mmm_queue_synchronize` orders *command buffers on a queue*
+   by committing an empty one and waiting; it does not order work within a frame. If a texture written
+   by a later pass is sampled by an earlier one, the sample is a frame stale - which is exactly what a
+   lagging water edge looks like.
+2. **`translucent_terrain`'s depth state.** Water and ice are the main translucent surfaces; the
+   census lists eleven pipelines with `GREATER_THAN_OR_EQUAL` and depth writes off, and only the
+   opaque ones are covered by a render check.
+3. **The water overlay pass**, which is a separate screen effect drawn when the camera is in water.
+
+### How to reproduce it usefully
+
+Fly through a water edge in creative while recording; a screenshot cannot show a one-second lag. A
+frame sequence through the transition is what will show whether the water is drawn from the previous
+frame's mask or geometry.
+
+---
+
 ## BUG-022 — Sky light never reached the ground: the lightmap was stored mirrored
 
 **Status:** **FIXED** (Phase 5) — pending a look on a fresh run.
