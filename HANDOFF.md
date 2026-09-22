@@ -86,9 +86,10 @@ and the binding diagnostic naming three real unbound bindings (BUG-005).
 
 Plan, evidence and results: `docs/phase4-plan.md`.
 
-- **All 87 vanilla pipelines compile.** `tools/shader_inventory/run.sh` walks every `RenderPipelines`
-  field, compiles it through the real GLSL → SPIR-V → MSL → pipeline path outside the game, and
-  reports a list. Result: `total=87 ok=87 failed=0 no-source=0`. The boot log only ever proved the
+- **All 87 vanilla pipelines compile, and all 9 post-processing pairs with them.**
+  `tools/shader_inventory/run.sh` walks every `RenderPipelines` field and every `post_effect` JSON,
+  compiles each through the real GLSL → SPIR-V → MSL → pipeline path outside the game, and reports a
+  list. Result: `static 87/87`, `post 9/9`, no diagnostics. The boot log only ever proved the
   ~28 pipelines the engine announces; the rest were compiled lazily and so were unverified.
 - **Cross-stage varying locations (fixed).** `animate_sprite_interpolate` failed because shaderc
   assigns varying `Location` decorations per stage by declaration order, and this pair's two stages
