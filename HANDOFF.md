@@ -149,6 +149,14 @@ terrain are fixed:
   GL order: SourceAlphaSaturated is 10 and the constant factors are 11..14. No vanilla pipeline uses
   those five, but a shaderpack blending with a constant alpha would have blended wrongly and
   silently.
+- **BUG-012 — uniform blocks shared Metal slots (fixed, live for vanilla).** Each resource's Metal
+  slot came from its SPIR-V `binding`, but glslang emits duplicate bindings: every shader importing
+  `fog.glsl` gets `Fog` at binding 0 alongside another block also at 0, so both landed in MSL buffer
+  16 and the second bind overwrote the first. `terrain.vsh` computes its vertex position from
+  `Globals`. **This is very likely the actual cause of BUG-003** — and it was invisible to the
+  unbound-binding diagnostic, because nothing was missing: both were bound, to the same place. Slots
+  now come from a per-stage counter, and `checkUniqueSlots` reports any collision for all 87
+  pipelines (none). BUG-013 records the remaining texel-buffer gap (`CloudFaces`, vanilla clouds).
 - **BUG-011 — fences were no-ops (fixed, live for vanilla).** `MetalFence.awaitCompletion` returned
   `true` immediately on the premise that "submission is synchronous"; it is not — MetalMod commits
   command buffers without waiting. `MappableRingBuffer.rotate` awaits a slot's fence with an unbounded

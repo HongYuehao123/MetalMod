@@ -703,10 +703,13 @@ render correctly, and the sky colour is right.
 
 ### Suspected cause (unconfirmed)
 
-Entity and terrain shaders are not fully bound yet: they are likely sampling an unbound
-lightmap/texture or using a shader variant whose inputs are not all mapped. This is Phase 5
-(vanilla parity) work, not a Phase 3 regression and not a Phase 4 blocker — Phase 4 only makes
-bindings *observably* correct (see `docs/phase4-plan.md` §4.3).
+**Update (Phase 5): the mechanic is now identified — see BUG-012.** `terrain.vsh` computes
+`pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset` from the `Globals` block, and
+`Globals` shared Metal buffer slot 16 with `Fog` because glslang emitted duplicate SPIR-V bindings
+for them. Both were bound; the second overwrote the first, so terrain was positioned from fog data.
+That fits the symptom far better than "a binding was missing", which is what the original note
+guessed — nothing was missing. BUG-012 is fixed; this entry stays open until a run confirms the
+world looks right.
 
 ### Workaround
 
