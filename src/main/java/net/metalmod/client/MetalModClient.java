@@ -3,11 +3,8 @@ package net.metalmod.client;
 import net.fabricmc.api.ClientModInitializer;
 import net.metalmod.config.MetalConfig;
 import net.metalmod.ffi.MetalBridge;
-import net.metalmod.render.VulkanFrameManager;
 
 import net.metalmod.memory.UnifiedMemoryManager;
-
-import java.lang.foreign.MemorySegment;
 
 public class MetalModClient implements ClientModInitializer {
 
@@ -15,7 +12,7 @@ public class MetalModClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        System.out.println("[MetalMod] Initializing MetalMod for macOS 26+ (Metal 4 & Vulkan backend)...");
+        System.out.println("[MetalMod] Initializing MetalMod for macOS 26+ (native Metal backend)...");
 
         // Load configuration from config/metalmod.properties
         MetalConfig.INSTANCE.load();
@@ -36,26 +33,14 @@ public class MetalModClient implements ClientModInitializer {
                     + "DebugScreenEntriesAccessor mixin did not apply; F3 will show no MetalMod section.");
         }
 
+        // The native library now carries only the UMA/memory pool; the Metal renderer device is
+        // created by MetalBackend through MetalNative when the engine selects the backend. Without
+        // the library there is no memory telemetry to start, so stop here.
         if (!MetalBridge.isAvailable()) {
-            System.err.println("[MetalMod] MetalBridge unavailable: " + MetalBridge.getLoadError());
+            System.err.println("[MetalMod] libmetalmod.dylib unavailable: " + MetalBridge.getLoadError()
+                    + " (Metal backend and UMA telemetry are disabled).");
             return;
         }
-
-        // Initialize native Metal bridge with auto window discovery
-        int res = MetalBridge.init(MemorySegment.NULL);
-        if (res == 0) {
-            System.out.println("[MetalMod] Native Metal 4 runtime initialized successfully.");
-        } else {
-            System.err.println("[MetalMod] Native initialization failed with status " + res
-                    + "; the Metal pipeline will stay inactive.");
-            return;
-        }
-
-        VulkanFrameManager.getInstance().markConfigDirty();
-
-        // Seed the window title. If no render mixin ever applies, this text stays on screen, which
-        // is the clearest possible signal that the hooks did not match this Minecraft build.
-        MetalBridge.reportPipelineStatus("waiting for render hooks");
 
         // Initialize Apple Silicon Unified Memory Architecture engine
         UnifiedMemoryManager.getInstance().initialize();
@@ -64,12 +49,8 @@ public class MetalModClient implements ClientModInitializer {
     }
 
     /**
-     * Background thread for memory telemetry only.
-     *
-     * It deliberately does NOT touch the frame pipeline: frame submission, jitter advance and
-     * pipeline reconfiguration all belong to the render thread. Driving VulkanFrameManager from
-     * here previously reconfigured MTLTextures and MetalFX scalers concurrently with the frame
-     * that was using them.
+     * Background thread for memory telemetry only. It never touches rendering; every Metal object
+     * belongs to the render thread and the backend that creates it.
      */
     private void startTelemetryThread() {
         Thread thread = new Thread(() -> {
@@ -80,7 +61,6 @@ public class MetalModClient implements ClientModInitializer {
                 long started = System.currentTimeMillis();
                 while (!Thread.currentThread().isInterrupted()) {
                     UnifiedMemoryManager.getInstance().updateTelemetry();
-                    MetalBridge.updateWindowTitle();
 
                     // Once the game has been running for a while, report the definitive list of
                     // hooks that applied. Anything still showing '-' did not match and was
@@ -93,10 +73,6 @@ public class MetalModClient implements ClientModInitializer {
                         System.out.println("[MetalMod] F3 section built "
                                 + net.metalmod.debug.DebugScreenRegistration.displayCallCount()
                                 + " time(s). 0 means F3 was never opened, or the entry is still hidden.");
-                        if (!net.metalmod.Diagnostics.hasHook("GameRenderer.render")) {
-                            System.out.println("[MetalMod] The per-frame hook did not apply, so the "
-                                    + "FrameManager never runs (resolution will read as 0x0).");
-                        }
                     }
 
                     Thread.sleep(1000);

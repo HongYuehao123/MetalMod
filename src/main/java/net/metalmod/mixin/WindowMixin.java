@@ -2,16 +2,18 @@ package net.metalmod.mixin;
 
 import com.mojang.blaze3d.platform.Window;
 import net.metalmod.Diagnostics;
-import net.metalmod.render.VulkanFrameManager;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Tracks framebuffer size changes.
+ * Tracks framebuffer size changes, for hook diagnostics.
  *
- * Retargeted to the real API: the method is {@code private void onFramebufferResize(long, int, int)},
+ * <p>It used to publish the size to {@code VulkanFrameManager}, which is retired (ROADMAP.md §4);
+ * the Metal backend sizes itself from the engine's own render-pass descriptors.
+ *
+ * <p>Retargeted to the real API: the method is {@code private void onFramebufferResize(long, int, int)},
  * not {@code onFramebufferSizeChanged}, and the old {@code net.minecraft.class_1041} target caused
  * Mixin to reject the whole mixin.
  */
@@ -21,6 +23,5 @@ public class WindowMixin {
     @Inject(method = "onFramebufferResize", at = @At("RETURN"))
     private void metalmod$onFramebufferResize(long window, int width, int height, CallbackInfo ci) {
         Diagnostics.hook("Window.onFramebufferResize");
-        VulkanFrameManager.getInstance().updateDimensions(width, height);
     }
 }

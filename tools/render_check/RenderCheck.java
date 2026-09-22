@@ -1338,11 +1338,58 @@ public final class RenderCheck {
         encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
 
         ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
-        int inside = pixels.get(((HEIGHT / 4) * WIDTH + (WIDTH / 4)) * 4 + 2) & 0xFF;
-        int outside = pixels.get(((3 * HEIGHT / 4) * WIDTH + (3 * WIDTH / 4)) * 4 + 2) & 0xFF;
-        check("scissor(0,0,32,32) draws the top-left quadrant (B" + inside
+        // RenderPass.enableScissor is bottom-up (GL convention), so (0,0,W/2,H/2) covers the
+        // *bottom-left* quadrant of the framebuffer; readback row 0 is the top row. The earlier
+        // version of this check probed the top-left quadrant, which passed against a pass-through
+        // scissor and so asserted the very off-by-a-flip it should have caught (BUG-001).
+        int inside = pixels.get(((3 * HEIGHT / 4) * WIDTH + (WIDTH / 4)) * 4 + 2) & 0xFF;
+        int outside = pixels.get(((HEIGHT / 4) * WIDTH + (3 * WIDTH / 4)) * 4 + 2) & 0xFF;
+        check("scissor(0,0,32,32) draws the bottom-left quadrant (B" + inside
                 + ") and nothing else (opposite quadrant B" + outside + ")",
                 inside > 200 && outside < 60, "");
+
+        // A pass whose viewport is Y-flipped gets no scissor conversion: the flip has already
+        // mirrored the framebuffer mapping, so the engine's y lands directly. Every offscreen GUI
+        // target is in that family ("UI items atlas", "UI entity texture", ...). GuiItemAtlas
+        // composites a slot with a region clear *and* a scissor at the same coordinates, so
+        // converting only the scissor wiped the slot it had just cleared - the inventory icons
+        // vanished. This check pins "top-left quadrant", which is what applying y=0 directly means.
+        GpuTexture uiTarget = device.createTexture("UI scissor texture", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+        GpuTextureView uiView = device.createTextureView(uiTarget);
+        java.util.List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> uiAttachments =
+                new java.util.ArrayList<>();
+        uiAttachments.add(new RenderPassDescriptor.Attachment<>(uiView, clear));
+        CommandEncoderBackend uiEncoder = device.createCommandEncoder();
+        RenderPassDescriptor uiDescriptor = RenderPassDescriptor.create(() -> "UI scissor texture")
+                .withColorAttachment(uiView, clear)
+                .withRenderArea(new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        RenderPassBackend uiBackend = uiEncoder.createRenderPass(uiDescriptor);
+        RenderPass uiPass = new RenderPass(uiBackend, device, uiAttachments, () -> {
+        }, new RenderPass.RenderArea(0, 0, WIDTH, HEIGHT));
+        uiPass.setPipeline(pipeline);
+        uiPass.setUniform("Projection", projection.slice());
+        uiPass.setUniform("DynamicTransforms", transforms.slice());
+        uiPass.setVertexBuffer(0, vertices.slice());
+        uiPass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        uiPass.enableScissor(0, 0, WIDTH / 2, HEIGHT / 2);
+        uiPass.drawIndexed(6, 1, 0, 0, 0);
+        uiPass.close();
+        uiEncoder.submitRenderPass();
+
+        GpuBuffer uiReadback = device.createBuffer(() -> "UI scissor readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) WIDTH * HEIGHT * 4);
+        uiEncoder.copyTextureToBuffer(uiTarget, uiReadback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
+        ByteBuffer uiPixels = ((MetalBuffer) uiReadback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int uiInside = uiPixels.get(((HEIGHT / 4) * WIDTH + (WIDTH / 4)) * 4 + 2) & 0xFF;
+        int uiOutside = uiPixels.get(((3 * HEIGHT / 4) * WIDTH + (3 * WIDTH / 4)) * 4 + 2) & 0xFF;
+        check("a flipped-viewport target keeps the scissor as given (top-left quadrant B" + uiInside
+                + "), so it matches the region clear (opposite quadrant B" + uiOutside + ")",
+                uiInside > 200 && uiOutside < 60, "");
+
+        uiReadback.close();
+        uiView.close();
+        uiTarget.close();
 
         readback.close();
         transforms.close();

@@ -98,15 +98,12 @@ public final class Diagnostics {
                     + "libmetalmod.dylib is arm64-only and will fail to load under Rosetta.");
         }
 
-        System.out.println(TAG + " config  : mode=" + config.scalingMode
-                + " preset=" + config.preset.getDisplayName()
-                + " frameGen=" + config.frameGeneration
-                + " hdr=" + config.enableHDR
+        System.out.println(TAG + " config  : preferMetalBackend=" + config.preferMetalBackend
                 + " umaPool=" + config.enableUnifiedMemoryPool
                 + " pressureHandler=" + config.enableMemoryPressureHandler);
 
-        System.out.println(TAG + " expect  : the MetalFX frame pipeline is INACTIVE by design in "
-                + "this build (MetalMod does not own presentation). See README 'Known limitations'.");
+        System.out.println(TAG + " expect  : the native Metal backend draws only when the engine "
+                + "selects it (preferMetalBackend or -Dmetalmod.metalBackend=true).");
         System.out.println(TAG + " expect  : mixin hooks report themselves below as 'HOOK ACTIVE'. "
                 + "A hook that never appears did not apply.");
         System.out.println(TAG + " ========================================================");

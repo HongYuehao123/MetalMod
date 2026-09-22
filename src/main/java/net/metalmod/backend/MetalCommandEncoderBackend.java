@@ -198,7 +198,21 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
      * {@link #noteRenderTarget}, so the set is read off a run rather than reasoned about.
      */
     private static boolean needsYFlip(String label) {
-        return label != null && (label.contains("/atlas/") || label.contains("UI items atlas"));
+        if (label == null) {
+            return false;
+        }
+        // Real texture atlases (blocks, gui, items, ...): TextureAtlas composites them with
+        // TextureAtlasSprite.uploadSpriteUbo's ortho2D(0, w, 0, h).
+        if (label.contains("/atlas/")) {
+            return true;
+        }
+        // Every offscreen GUI target. GuiItemAtlas names its texture "UI items atlas", and
+        // PictureInPictureRenderer names each one "UI " + label + " texture" - the inventory player
+        // preview is "UI entity texture", and the skin, banner, book, profiler-chart and
+        // oversized-item targets follow the same pattern. They are rendered with the same Y-down
+        // ortho as the GUI and then blitted with an inverted V, so a missing flip shows the
+        // inventory player model upside down.
+        return label.startsWith("UI ");
     }
 
     // One line per distinct render target, so a target that is rendered into without the flip can be

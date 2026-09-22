@@ -1,4 +1,5 @@
-#import "metalmod_internal.h"
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #import "metalmod/metalmod_memory.h"
 #import <Metal/Metal.h>
 
@@ -35,8 +36,7 @@ extern "C" {
 void* metalmod_uma_alloc(size_t size) {
     if (size == 0) return nullptr;
 
-    MetalModState *state = [MetalModState sharedState];
-    id<MTLDevice> device = state.device ?: MTLCreateSystemDefaultDevice();
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) return nullptr;
 
     // Enforce 16 KB page alignment for zero-copy Apple Silicon UMA
@@ -126,8 +126,7 @@ void* metalmod_uma_realloc(void* ptr, size_t newSize) {
         return ptr; // Already fits inside the 16 KB-aligned allocation
     }
 
-    MetalModState *state = [MetalModState sharedState];
-    id<MTLDevice> device = state.device ?: MTLCreateSystemDefaultDevice();
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) return nullptr;
 
     MTLResourceOptions options = MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
@@ -184,20 +183,9 @@ size_t metalmod_uma_size(const void* ptr) {
 }
 
 void metalmod_uma_purge_idle(void) {
-    // Conservative trimming: only mark dormant scratch textures as volatile, and never while
-    // frame generation is actively writing them.
-    MetalModState *state = [MetalModState sharedState];
-    if (!state.device) return;
-    if (state.frameGenerationActive) return;
-
-    if (state.interpolatedTexture) {
-        MTLPurgeableState previous = [state.interpolatedTexture setPurgeableState:MTLPurgeableStateVolatile];
-        if (previous == MTLPurgeableStateVolatile) {
-            // The contents are now undefined; the frame pipeline must restore NonVolatile before
-            // writing to (or reading from) it again.
-            state.interpolatedTexturePurged = YES;
-        }
-    }
+    // Nothing to trim. This used to mark the MetalFX frame-interpolation target volatile, and that
+    // target belonged to the retired MoltenVK-interop pipeline. The UMA pool itself owns nothing
+    // idle: every live allocation is tracked in g_UmaAllocations and freed by its owner.
 }
 
 int metalmod_memory_pressure_init(MetalModMemoryPressureCallback callback) {
@@ -284,8 +272,7 @@ void metalmod_get_memory_telemetry(MetalModMemoryTelemetry* outTelemetry) {
     }
 
     // 5. Metal Unified Working Set & Allocations
-    MetalModState *state = [MetalModState sharedState];
-    id<MTLDevice> device = state.device ?: MTLCreateSystemDefaultDevice();
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (device) {
         outTelemetry->metalAllocatedBytes = (uint64_t)device.currentAllocatedSize;
         outTelemetry->metalMaxWorkingSetBytes = (uint64_t)device.recommendedMaxWorkingSetSize;

@@ -120,6 +120,15 @@ our own textures, and ray tracing becomes possible at all.
 | `JitterHelper` | Returns in Phase 8 with temporal upscaling. |
 | `MetalMemoryAllocator` | **Removed.** LWJGL 3.4 requires native function pointers (`getMalloc`, `getAlignedFree`, …) for its fast allocation path; a Java pool cannot supply them honestly, and mixing libc- and pool-allocated pointers behind one `free()` risks corruption. It was also a measured pessimisation. |
 
+**Retirement is done (Phase 5).** `VulkanFrameManager` and `JitterHelper` are deleted, along with
+their per-frame call in `GameRendererMixin`; `MetalBridge` no longer binds the interop or MetalFX
+frame entry points; and the native library no longer builds `metalmod_bridge.mm`,
+`metalmod_pacer.mm`, `metalmod_compositor.mm`, or the spatial/temporal/interpolator wrappers. The
+dylib now exports only the Metal backend (`mmm_*`) and the UMA/memory pool (`metalmod_uma_*`,
+`metalmod_get_memory_telemetry`, `metalmod_memory_pressure_init`). The F3 MetalFX line and the
+config screen's scaling/preset/frame-gen controls went with them, since they configured a pipeline
+that no longer exists. MetalFX returns in Phase 8 against our own textures.
+
 ---
 
 ## 5. Phases
@@ -274,9 +283,12 @@ The bulk of the work, and where "it compiles" becomes "it plays".
 **Done when:** a normal session is visually indistinguishable from Vulkan/MoltenVK, at comparable
 frame rate.
 
-**Compatibility risk:** Sodium replaces terrain rendering. It sits on Blaze3D's abstraction in
-modern versions, so it should follow, but its terrain path is the performance-critical one and needs
-dedicated testing. Iris is the shaderpack loader and is a Phase 7 dependency.
+**Compatibility risk (decision: not pursued).** Sodium replaces terrain rendering, and it was named
+here as Phase 5's main compatibility risk. The call is now to **not** port or test Sodium: it sits on
+Blaze3D's abstraction in modern versions, so it should follow without backend work, and it does not
+make Phase 7's shaderpack work easier. Iris is a separate Phase 7 dependency. If a Metal+Sodium
+combination is ever attempted, the relevant backend gap is the indirect/multi-draw-indirect path,
+which is still a documented no-op (see §6).
 
 **Progress (in flight).** Phase 5 began with the draw-path defects rather than the visual ones,
 because they are what make a visual symptom fixable. Twenty-four bugs were found and fixed
@@ -348,10 +360,18 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 | `tools/render_check/run.sh` | 80 assertions over 26 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 
-What remains for Phase 5 is the part that needs a running game: BUG-001 (missing GUI sprites),
-BUG-002 (the block-selection outline) and BUG-003 (the flat black world) are all runtime observations
-from a build that predates most of these fixes, and every mechanism they implicate now renders
-correctly offline. The next step is an in-game run on a current build, not more reading.
+What remains for Phase 5 is the part that needs a running game, and it has narrowed sharply:
+
+- **BUG-002 and BUG-003 are confirmed fixed in game.**
+- **BUG-001's root cause is found and fixed**: `RenderPass.enableScissor` is bottom-up (GL) and
+  `MetalRenderPassBackend` passed it to Metal's top-left `setScissorRect` unchanged, mirroring every
+  scissor. That clipped the top off the Select World list and its first entry. The render-check
+  assertion that "confirmed" the old behaviour asserted the wrong quadrant and has been corrected, so
+  it can now fail. In-game confirmation of the fix is the one remaining check for these three.
+- **Performance parity is unmeasured.** "Comparable frame rate" needs a real in-play Metal-vs-Vulkan
+  comparison; the only numbers in `HANDOFF.md` were taken with a menu open and the world not ticking.
+- The retired MoltenVK-interop/MetalFX code is deleted (see §4), so it no longer runs a per-frame
+  hook or builds MetalFX scalers that cannot present.
 
 ### Phase 6 — Dynamic lighting  · **M–L**
 
@@ -426,28 +446,35 @@ native Metal backend, since MoltenVK cannot express it at all.
   and theirs does not. Budget ongoing maintenance.
 - **Feature gaps.** Apple GPUs differ from the Vulkan feature set MC targets; some assumptions will
   need `DeviceFeatures` negotiation rather than hardcoding.
-- **Ecosystem.** Sodium and Iris must work, or the mod is not usable in practice.
+- **Ecosystem.** Iris must work for shaderpacks (Phase 7). Sodium compatibility is explicitly not
+  pursued: it sits on Blaze3D's abstraction, and porting it does not make shaderpack work easier. If
+  it is ever attempted, the indirect-draw path is the known gap.
 
 ---
 
 ## 7. Immediate next step
 
-**Phase 5 — vanilla render parity, in progress.** Phases 0–4 are done, and Phase 4's exit criterion
-is met: all 87 vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`. Phase 5's
-twenty-three fixes (BUG-004 … BUG-024) are in and all four offline suites are green — see the
-progress note under Phase 5 above.
+**Phase 5 — vanilla render parity, verification close-out.** Phases 0–4 are done, and Phase 4's exit
+criterion is met: all 87 vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`. The
+Phase 5 fixes (BUG-004 … BUG-024) are in, all five offline gates are green, and the retired
+MoltenVK-interop architecture has been deleted (§4).
 
-The next step is **an in-game run on a current build**, not more static analysis. BUG-001, BUG-002
-and BUG-003 are runtime observations from a build predating most of these fixes, and the leading
-hypothesis for each is that it is already fixed: the harness now reproduces every mechanism they
-implicate — uniform-block slots, atlas samplers, region clears, the screen-space line expansion, the
-entity vertex format — and each renders correctly. What the run has to settle is which of them
-survive, and it also confirms the twenty-one fixes. The first run earned its keep immediately: it found a crash the
-offline suites could not reach (BUG-020) and a misleading status line (BUG-021).
+What is left is one in-game pass to confirm the last fix and, separately, a frame-rate comparison:
 
-Install the current jar and re-check:
+1. **Confirm the last GUI fixes in game.** Open Singleplayer → Select World and check that the first
+   entry has its background panel and an unsquashed world-name line (BUG-001), then open the survival
+   inventory and check that the item icons are present and the player preview is the right way up
+   (BUG-025). BUG-002 and BUG-003 are already confirmed fixed. The fixes are the scissor Y
+   conversion and the offscreen-GUI-target flip list in `MetalRenderPassBackend` /
+   `MetalCommandEncoderBackend`.
+2. **Measure parity.** Run the same scene on Metal and on Vulkan/MoltenVK and compare frame rate in
+   normal play (not with a menu open), at both native and reduced resolution.
+3. **Then Phase 5 is done**, and Phase 6 (dynamic lighting) is next.
+
+The jar is already installed in the test instance; rebuild and reinstall with:
 
 ```bash
+./scripts/build_mod.sh
 cp build/libs/metalmod-1.0.0.jar \
    "$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2/mods/"
 ```

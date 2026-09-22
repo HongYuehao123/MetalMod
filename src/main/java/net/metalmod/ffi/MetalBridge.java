@@ -8,8 +8,15 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
 /**
- * Java Foreign Function & Memory API (Panama FFI) bindings to libmetalmod.dylib.
- * Provides high-speed direct native calls without JNI overhead on Apple Silicon macOS 26+.
+ * Java Foreign Function &amp; Memory API (Panama FFI) bindings to libmetalmod.dylib.
+ *
+ * <p>Only two native surfaces remain: the Metal renderer backend (bound separately by
+ * {@code net.metalmod.backend.MetalNative}) and the Apple Silicon UMA / memory-telemetry pool bound
+ * here. The MoltenVK-interop frame pipeline that used to be bound here - {@code metalmod_init},
+ * {@code metalmod_configure}, {@code metalmod_register_vulkan_device}, {@code metalmod_process_frame}
+ * and the MetalFX capability queries - was retired with the rest of that architecture
+ * (ROADMAP.md §4) and deleted from the native library, so its bindings are gone too.
+ * {@link #symbol} throws for a missing export, so a stale binding would have failed library load.
  */
 public final class MetalBridge {
 
@@ -17,17 +24,6 @@ public final class MetalBridge {
     private static String loadError = null;
 
     // Method handles to native functions
-    private static MethodHandle mh_init;
-    private static MethodHandle mh_shutdown;
-    private static MethodHandle mh_configure;
-    private static MethodHandle mh_register_vulkan_device;
-    private static MethodHandle mh_process_frame;
-    private static MethodHandle mh_get_telemetry;
-    private static MethodHandle mh_is_spatial_supported;
-    private static MethodHandle mh_is_temporal_supported;
-    private static MethodHandle mh_is_frame_gen_supported;
-    private static MethodHandle mh_update_window_title;
-    private static MethodHandle mh_report_pipeline_status;
     private static MethodHandle mh_uma_alloc;
     private static MethodHandle mh_uma_calloc;
     private static MethodHandle mh_uma_realloc;
@@ -39,38 +35,6 @@ public final class MetalBridge {
     private static MethodHandle mh_uma_size;
     private static MethodHandle mh_get_memory_telemetry;
     private static MethodHandle mh_memory_pressure_init;
-    private static MethodHandle mh_has_vulkan_interop;
-
-    // Struct Layout: MetalModConfig
-    // uint32_t inputWidth, inputHeight, outputWidth, outputHeight (4 x 4 = 16 bytes)
-    // int32_t scalingMode (4 bytes)
-    // bool frameGenerationEnabled (1 byte)
-    // 3 bytes padding
-    // float sharpness (4 bytes)
-    // bool enableHDR (1 byte)
-    // bool enableUIOverlay (1 byte)
-    // 2 bytes padding
-    // uint32_t targetDisplayFPS (4 bytes)
-    // bool enableUnifiedMemoryPool (1 byte)
-    // bool enableMemoryPressureHandler (1 byte)
-    // 2 bytes padding
-    public static final GroupLayout CONFIG_LAYOUT = MemoryLayout.structLayout(
-            ValueLayout.JAVA_INT.withName("inputWidth"),
-            ValueLayout.JAVA_INT.withName("inputHeight"),
-            ValueLayout.JAVA_INT.withName("outputWidth"),
-            ValueLayout.JAVA_INT.withName("outputHeight"),
-            ValueLayout.JAVA_INT.withName("scalingMode"),
-            ValueLayout.JAVA_BOOLEAN.withName("frameGenerationEnabled"),
-            MemoryLayout.paddingLayout(3),
-            ValueLayout.JAVA_FLOAT.withName("sharpness"),
-            ValueLayout.JAVA_BOOLEAN.withName("enableHDR"),
-            ValueLayout.JAVA_BOOLEAN.withName("enableUIOverlay"),
-            MemoryLayout.paddingLayout(2),
-            ValueLayout.JAVA_INT.withName("targetDisplayFPS"),
-            ValueLayout.JAVA_BOOLEAN.withName("enableUnifiedMemoryPool"),
-            ValueLayout.JAVA_BOOLEAN.withName("enableMemoryPressureHandler"),
-            MemoryLayout.paddingLayout(2)
-    );
 
     // Struct Layout: MetalModMemoryTelemetry (64 bytes total)
     // uint64_t totalPhysicalMemoryBytes (8 bytes)
@@ -92,39 +56,6 @@ public final class MetalBridge {
             ValueLayout.JAVA_LONG.withName("metalMaxWorkingSetBytes"),
             ValueLayout.JAVA_INT.withName("memoryPressureLevel"),
             ValueLayout.JAVA_INT.withName("reserved")
-    );
-
-    // Struct Layout: MetalModFrameParams
-    // uint64_t frameIndex (8 bytes)
-    // float deltaTime, jitterOffsetX, jitterOffsetY, nearPlane, farPlane, fieldOfView, aspectRatio (7 x 4 = 28 bytes)
-    // bool resetHistory, isDepthReversed (2 bytes)
-    // 2 bytes padding
-    public static final GroupLayout FRAME_PARAMS_LAYOUT = MemoryLayout.structLayout(
-            ValueLayout.JAVA_LONG.withName("frameIndex"),
-            ValueLayout.JAVA_FLOAT.withName("deltaTime"),
-            ValueLayout.JAVA_FLOAT.withName("jitterOffsetX"),
-            ValueLayout.JAVA_FLOAT.withName("jitterOffsetY"),
-            ValueLayout.JAVA_FLOAT.withName("nearPlane"),
-            ValueLayout.JAVA_FLOAT.withName("farPlane"),
-            ValueLayout.JAVA_FLOAT.withName("fieldOfView"),
-            ValueLayout.JAVA_FLOAT.withName("aspectRatio"),
-            ValueLayout.JAVA_BOOLEAN.withName("resetHistory"),
-            ValueLayout.JAVA_BOOLEAN.withName("isDepthReversed"),
-            MemoryLayout.paddingLayout(2)
-    );
-
-    // Struct Layout: MetalModTelemetry
-    // float renderFPS, presentedFPS, gpuFrameTimeMs, upscalerTimeMs, frameGenTimeMs (5 x 4 = 20 bytes)
-    // uint64_t totalFramesRendered, totalFramesPresented (2 x 8 = 16 bytes)
-    public static final GroupLayout TELEMETRY_LAYOUT = MemoryLayout.structLayout(
-            ValueLayout.JAVA_FLOAT.withName("renderFPS"),
-            ValueLayout.JAVA_FLOAT.withName("presentedFPS"),
-            ValueLayout.JAVA_FLOAT.withName("gpuFrameTimeMs"),
-            ValueLayout.JAVA_FLOAT.withName("upscalerTimeMs"),
-            ValueLayout.JAVA_FLOAT.withName("frameGenTimeMs"),
-            MemoryLayout.paddingLayout(4),
-            ValueLayout.JAVA_LONG.withName("totalFramesRendered"),
-            ValueLayout.JAVA_LONG.withName("totalFramesPresented")
     );
 
     static {
@@ -167,84 +98,6 @@ public final class MetalBridge {
 
         // Resolve by name with a message that names the missing symbol: a bare orElseThrow()
         // reports only "No value present", which hides which export is missing.
-
-        mh_init = linker.downcallHandle(
-                symbol(lookup, "metalmod_init"),
-                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
-        );
-
-        mh_shutdown = linker.downcallHandle(
-                symbol(lookup, "metalmod_shutdown"),
-                FunctionDescriptor.ofVoid()
-        );
-
-        mh_configure = linker.downcallHandle(
-                symbol(lookup, "metalmod_configure"),
-                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
-        );
-
-        mh_register_vulkan_device = linker.downcallHandle(
-                symbol(lookup, "metalmod_register_vulkan_device"),
-                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
-        );
-
-        mh_process_frame = linker.downcallHandle(
-                symbol(lookup, "metalmod_process_frame"),
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS,
-                        ValueLayout.ADDRESS
-                )
-        );
-
-        mh_get_telemetry = linker.downcallHandle(
-                symbol(lookup, "metalmod_get_telemetry"),
-                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
-        );
-
-        mh_is_spatial_supported = linker.downcallHandle(
-                symbol(lookup, "metalmod_is_spatial_scaler_supported"),
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_BOOLEAN,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT
-                )
-        );
-
-        mh_is_temporal_supported = linker.downcallHandle(
-                symbol(lookup, "metalmod_is_temporal_scaler_supported"),
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_BOOLEAN,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT
-                )
-        );
-
-        mh_is_frame_gen_supported = linker.downcallHandle(
-                symbol(lookup, "metalmod_is_frame_gen_supported"),
-                FunctionDescriptor.of(
-                        ValueLayout.JAVA_BOOLEAN,
-                        ValueLayout.JAVA_INT,
-                        ValueLayout.JAVA_INT
-                )
-        );
-
-        mh_update_window_title = linker.downcallHandle(
-                symbol(lookup, "metalmod_update_window_title"),
-                FunctionDescriptor.ofVoid()
-        );
-
-        mh_report_pipeline_status = linker.downcallHandle(
-                symbol(lookup, "metalmod_report_pipeline_status"),
-                FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
-        );
 
         mh_uma_alloc = linker.downcallHandle(
                 symbol(lookup, "metalmod_uma_alloc"),
@@ -300,11 +153,6 @@ public final class MetalBridge {
                 FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
         );
 
-        mh_has_vulkan_interop = linker.downcallHandle(
-                symbol(lookup, "metalmod_has_vulkan_interop"),
-                FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN)
-        );
-
         available = true;
         System.out.println("[MetalMod] Successfully loaded libmetalmod.dylib via Panama FFI!");
     }
@@ -315,128 +163,6 @@ public final class MetalBridge {
 
     public static String getLoadError() {
         return loadError;
-    }
-
-    public static int init(MemorySegment nsWindowHandle) {
-        if (!available) return -1;
-        try {
-            return (int) mh_init.invokeExact(nsWindowHandle);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    public static void shutdown() {
-        if (!available) return;
-        try {
-            mh_shutdown.invokeExact();
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    public static int configure(MemorySegment configSegment) {
-        if (!available) return -1;
-        try {
-            return (int) mh_configure.invokeExact(configSegment);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    public static int registerVulkanDevice(MemorySegment vkDevice, MemorySegment exportFunc) {
-        if (!available) return -1;
-        try {
-            return (int) mh_register_vulkan_device.invokeExact(vkDevice, exportFunc);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    public static int processFrame(
-            MemorySegment colorImage,
-            MemorySegment depthImage,
-            MemorySegment motionImage,
-            MemorySegment uiImage,
-            MemorySegment paramsSegment
-    ) {
-        if (!available) return -1;
-        // invokeExact is signature-polymorphic: the *static* types of the arguments at the call
-        // site must match the MethodHandle type exactly. A reference conditional expression is a
-        // poly expression in an invocation context, so
-        //     mh.invokeExact(a != null ? a : MemorySegment.NULL, ...)
-        // compiles to an (Object,...) descriptor and throws WrongMethodTypeException on every
-        // call. Bind each argument to a typed local first.
-        MemorySegment color = (colorImage == null) ? MemorySegment.NULL : colorImage;
-        MemorySegment depth = (depthImage == null) ? MemorySegment.NULL : depthImage;
-        MemorySegment motion = (motionImage == null) ? MemorySegment.NULL : motionImage;
-        MemorySegment ui = (uiImage == null) ? MemorySegment.NULL : uiImage;
-        try {
-            return (int) mh_process_frame.invokeExact(color, depth, motion, ui, paramsSegment);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    public static void getTelemetry(MemorySegment telemetrySegment) {
-        if (!available) return;
-        try {
-            mh_get_telemetry.invokeExact(telemetrySegment);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    public static boolean isSpatialSupported(int inW, int inH, int outW, int outH) {
-        if (!available) return false;
-        try {
-            return (boolean) mh_is_spatial_supported.invokeExact(inW, inH, outW, outH);
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    public static boolean isTemporalSupported(int inW, int inH, int outW, int outH) {
-        if (!available) return false;
-        try {
-            return (boolean) mh_is_temporal_supported.invokeExact(inW, inH, outW, outH);
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    public static boolean isFrameGenSupported(int width, int height) {
-        if (!available) return false;
-        try {
-            return (boolean) mh_is_frame_gen_supported.invokeExact(width, height);
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    public static void updateWindowTitle() {
-        if (!available || mh_update_window_title == null) return;
-        try {
-            mh_update_window_title.invokeExact();
-        } catch (Throwable t) {
-            // non-fatal
-        }
-    }
-
-    /**
-     * Publish a pipeline status string for the window title.
-     *
-     * This is the diagnostic channel that does not depend on any mixin applying. The text is copied
-     * natively, so the confined segment only needs to outlive the call.
-     */
-    public static void reportPipelineStatus(String status) {
-        if (!available || mh_report_pipeline_status == null || status == null) return;
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment text = arena.allocateFrom(status);
-            mh_report_pipeline_status.invokeExact(text);
-        } catch (Throwable t) {
-            // non-fatal
-        }
     }
 
     public static MemorySegment allocateUnifiedBuffer(long size) {
@@ -528,21 +254,6 @@ public final class MetalBridge {
             return (int) mh_memory_pressure_init.invokeExact(callbackStub);
         } catch (Throwable t) {
             throw new RuntimeException("Failed to init memory pressure listener", t);
-        }
-    }
-
-    /**
-     * Whether the native side holds a live VkDevice + vkExportMetalObjectsEXT.
-     *
-     * VkImage handles must not be handed to {@link #processFrame} unless this is true: without
-     * interop a VkImage cannot be converted to an MTLTexture, and the pipeline refuses to run.
-     */
-    public static boolean hasVulkanInterop() {
-        if (!available || mh_has_vulkan_interop == null) return false;
-        try {
-            return (boolean) mh_has_vulkan_interop.invokeExact();
-        } catch (Throwable t) {
-            return false;
         }
     }
 

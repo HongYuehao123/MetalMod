@@ -229,7 +229,21 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void enableScissor(int x, int y, int width, int height) {
-        MetalNative.renderPassSetScissor(this.encoder, x, y, width, height);
+        // The engine's scissor rectangle is bottom-up (GL convention): GuiRenderer converts its
+        // top-down ScreenRectangle with `window.height - bottom`, and GlCommandEncoder hands the
+        // values straight to glScissor. Metal's setScissorRect origin is top-left, so a normal pass
+        // needs the Y converted - without it the Select World list scissor was mirrored and clipped
+        // the top off its first entry (BUG-001).
+        //
+        // A pass whose viewport is already Y-flipped is the exception and must NOT be converted:
+        // the flip has already mirrored the framebuffer mapping to match Minecraft's Y-down
+        // convention, so the engine's y lands correctly when applied directly. That is what the
+        // native region clear does (mmm_clear_textures_region applies y unchanged, which BUG-010
+        // verified), and GuiItemAtlas composites each slot with a clear *and* a scissor at the same
+        // coordinates - converting only the scissor wiped the slot it had just cleared, which is
+        // why the inventory icons disappeared.
+        int metalY = this.owner.viewportFlipped() ? y : this.height - (y + height);
+        MetalNative.renderPassSetScissor(this.encoder, x, metalY, width, height);
     }
 
     @Override

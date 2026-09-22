@@ -8,9 +8,54 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-025 — Inventory player preview is upside down, and the item icons vanished
+
+**Status:** **FIXED** (Phase 5) — pending an in-game look.
+**Severity:** medium. The inventory is usable but the preview is wrong and the icons were missing.
+
+### Symptoms
+
+- The player model at the top-left of the survival inventory rendered **upside down**.
+- After the BUG-001 scissor fix landed, the inventory **item icons disappeared** from their slots.
+
+### Cause
+
+Two Y-convention bugs in the GUI's offscreen targets, and they interact.
+
+1. **The picture-in-picture entity target was not flipped.** `PictureInPictureRenderer` renders each
+   preview into a texture labelled `"UI " + label + " texture"` (the inventory player is
+   `"UI entity texture"`) with the same Y-down ortho the GUI uses, then `blitTexture` samples it with
+   an **inverted V** (`v0 = 1, v1 = 0`). `needsYFlip` only knew `/atlas/` and `"UI items atlas"`, so
+   the entity pass kept Metal's orientation and the inverted-V blit turned it over.
+2. **The scissor was converted on a pass that was already flipped.** BUG-001's fix converted the
+   engine's bottom-up scissor to Metal's top-left unconditionally. On a pass whose viewport is
+   already Y-flipped the framebuffer mapping is already mirrored, so the engine's `y` must be
+   applied directly - which is exactly what the native region clear (`mmm_clear_textures_region`)
+   does. `GuiItemAtlas.drawToSlot` clears a slot and then scissors the **same** rectangle
+   (`RenderSystem.enableScissorForRenderTypeDraws(left, textureSize - bottom, ...)`); converting only
+   the scissor moved the clip off the slot it had just cleared and the icon was wiped.
+
+### Fix
+
+- `MetalCommandEncoderBackend.needsYFlip` now flips every `"UI "` target, which covers the item
+  atlas and all six PiP textures (entity, player skin, banner result, book model, profiler chart,
+  oversized item).
+- `MetalRenderPassBackend.enableScissor` converts the Y only when the pass's viewport is *not*
+  flipped, and applies it directly otherwise.
+- Locked in by a new `tools/render_check` assertion: a scissor on a flipped-viewport target stays at
+  the given coordinates (top-left quadrant), so it coincides with the region clear. Removing either
+  half of the fix fails a check.
+
+The native viewport flip already reverses the front-face winding
+(`setFrontFacingWinding:(height < 0 ? Clockwise : CounterClockwise)`), so back-face culling stays
+correct for an entity drawn in a flipped pass.
+
+---
+
 ## BUG-001 — "Select World" list entry has no background panel (and a garbled name line)
 
-**Status:** open, unfixed. Cosmetic — the screen still works.
+**Status:** **FIXED** (Phase 5) — the scissor rectangle was mirrored vertically; pending an in-game
+look to confirm.
 **Severity:** low. The world is selectable and the screen is usable; it just looks wrong.
 **Seen on:** Metal backend enabled, build `ab30f94` (phase 3) + `15c0133`, window
 `5120x2880 -> 5120x2880 (Native)`, 60 fps cap, no resource packs.
@@ -36,11 +81,13 @@ On the Singleplayer → **Select World** ("选择世界") screen:
 2. Open **Singleplayer → Select World**.
 3. Compare against the same screen on the default backend — there the entry has its dark panel.
 
-### Suspected cause (unconfirmed)
+### Suspected causes (superseded — see "Root cause" below)
 
-The entry background is a sprite from the GUI atlas, and the garble looks like a text/quad drawn
-with a wrong sub-rect or transform, so this is probably a leftover of the Phase 3 atlas work
-(`ab30f94`, which fixed the atlas Y-flip and the negative-viewport winding):
+None of these was the cause; they are kept because they are the reasons the two offline mechanisms
+that *were* checked were checked. The entry background is a sprite from the GUI atlas, and the garble
+looks like a text/quad drawn with a wrong sub-rect or transform, so this was originally read as a
+leftover of the Phase 3 atlas work (`ab30f94`, which fixed the atlas Y-flip and the negative-viewport
+winding):
 
 - the entry background may use a sprite/pipeline variant that is not bound (a name we do not map,
   or a pipeline the engine never precompiles), or
@@ -91,34 +138,49 @@ PASS  atlas target: NDC y=-1 lands in framebuffer row 0 (red at the top, was gre
 so the flip does what it claims — and because the pipeline used culls, that also proves the winding
 flip a negative viewport requires.
 
-GUI clipping and blending are ruled out too. `RenderPass.enableScissor` is what stops a sprite or a
-line of text spilling outside its panel, and a scissor landing in the wrong place — or flipped
-vertically, since Metal's scissor origin is top-left like Minecraft's — would corrupt a panel exactly
-as described here. The render check draws a full-screen quad with `enableScissor(0, 0, 32, 32)`:
+GUI clipping was *not* ruled out — it was the bug. `RenderPass.enableScissor` is what stops a sprite
+or a line of text spilling outside its panel, and it takes a **bottom-up** rectangle (the GL
+convention): `GuiRenderer.enableScissor` converts its top-down `ScreenRectangle` with
+`window.height - bottom` before calling it, and `GlCommandEncoder` forwards the values straight to
+`glScissor`, whose origin is bottom-left. Metal's `setScissorRect` origin is **top-left**, and the
+backend passed the values through unchanged, so every scissor was mirrored vertically. See "Root
+cause" below. The render check "confirmed" the wrong convention for a year of this bug's life:
 
 ```
-PASS  scissor(0,0,32,32) draws the top-left quadrant (B255) and nothing else (opposite quadrant B0)
+before: PASS  scissor(0,0,32,32) draws the top-left quadrant   <- asserted the off-by-a-flip
+after : PASS  scissor(0,0,32,32) draws the bottom-left quadrant <- (0,0,W/2,H/2) is bottom-left
 ```
 
 and separately blends 50%-alpha white over black, which lands at exactly `R128` — so blend state
-(enabled, factors, op) is plumbed correctly too.
+(enabled, factors, op) is plumbed correctly.
 
-### Most likely already fixed
+### Root cause (identified, fixed)
 
-This was reported against build `ab30f94` (Phase 3), before any of the Phase 5 work. Three of the
-fixes since are all plausible causes of exactly these symptoms, and none had been made yet:
+The scissor Y was never flipped. The engine's scissor rectangle is bottom-up, Metal's is top-left,
+and `MetalRenderPassBackend.enableScissor` handed the engine's values to `mmm_render_pass_set_scissor`
+unchanged, so `setScissorRect` mirrored the rect about the vertical centre of the target.
 
-- **BUG-007** (sampler address modes were swapped) — every atlas would have sampled with `REPEAT`
-  instead of `CLAMP_TO_EDGE`, so sprites bleed into their neighbours. That is precisely "the wrong
-  sprite is drawn" and "the panel is missing".
-- **BUG-010** (sub-rectangle clears wiped the whole attachment) — every GUI atlas slot already
-  rendered was erased.
-- **BUG-012** (uniform blocks shared a Metal slot) — GUI uniform values would be wrong.
+That explains both symptoms exactly. The Select World list's scissor is the list rect; mirrored, its
+top edge lands part-way down the first entry, so:
 
-So the leading hypothesis is that BUG-001 is already fixed by the batch and simply has not been seen
-since. What would settle it is a run, not more code: the remaining unexplained piece is text
-rendering and the sprite stitching itself, neither of which an offscreen harness can reach without a
-full client bootstrap.
+- the selection/background panel for the first entry is clipped away ("no dark rounded entry
+  behind them"), and
+- the top of the first entry is cut. The entry's first text line is the world name, drawn at
+  `getContentY() + 1`; only its lower few pixels survive the clip, which is the "compressed/garbled"
+  line. The lines below it, and the bottom buttons, are below the clip and look normal.
+
+The fix is in `MetalRenderPassBackend.enableScissor`: convert the engine's bottom-up Y to Metal's
+top-left origin (and apply it directly on a pass whose viewport is already Y-flipped — see BUG-025,
+which that refinement fixes):
+
+```java
+int metalY = this.owner.viewportFlipped() ? y : this.height - (y + height);
+MetalNative.renderPassSetScissor(this.encoder, x, metalY, width, height);
+```
+
+Verified offline by correcting the render-check assertion above (it now probes the bottom-left
+quadrant, which is what `enableScissor(0,0,W/2,H/2)` means in the engine's convention). Before the
+fix that corrected check fails; after it, it passes. In-game confirmation is still pending.
 
 ### Workaround
 

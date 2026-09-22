@@ -10,33 +10,35 @@ Apple's **MetalFX** upscaling / frame interpolation, **dynamic lighting**, shade
 native ray tracing are later phases; see [ROADMAP.md](ROADMAP.md). Known defects are parked in
 [bug.md](bug.md).
 
-> ## Current status: Phases 0–4 are DONE — the game renders on Metal, visual parity is unfinished
+> ## Current status: the Metal backend renders — Phase 5 is in final verification
 >
 > Minecraft selects the **Metal backend**, creates the device and a `CAMetalLayer`, creates real
 > Metal **textures, views, buffers and samplers**, compiles the engine's shaders
 > (**GLSL → SPIR-V → MSL**), encodes real render passes, and blits the engine's render target to the
-> drawable. Verified in-game:
+> drawable. Verified in game:
 >
 > - the Mojang loading screen (logo + progress bar),
 > - the main menu (logotype, buttons, sliders, splash, blurred panorama),
-> - in-world geometry (sky, hotbar, terrain silhouettes).
+> - a loaded world: terrain, entities, particles, sky/weather, clouds, water, HUD, items and text,
+>   with every telemetry counter at zero.
 >
-> It is **not yet visually correct**: terrain is unlit/flat, the block-selection outline is wrong,
-> and some screens have missing sprites. That is Phase 5 (vanilla render parity) work; the current
-> bugs are listed in [bug.md](bug.md). Phase 4 (shaders) is **done** — see
-> [docs/phase4-plan.md](docs/phase4-plan.md).
+> All 87 vanilla render pipelines and all 9 post-processing passes compile
+> (`tools/shader_inventory/run.sh`), and the pixel harness passes over the mechanisms the Phase 5
+> bugs implicated. The block-selection outline (BUG-002) and the flat-black terrain/entities
+> (BUG-003) are confirmed fixed; the Select World list scissor (BUG-001) is fixed and awaiting one
+> in-game confirmation. See [bug.md](bug.md) and [ROADMAP.md](ROADMAP.md) §7.
 >
-> The backend is **opt-in and OFF by default** while parity is unfinished, so normal play keeps using
-> the bundled Vulkan/OpenGL path. Enable it from **Mod Menu → MetalMod → "Metal Renderer Backend"**,
+> The backend is **opt-in and OFF by default**, so normal play keeps using the bundled
+> Vulkan/OpenGL path. Enable it from **Mod Menu → MetalMod → "Metal Renderer Backend"**,
 > or set `preferMetalBackend=true` in `config/metalmod.properties`, or pass
 > `-Dmetalmod.metalBackend=true`. The backend is chosen once at startup, so **restart** after
 > changing it.
 >
-> ## ⚠️ MetalFX is not wired to the Metal backend yet
+> ## ⚠️ MetalFX is not implemented yet
 >
-> MetalFX scalers/interpolators exist in the native library but are **not driven by the Metal
-> backend** and no upscaled or interpolated frame reaches the display. MetalFX returns in Phase 8,
-> against the backend's own textures. Frame generation is **off by default**.
+> MetalFX upscaling and frame interpolation return in Phase 8, against the backend's own textures.
+> The retired MoltenVK-interop scalers have been deleted, and the config screen no longer exposes
+> scaling/frame-generation settings that did nothing.
 
 ---
 
@@ -75,11 +77,11 @@ Physical RAM, available/compressed memory, swap, process footprint, Metal alloca
 working-set cap, plus the macOS kernel memory-pressure level, shown on the F3 overlay. A
 `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` listener performs conservative scratch reclaim.
 
-### Optional UMA allocator (opt-in, default off)
-`MetalMemoryAllocator` can replace LWJGL's off-heap allocator with 16 KB-aligned shared
-`MTLBuffer`s, routing `free`/`realloc` by ownership and falling back when the pool cannot
-satisfy a request. It is a pessimisation for typical workloads, so it stays off unless
-`enableUnifiedMemoryPool=true`.
+> The LWJGL allocator interception that once sat behind `enableUnifiedMemoryPool` was **removed**:
+> LWJGL 3.4 needs native function pointers for its fast allocation path, a Java pool cannot supply
+> them honestly, and mixing libc- and pool-allocated pointers behind one `free()` risks corruption.
+> The native UMA pool remains for telemetry, and `enableUnifiedMemoryPool` now only gates the F3
+> memory line.
 
 ### Native substrate
 `libmetalmod.dylib` is a thin Objective-C++ layer over Metal/MetalFX/QuartzCore; the Java side
@@ -92,36 +94,40 @@ reaches it through Panama FFI (`java.lang.foreign`). A standalone native smoke t
 
 These are the reasons the mod is not a drop-in replacement yet.
 
-1. **Visual parity (Phase 5).** World rendering is geometry with textures/lighting incomplete:
-   terrain and entities render as flat black silhouettes, the block-selection outline is a huge
-   wireframe box, and some GUI screens are missing sprites. See [bug.md](bug.md).
-2. **Multi-draw passes lose their uniforms (Phase 5).** `drawMultipleIndexed` never invokes each
-   draw's `uniformUploaderConsumer()`, and vanilla's chunk terrain path uses it. See BUG-004 in
-   [bug.md](bug.md). Shader *compilation* is complete: all 87 vanilla pipelines compile, verified by
-   `tools/shader_inventory/run.sh`.
-3. **MetalFX / frame generation are not presented (Phase 8).** The native scalers and interpolator
-   are not driven by the Metal backend, and frame generation additionally needs a
-   `CAMetalDisplayLink` pacer so two drawables land on different refreshes.
+1. **Phase 5 verification.** The Select World list scissor (BUG-001) is fixed pending one in-game
+   look; BUG-002 (selection outline) and BUG-003 (flat-black terrain/entities) are confirmed fixed.
+   See [bug.md](bug.md).
+2. **Performance parity is unmeasured.** The roadmap's exit criterion is a comparable frame rate, and
+   the existing numbers were taken with a menu open and the world not ticking, so they are a lower
+   bound rather than a result.
+3. **MetalFX / frame generation are not implemented (Phase 8).** They return against the backend's
+   own textures, and frame generation additionally needs a display-link pacer so two drawables land
+   on different refreshes.
 4. **Internal resolution scaling is not implemented.** Shrinking the main render target breaks the
-   GUI layout (scissor rectangles exceed the render area), so `scalingMode`/`preset` currently have
-   no effect. Doing it properly means rendering the world into its own target and upscaling that.
-5. **The UMA allocator is off by default** (see above).
+   GUI layout (scissor rectangles exceed the render area); doing it properly means rendering the
+   world into its own target and upscaling that.
+5. **Indirect draws are no-ops.** `drawIndirect` and `drawIndexedIndirect` are unimplemented, and the
+   matching `DeviceFeatures` are reported `false` so the engine never takes those paths. Vanilla is
+   unaffected; this is the gap to close before batching mods (e.g. Sodium).
+6. **The UMA pool is telemetry-only** (see above).
 
 ---
 
-## Legacy code still in the tree
+## Retired architecture
 
-The old **"MetalFX on top of MoltenVK / `VK_EXT_metal_objects`"** design is still present but is
-**not used by the Metal backend** and should be deleted:
+The original **"MetalFX on top of MoltenVK / `VK_EXT_metal_objects`"** design could not own
+presentation and could not express MetalFX or ray tracing, so the Metal backend replaced it. Its
+code is now **deleted**, not merely unused:
 
-- `native/src/metalmod_bridge.mm`, `metalmod_spatial.mm`, `metalmod_temporal.mm`,
-  `metalmod_interpolator.mm`, `metalmod_compositor.mm`, `metalmod_pacer.mm` and
-  `native/include/vulkan/` — the interop + MetalFX frame pipeline.
-- `src/main/java/net/metalmod/render/VulkanFrameManager.java`, `ffi/MetalBridge.java` and the
-  parts of `render/JitterHelper.java` that feed them.
+- native: `metalmod_bridge.mm`, `metalmod_pacer.mm`, `metalmod_compositor.mm`,
+  `metalmod_spatial.mm`, `metalmod_temporal.mm`, `metalmod_interpolator.mm`,
+  `metalmod_internal.h`, and the bundled `vulkan/` headers;
+- Java: `net.metalmod.render.VulkanFrameManager`, `net.metalmod.render.JitterHelper`, and the
+  per-frame hook they had in `GameRendererMixin`.
 
-The F3 overlay still prints `pipeline: inactive (Vulkan interop not registered)` from this code;
-that line is a leftover, not the Metal backend's status.
+`MetalBridge` now binds only the UMA/memory surface. The dylib exports the Metal backend (`mmm_*`)
+and the memory pool (`metalmod_uma_*`, `metalmod_get_memory_telemetry`,
+`metalmod_memory_pressure_init`).
 
 ---
 
@@ -197,8 +203,7 @@ MetalMod/
 │   ├── src/
 │   │   ├── metalmod_metal.mm           # The Metal backend's native substrate (device, layer,
 │   │   │                               #  textures, buffers, pipelines, render passes, blit)
-│   │   ├── metalmod_memory.mm          # UMA pool, Mach VM telemetry, pressure source
-│   │   └── ...                         # legacy MetalFX/MoltenVK path (see "Legacy code")
+│   │   └── metalmod_memory.mm          # UMA pool, Mach VM telemetry, pressure source
 │   └── tests/metal_smoke.mm            # Native smoke test
 ├── scripts/
 │   ├── build_mod.sh                    # Authoritative build
@@ -209,13 +214,13 @@ MetalMod/
 │   ├── shader_inventory/run.sh         # Compile all 87 vanilla pipelines and report pass/fail
 │   └── render_check/run.sh             # Render real pipelines offscreen and check the pixels
 ├── src/main/java/net/metalmod/
-│   ├── backend/                        # Metal GpuBackend implementation (Phases 1–4)
+│   ├── backend/                        # Metal GpuBackend implementation
 │   ├── client/                         # Fabric entrypoint + Mod Menu config screen
-│   ├── config/                         # Presets and persistence
+│   ├── config/                         # Persistence (backend toggle, memory options)
 │   ├── debug/                          # F3 debug entry
-│   ├── memory/                         # UMA allocator + telemetry
-│   ├── mixin/                          # Backend selection and render hooks
-│   └── render/                         # Legacy frame manager + Halton jitter
+│   ├── ffi/                            # Panama bindings to the UMA/memory native surface
+│   ├── memory/                         # Native UMA telemetry + pressure handling
+│   └── mixin/                          # Backend selection and hook diagnostics
 └── src/test/java/net/metalmod/         # Standalone suite + JUnit tests
 ```
 
@@ -225,7 +230,7 @@ MetalMod/
 
 - **Metal Renderer Backend**: Mod Menu → MetalMod (restart required), or
   `config/metalmod.properties`, or `-Dmetalmod.metalBackend=true`.
-- **F3 overlay**: MetalMod status — backend/pipeline state, internal vs display resolution, render
-  FPS, presented FPS and pipeline GPU time.
-- **Config screen**: also exposes the MetalFX/scaling and UMA options (currently not applied — see
-  limitations 3–5).
+- **F3 overlay**: MetalMod status — the backend the engine selected, the framebuffer resolution, and
+  the `unbound/missingAttr/failed` health counters that explain a black or missing object.
+- **Config screen**: the Metal backend toggle and the UMA memory option. MetalFX/scaling controls are
+  gone until Phase 8 — they configured a pipeline that no longer exists.

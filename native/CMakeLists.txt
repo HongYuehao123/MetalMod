@@ -19,12 +19,6 @@ include_directories(
 )
 
 set(SOURCES
-    src/metalmod_bridge.mm
-    src/metalmod_spatial.mm
-    src/metalmod_temporal.mm
-    src/metalmod_interpolator.mm
-    src/metalmod_compositor.mm
-    src/metalmod_pacer.mm
     src/metalmod_memory.mm
     src/metalmod_metal.mm
 )
@@ -32,13 +26,11 @@ set(SOURCES
 add_library(metalmod SHARED ${SOURCES})
 
 find_library(METAL_FRAMEWORK Metal REQUIRED)
-find_library(METALFX_FRAMEWORK MetalFX REQUIRED)
 find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
 
 target_link_libraries(metalmod PRIVATE
     ${METAL_FRAMEWORK}
-    ${METALFX_FRAMEWORK}
     ${QUARTZCORE_FRAMEWORK}
     ${COCOA_FRAMEWORK}
 )

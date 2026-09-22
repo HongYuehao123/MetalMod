@@ -1,239 +1,122 @@
 # Testing MetalMod
 
-## What changed in this build (and why the last one did nothing)
-
-Your log from the previous run reported:
-
-```
-[main/WARN]: @Mixin target net.minecraft.class_757 was not found metalmod.mixins.json:GameRendererMixin
-[main/WARN]: @Mixin target net.minecraft.class_1041 was not found metalmod.mixins.json:WindowMixin
-[main/WARN]: @Mixin target net.minecraft.class_276 was not found metalmod.mixins.json:RenderTargetMixin
-[main/WARN]: @Mixin target net.minecraft.class_310 was not found metalmod.mixins.json:MinecraftMixin
-[MetalMod] hook summary after 30s: -GameRenderer.render -GameRenderer.getBasicProjectionMatrix ...
-```
-
-Three separate problems were found by reading the real 26.2 client jar with `javap`:
-
-1. **Intermediary `class_XXXX` targets do not exist in this build.** It runs with *named* mappings
-   (the jar contains `net/minecraft/client/renderer/GameRenderer.class` and **zero** `class_`
-   entries). Mixin rejects an *entire* mixin if **any** entry in `targets` is missing, so the
-   dual-target lists killed every hook at once.
-2. **The F3 hook point was dead code.** `DebugScreenOverlayMixin` did apply — it got no warning —
-   but `DebugScreenOverlay.extractLines` is never called any more. Since 1.21.9+ the overlay
-   iterates a registry and calls `DebugScreenEntry.display(...)`. The bytecode of
-   `extractRenderState` confirms this.
-3. **Several methods in the mod simply do not exist**: `RenderTarget.blitToScreen`,
-   `RenderTarget.resize(int,int,boolean)` (it takes two arguments), `Minecraft.getMainRenderTarget`,
-   `Minecraft.resizeDisplay`, `Window.getFramebufferWidth`, `Window.onFramebufferSizeChanged`,
-   `GameRenderer.getBasicProjectionMatrix`.
-
-4. **The compile stubs declared the wrong `@Retention` on Mixin's annotations.** This was the
-   reason nothing injected even once the targets were correct. Verified from sponge-mixin:
-
-   | Annotation | Real retention | Stub had |
-   |---|---|---|
-   | `@Mixin` | `CLASS` | `CLASS` ok |
-   | `@Shadow`, `@Inject`, `@ModifyVariable`, `@At`, `@Accessor` | **`RUNTIME`** | `CLASS` wrong |
-
-   Mixin reads those as *visible* annotations. With `CLASS` they landed in
-   `RuntimeInvisibleAnnotations`, Mixin could not see them at all, so injections were skipped
-   silently (every injector uses `require = 0`) and the `@Accessor` interfaces were misclassified
-   as *interface mixins* - producing `@Mixin target type mismatch: ... is not an interface`.
-   The accessor class now byte-for-byte matches Sodium's placement: `@Accessor` in
-   `RuntimeVisibleAnnotations`, `@Mixin` in `RuntimeInvisibleAnnotations`.
-
-5. **Scaling the main render target is not viable in this architecture.** It produced
-   `Scissor ... is out of bounds for render area` on click and left the screen unresponsive. That
-   mixin is gone. See "Why scaling was removed" below.
-
-After fix 4, all four hooks applied on the next run:
-
-```
-[MetalMod] F3 debug entry: registered=true verified=true id=metalmod:status
-[MetalMod] hook summary after 30s: +GameRenderer.render +GameRenderer.resize +RenderTarget.resize(main) +Window.onFramebufferResize
-```
-
-6. **Two reporting inconsistencies**, visible side by side on screen, are fixed:
-   - The window title measured the window with `convertSizeToBacking` on the content view, which
-     *includes* the macOS title bar, so it read `5120x2880` while F3 (GLFW's framebuffer) read
-     `5120x2664`. Both now use the renderer's size.
-   - F3 said `Vulkan interop not registered` while the title said `does not own presentation`,
-     because the overlay read a status field that stopped being updated. Both now call one shared
-     computation.
-   - The render FPS was an exponential average that a single multi-second stall dragged down for
-     tens of frames (it read `11.5 fps` next to vanilla's `113 fps`). It is now counted over a
-     rolling 0.5 s window.
-   - The title no longer reports a "requested" resolution that nothing renders at.
-
-Everything is now retargeted against signatures read out of your jar, and the compile stubs were
-rewritten to match (retentions included), so the build actually checks the API it calls.
+How to build, verify, and check the Metal backend. `HANDOFF.md` is the current status;
+`ROADMAP.md` §7 is what is left; `bug.md` lists defects.
 
 ---
 
-## Artifact
-
-```
-build/libs/metalmod-1.0.0.jar
-sha256 26608091ad4524edb17b0a41c7b07bed272e09511af18a9d2a089c9f88734037
-```
-
-Embeds `natives/libmetalmod.dylib` (arm64, sha256
-`381521bb93ed38bc5bcdb40b6cc2d2db517fb8ce183ebf8645efbf48a6c8f3e1`). Rebuilding produces a different
-jar hash because zip entries carry timestamps.
-
-### Install
+## 1. Build and install
 
 ```bash
+./scripts/build_mod.sh
 INST="$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2"
 cp build/libs/metalmod-1.0.0.jar "$INST/mods/"
-rm -f "$INST/mods/metalmod-1.0.0.jar.old"
 ```
 
-### Reset the config first (important)
+`build_mod.sh` builds the native library, compiles the Java against the **real client jar** (so
+`javac` checks every Minecraft API call), packages the jar, and compiles the standalone tests.
 
-Your existing `config/metalmod.properties` has `scalingMode=SPATIAL` and
-`enableUnifiedMemoryPool=true`. Now that the resize hook actually applies, `SPATIAL` +
-`ULTRA_PERF` would immediately render the world at 33% in a fresh install, and the UMA pool is the
-pessimising allocator path. Write a clean, safe config for this test:
+Config lives at `$INST/config/metalmod.properties`. The current fields are:
 
-```bash
-cat > "$INST/config/metalmod.properties" <<'EOF'
-scalingMode=OFF
-preset=NATIVE
-frameGeneration=false
+```properties
 enableUnifiedMemoryPool=false
 enableMemoryPressureHandler=true
-enableHDR=false
-enableUIOverlay=true
-sharpness=0.5
-targetDisplayFPS=120
-EOF
+preferMetalBackend=true
 ```
 
-`scalingMode=OFF` is also the new default: the mod leaves rendering completely untouched until you
-opt in.
+`preferMetalBackend=true` (or `-Dmetalmod.metalBackend=true`) makes `PreferredGraphicsApiMixin`
+prepend the Metal backend. It is chosen once at startup, so restart after changing it. With it off,
+normal play uses Vulkan/OpenGL.
 
----
+## 2. Offline gates (no game required)
 
-## Stage 1 — does everything load and hook?
+Run all five; they are the cheap, deterministic checks.
 
-Launch the game, load a world, **press F3**, and let it run a minute.
+| Command | Pass condition |
+|---|---|
+| `./scripts/build_mod.sh` | `SUCCESS -> build/libs/metalmod-1.0.0.jar` |
+| `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
+| `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
+| `./tools/render_check/run.sh` | `RENDER CHECK PASSED` |
+| `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
-### Expected: an F3 section
+The standalone runner needs the client classpath; `build_mod.sh` prints the exact command. The
+shader tools and render check also accept an instance directory as an argument or via
+`METALMOD_MC_INSTANCE`.
 
-Look in the F3 overlay for lines beginning `[MetalMod]`:
+Useful one-off: print the generated MSL for a shader pair, or all of them, by adding
+`-Dmetalmod.dumpMsl=<substring>` (or `=all`).
+
+## 3. In-game checks
+
+Launch with the backend on, load a world, press **F3**, and let it run at least 30 seconds.
+
+### F3 MetalMod lines
 
 ```
-[MetalMod] MetalFX: Off / Native (100%) | pipeline: inactive (MetalMod does not own presentation)
-[MetalMod] Resolution: internal 2560x1440 -> display 2560x1440
-[MetalMod] Render 61.3 fps | Presented 0.0 fps | Pipeline GPU 0.00 ms
+[MetalMod] Backend: Metal (active)
+[MetalMod] Resolution: <framebuffer width>x<height>
+[MetalMod] unbound/missingAttr/failed: 0 (0/0/0 = bindings, missing vertex attributes, pipeline builds)
 ```
 
-Note `Presented 0.0 fps` and `Pipeline GPU 0.00 ms` are *correct*: nothing is being presented by the
-pipeline and it is not encoding anything. Previous builds printed a fabricated `presentedFPS = 2 ×
-renderFPS`; that is gone.
+plus `UMA pool ...` when `enableUnifiedMemoryPool=true`, and a `hooks:` line only if a hook failed to
+apply. `Backend: Metal (active)` is read from the engine's own `DeviceInfo`, so it answers whether
+Metal is actually drawing.
 
-If a hook failed to apply, a `[MetalMod] hooks: -...` line is added to F3 so the failure is visible
-in-game rather than only in the log.
-
-### Expected: log lines
+### The 30 s telemetry line
 
 ```bash
-INST="$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2"
-grep -E "MetalMod|mixin" "$INST/logs/latest.log" | head -40
+grep -E "MetalMod|metal pipeline FAILED" "$INST/logs/latest.log"
 ```
 
 Look for:
 
 ```
-[MetalMod] F3 debug entry: registered=true verified=true id=metalmod:status
-[MetalMod] HOOK ACTIVE: GameRenderer.render
-[MetalMod] HOOK ACTIVE: RenderTarget.resize(main)
-[MetalMod] HOOK ACTIVE: Window.onFramebufferResize
-[MetalMod] hook summary after 30s: +GameRenderer.render +GameRenderer.resize +RenderTarget.resize(main) +Window.onFramebufferResize
+[MetalMod] hook summary after 30s: +GameRenderer.render +GameRenderer.resize +Window.onFramebufferResize
+[MetalMod] Metal resources created: textures=... views=... buffers=... samplers=... failures=0 pipelineFailures=0 unboundBindings=0 missingVertexAttributes=0 slotCollisions=0 bindingKindMismatches=0 indexedFans=0
 ```
 
-`registered=true verified=true` is a read-back through Minecraft's own API — it proves the accessor
-mixin applied, independently of whether anything appeared on screen.
+Every counter must stay at zero. There must be no `@Mixin target ... was not found` warnings for
+`metalmod`, and no `metal pipeline FAILED` lines.
 
-**There must be no `@Mixin target ... was not found` warnings for `metalmod` in the log.** If there
-are, the target list is still wrong and I need the exact text.
+### Visual checklist
 
-### Then report the hook summary
+- Loading screen (logo + bar), main menu (logotype, buttons, sliders, splash, blurred panorama).
+- In a world: terrain with textures and lighting, sky/clouds/weather, water, entities, particles,
+  the HUD, hotbar items, legible text, the debug axes.
+- **Select World** (Singleplayer → Select World): the first entry must have its background panel and
+  an unsquashed world-name line. This is BUG-001; it was a vertically mirrored scissor and is the
+  one fix still awaiting a look.
+- Look at a nearby block: the selection outline is a thin box.
+- Open the survival inventory: item icons are present and the right way up, and the player preview
+  at the top-left is the right way up (BUG-024, BUG-025).
+- Open the config screen from Mod Menu: it shows the Metal backend and UMA toggles.
 
-The `+`/`-` checklist is the key datum. Please paste it verbatim.
+## 4. Performance parity (still to be measured)
 
----
+The roadmap's exit criterion is a comparable frame rate to Vulkan/MoltenVK. Measure **in normal
+play**, not with a menu open (the world must be ticking):
 
-## Stage 2 — CPU-bound or GPU-bound?
+1. Load the same world and stand in the same place on Metal and on Vulkan.
+2. Record F3 fps and the frame time at native resolution, then at roughly half the window area.
+3. Optionally corroborate with `sudo powermetrics --samplers gpu_power -i 1000 -n 20`: consistently
+   below ~70% GPU busy means the frame is CPU-bound, so resolution changes will not move it much.
 
-Internal-resolution scaling has been **removed** (see "Why scaling was removed" below), so the mod
-cannot shrink the render target to measure GPU headroom. Use these instead; both need no config
-edits and neither is affected by the mod.
+Earlier numbers (taken with a menu open) suggested a CPU floor around 3.1 ms and roughly
+0.42 ms/Mpx of GPU cost. Treat those as indicative only.
 
-### Method A — window size (most direct)
+## 5. Troubleshooting
 
-Shrink the game window to roughly a quarter of its area and watch the F3 FPS.
-
-- FPS rises a lot -> **GPU-bound**. Upscaling work is worth doing.
-- FPS barely moves -> **CPU-bound**. No upscaling will raise the frame rate; we should redirect.
-
-### Method B — GPU utilisation
-
-```bash
-sudo powermetrics --samplers gpu_power -i 1000 -n 20
-```
-
-Consistently below ~70% GPU busy while playing means the GPU is waiting on the CPU.
-
-### Method C — render distance
-
-Drop render distance by half. If FPS is unchanged, the bottleneck is not rasterisation.
-
----
-
-## Why scaling was removed
-
-Setting `scalingMode=SPATIAL` shrank the main render target to 3942x2052 (5120x2880 x 0.77) and the
-GUI then threw:
-
-```
-net.minecraft.ReportedException: mouseClicked event handler
-Caused by: java.lang.IllegalArgumentException: Scissor at 0, 179 with size 2520x2150 is out of
-bounds for render area RenderArea[x=0, y=0, width=3942, height=2052]
-```
-
-The GUI lays out against the *window* size, so shrinking the render target pushes its scissor
-rectangles outside the render area. The click handler dies and the screen stops responding to input
-(the window also showed a duplicated, torn image). `RenderTargetMixin` has been deleted; the mod no
-longer touches rendering at all.
-
-Rendering the world at a lower internal resolution and upscaling it needs the world to go to its
-**own** target, leaving the GUI target at native size. That is the "Stage 0" work described in the
-README - not something that can be bolted onto the main target.
-
-## Reporting back
-
-1. The `+`/`-` hook summary.
-2. Whether the `[MetalMod]` F3 lines appeared (and what they said).
-3. `grep -E "MetalMod" logs/latest.log` output.
-4. Stage 2 FPS numbers.
-5. Any `@Mixin target ... not found` warnings, verbatim.
-
----
-
-## If something breaks
-
-**Crash on startup.** Remove the jar from `mods/` and confirm the game recovers, then send
-`logs/latest.log` and the `crash-reports/` file. The most likely candidate would be a mixin
-signature, but every target and descriptor in this build was verified against your jar with `javap`.
-
-**No `[MetalMod]` lines on F3, but the log says `verified=true`.** The entry is registered but the
-visibility mixin (`DebugScreenEntryListMixin`) did not take effect. Report it — the fix would be to
-also hook `resetToProfile`, which is what Sodium does.
-
-**World looks blurry.** `scalingMode` is doing its job — set it to `OFF`.
-
-**Config screen crashes.** The config GUI was only partly verified (`Minecraft.setScreenAndShow`
-and `Button.builder` exist; `Screen` internals were not confirmed). Report it and use
-`config/metalmod.properties` in the meantime.
+- **`libmetalmod.dylib` fails to load.** The Java bindings resolve native symbols by name and throw
+  if one is missing, so a stale dylib is reported explicitly. Rebuild with `./scripts/build_mod.sh`
+  and make sure the game was restarted after installing the new jar (Java loads the mod jar at
+  launch; a running session keeps the old one).
+- **Metal not selected.** Check the log for `Using graphics backend Metal`. If absent, the engine
+  fell back — look for `Metal backend ... disabled` / a `BackendCreationException`.
+- **A black or missing object.** Check the F3 `unbound/missingAttr/failed` counters; a non-zero value
+  names the class of problem (a shader sampling an unbound resource, a missing vertex attribute, or a
+  pipeline that failed to build and is skipping its draws).
+- **No `[MetalMod]` F3 lines** while the log says `verified=true`: the visibility mixin
+  (`DebugScreenEntryListMixin`) did not take effect. Report it.
+- **`@Mixin target ... was not found`.** Mixin rejects an entire mixin if any target is missing.
+  Report the exact text.

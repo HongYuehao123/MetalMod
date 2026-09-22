@@ -3,7 +3,7 @@ package net.metalmod.debug;
 import net.metalmod.config.MetalConfig;
 import net.metalmod.ffi.MetalBridge;
 import net.metalmod.memory.UnifiedMemoryManager;
-import net.metalmod.render.VulkanFrameManager;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.debug.DebugScreenDisplayer;
 import net.minecraft.client.gui.components.debug.DebugScreenEntry;
 import net.minecraft.resources.Identifier;
@@ -30,13 +30,6 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                         Level clientLevel,
                         LevelChunk clientChunk,
                         LevelChunk serverChunk) {
-        if (!MetalBridge.isAvailable()) {
-            displayer.addLine("§6[MetalMod]§r native library not loaded: " + MetalBridge.getLoadError());
-            return;
-        }
-
-        MetalConfig config = MetalConfig.INSTANCE;
-        VulkanFrameManager mgr = VulkanFrameManager.getInstance();
         DebugScreenRegistration.recordDisplayCall();
 
         // The first line has to answer "is Metal drawing this frame?". It used to report the
@@ -55,26 +48,13 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                 ? "§aMetal§r (active)"
                 : "§7" + backend + "§r (Metal not in use)"));
 
-        // Named for what it is, and separate from the answer above.
-        displayer.addLine("§6[MetalMod]§r MetalFX: " + (mgr.isPipelineActive()
-                ? "§aactive§r"
-                : "§7inactive§r (" + mgr.getPipelineStatusText() + ")"));
-
-        // Report the request separately from the outcome. Nothing is scaled today, and saying
-        // "MetalFX: Spatial" without that qualifier would imply an effect that is not happening.
-        if (config.scalingMode != MetalConfig.ScalingMode.OFF || config.frameGeneration) {
-            displayer.addLine("§6[MetalMod]§r Requested: §e" + config.scalingMode.getDisplayName()
-                    + "§r / " + config.preset.getDisplayName()
-                    + (config.frameGeneration ? " + frame gen" : "")
-                    + " §7(not applied)§r");
+        // The framebuffer the backend is actually working with, straight from the engine's window.
+        String resolution = "?";
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft != null && minecraft.getWindow() != null) {
+            resolution = minecraft.getWindow().getWidth() + "x" + minecraft.getWindow().getHeight();
         }
-
-        displayer.addLine("§6[MetalMod]§r Resolution: §b"
-                + mgr.getNativeWidth() + "x" + mgr.getNativeHeight()
-                + "§r (internal scaling disabled)");
-
-        displayer.addLine("§6[MetalMod]§r Render §a" + oneDecimal(mgr.getRenderFPS()) + " fps"
-                + "§r | Window §a" + mgr.getNativeWidth() + "x" + mgr.getNativeHeight());
+        displayer.addLine("§6[MetalMod]§r Resolution: §b" + resolution);
 
         // The backend's health counters. These are the numbers that explain a black or missing
         // object: a shader sampling something nothing bound, an attribute dropped from the vertex
@@ -89,7 +69,7 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         displayer.addLine("§6[MetalMod]§r unbound/missingAttr/failed: " + health
                 + "§7 (0/0/0 = bindings, missing vertex attributes, pipeline builds)§r");
 
-        if (config.enableUnifiedMemoryPool) {
+        if (MetalConfig.INSTANCE.enableUnifiedMemoryPool && MetalBridge.isAvailable()) {
             UnifiedMemoryManager mem = UnifiedMemoryManager.getInstance();
             displayer.addLine("§6[MetalMod]§r UMA pool §aon§r | footprint §b"
                     + UnifiedMemoryManager.formatBytes(mem.getProcessResident())
@@ -111,13 +91,5 @@ public class MetalModDebugEntry implements DebugScreenEntry {
     @Override
     public boolean isAllowed(boolean reducedDebugInfo) {
         return true;
-    }
-
-    private static String oneDecimal(float value) {
-        return String.format("%.1f", value);
-    }
-
-    private static String twoDecimals(float value) {
-        return String.format("%.2f", value);
     }
 }
