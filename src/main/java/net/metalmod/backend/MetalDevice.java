@@ -230,6 +230,19 @@ public final class MetalDevice implements GpuDeviceBackend {
     private static final java.util.Set<String> reportedIndexedFans = new java.util.HashSet<>();
     private static int indexedFanCount;
 
+    // One line per distinct (colour target, pipeline) pair, so the question "which pipeline draws
+    // into which target" is answered by a log rather than by reading the engine. The frame graph
+    // maps its named targets onto a pool, so the label alone does not say where translucency is
+    // rendered or where the composite reads from.
+    private static final java.util.Set<String> notedPipelineTargets = new java.util.HashSet<>();
+
+    static synchronized void notePipelineTarget(String target, String pipeline) {
+        if (target == null || pipeline == null || !notedPipelineTargets.add(target + " <- " + pipeline)) {
+            return;
+        }
+        System.out.println("[MetalMod] draw '" + pipeline + "' -> target '" + target + "'");
+    }
+
     static synchronized void reportIndexedFan(String pipeline) {
         if (!reportedIndexedFans.add(pipeline)) {
             return;

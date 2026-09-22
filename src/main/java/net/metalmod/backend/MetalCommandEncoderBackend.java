@@ -27,6 +27,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     private MemorySegment commandBuffer = MemorySegment.NULL;
     private MemorySegment currentEncoder = MemorySegment.NULL;
     private boolean viewportFlipped;
+    private String currentTargetLabel = "?";
 
     public MetalCommandEncoderBackend(MetalDevice device) {
         this.device = device;
@@ -168,6 +169,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 MetalNative.renderPassSetViewport(encoder, 0.0, (double) height, (double) width, -(double) height);
             }
             this.viewportFlipped = atlasTarget;
+            this.currentTargetLabel = targetLabel;
 
             this.currentEncoder = encoder;
             if (encoder.address() == 0) {
@@ -221,6 +223,11 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
      * Whether the current pass already has a Y-flipped viewport, so a second flip is not applied.
      * The atlas path decides this when the pass is created; screenquad pipelines decide it later.
      */
+    /** The colour target of the pass currently being recorded, for the pipeline/target census. */
+    String currentTargetLabel() {
+        return this.currentTargetLabel;
+    }
+
     boolean viewportFlipped() {
         return this.viewportFlipped;
     }

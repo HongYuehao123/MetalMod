@@ -84,6 +84,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (this.pipeline != null) {
             this.topology = this.pipeline.topology();
             MetalNative.renderPassSetPipeline(this.encoder, this.pipeline.handle());
+            MetalDevice.notePipelineTarget(this.owner.currentTargetLabel(), this.pipelineName);
             flipViewportForScreenquad(pipeline);
         }
     }
