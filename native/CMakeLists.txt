@@ -26,6 +26,7 @@ set(SOURCES
     src/metalmod_compositor.mm
     src/metalmod_pacer.mm
     src/metalmod_memory.mm
+    src/metalmod_metal.mm
 )
 
 add_library(metalmod SHARED ${SOURCES})
@@ -47,6 +48,16 @@ target_compile_options(metalmod PRIVATE
     -Wextra
     -fobjc-arc
 )
+
+# Standalone smoke test for the Metal substrate (see native/tests/metal_smoke.mm).
+# Built by default so the native layer is verifiable without launching Minecraft.
+option(METALMOD_BUILD_TESTS "Build the native smoke tests" ON)
+if(METALMOD_BUILD_TESTS)
+    add_executable(metalmod_smoke tests/metal_smoke.mm)
+    target_link_libraries(metalmod_smoke PRIVATE metalmod
+        ${METAL_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COCOA_FRAMEWORK})
+    target_compile_options(metalmod_smoke PRIVATE -fobjc-arc)
+endif()
 
 set_target_properties(metalmod PROPERTIES
     OUTPUT_NAME "metalmod"

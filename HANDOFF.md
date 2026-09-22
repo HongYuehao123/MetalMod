@@ -13,6 +13,18 @@ Short, factual status. See `ROADMAP.md` for where this is going and `TESTING.md`
 - **Config GUI:** opens from Mod Menu; buttons work.
 - **Native library:** `libmetalmod.dylib` loads; MetalFX capability queries and Mach VM telemetry work.
 
+## Phase 1 status (Metal backend)
+
+- **Native Metal substrate: done and verified** (`native/src/metalmod_metal.mm`).
+  `./native/build/metalmod_smoke` passes on Apple M4 Pro: device info, exact clear-colour
+  round-trip through CPU readback, and `CAMetalLayer` acquire/clear/present.
+- **Not yet written:** the Java backend classes (`MetalBackend`, `MetalDeviceBackend`,
+  `MetalSurfaceBackend`, encoder/render-pass backends, resource types) and the mixin that prefers
+  Metal in `PreferredGraphicsApi.getBackendsToTry()`. Until those exist, Minecraft still runs on
+  Vulkan/MoltenVK.
+- The exact interface contract to implement is generated into `docs/backend-api.md`
+  (`./scripts/dump_backend_api.sh`).
+
 ## What does not work
 
 - **Upscaling / frame generation:** inactive. `MoltenVK owns presentation` — anything the mod

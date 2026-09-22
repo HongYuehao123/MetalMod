@@ -143,7 +143,21 @@ Compile against the **real client jar** rather than generated API stubs.
 copying a jar into the instance. Loom would give a proper dev loop — desirable but no longer a
 correctness prerequisite.
 
-### Phase 1 — First light: device, surface, clear  · **M**
+### Phase 1 — First light: device, surface, clear  · **M**  · *in progress*
+
+**Native substrate: DONE and verified.** `native/src/metalmod_metal.mm` provides device, queue,
+texture create/readback, `CAMetalLayer` surface (acquire/clear/present) and command-buffer/clear-pass
+encoding behind a C API. `native/tests/metal_smoke.mm` proves it end to end on the target machine:
+Apple M4 Pro, 16384 max texture, clear colour round-trips exactly through CPU readback, and a
+detached `CAMetalLayer` acquires, clears and presents a drawable. Run it with
+`./native/build/metalmod_smoke`.
+
+Two SDK realities worth remembering: Metal exposes **no** max-texture-size query (the value is
+derived from `supportsFamily:`), and `[MTLDevice newCommandBuffer]` is the Metal 4 API returning
+`id<MTL4CommandBuffer>` — Metal 3 command buffers must come from a queue.
+
+**Remaining:** the Java side (`MetalBackend`, `MetalDeviceBackend`, `MetalSurfaceBackend`,
+encoder/render-pass backends, resource types) and the `PreferredGraphicsApiMixin`.
 
 Prove that Minecraft can run on a Metal device at all.
 
