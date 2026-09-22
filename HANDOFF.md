@@ -149,13 +149,16 @@ terrain are fixed:
   GL order: SourceAlphaSaturated is 10 and the constant factors are 11..14. No vanilla pipeline uses
   those five, but a shaderpack blending with a constant alpha would have blended wrongly and
   silently.
-- **BUG-008 — mip filtering is disabled by a `// TEST: force mip 0` hack (open).** No sampler reads a
-  mip level, so all minification aliases. Recorded with the one-line fix; it wants an in-game A/B,
-  because flipping it changes sampling for every texture at once.
-- **BUG-009 — transient-arena slices bind the wrong GPU offset (open, latent).** Sub-buffers share
-  the parent's handle while `slice(0, size)` reports offset 0 — right for the CPU upload paths, which
-  read through the offset `data` segment, and wrong for GPU binding. Vanilla only uploads through
-  `TransientMemory`, so it never shows; it would bite anything streaming vertices or uniforms.
+- **BUG-008 — mip filtering (fixed).** `mmm_sampler_create` hardcoded
+  `MTLSamplerMipFilterNotMipmapped` behind a `// TEST: force mip 0` comment, so no sampler ever read a
+  mip level and `lodMaxClamp` was ignored. The filter now follows the engine's `maxLod`. This is the
+  one behaviour change in the batch that can be isolated in a run without a rebuild:
+  `-Dmetalmod.mipFilter=off` restores the old behaviour.
+- **BUG-009 — transient-arena slice offsets (fixed, latent).** Sub-buffers share the parent's handle
+  while `slice(0, size)` reports offset 0 — right for the CPU upload paths, which read through the
+  offset `data` segment, and wrong for GPU binding. `MetalBuffer` now carries a base offset that the
+  GPU binding paths add; a no-op for every buffer that owns its handle. Vanilla only uploads through
+  `TransientMemory`, so it never showed, but it would have bitten anything streaming vertices.
 
 Also for Phase 5:
 
@@ -178,9 +181,9 @@ Also for Phase 5:
 - **Deliberately left alone:** indirect draws have no vanilla callers, and all-false `DeviceFeatures`
   is the conservative direction given the paths that are not implemented.
 
-**To make progress past this point, an in-game run is needed.** Every remaining item (BUG-001,
-BUG-002, BUG-003, and confirming BUG-008) is a runtime observation, not something that can be settled
-by reading code.
+**To make progress past this point, an in-game run is needed.** Everything still open (BUG-001,
+BUG-002, BUG-003) and every fix in this batch are runtime observations — the static surface has been
+audited end to end and no further defect can be settled by reading code.
 
 ## What does not work
 
