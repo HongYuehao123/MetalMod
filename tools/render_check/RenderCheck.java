@@ -221,6 +221,19 @@ public final class RenderCheck {
             // backend cannot render - the pipeline builds state for one target.
             colorTargetLimitCheck();
 
+            // The lightmap pass. It renders a full-screen triangle into a 16x16 target from a uniform
+            // block, and world lighting is the lightmap, so a wrong block layout or a wrong
+            // texel-to-light-level mapping is a wrong-looking world. The block is six floats
+            // followed by four vec3s, which is exactly where std140 padding goes wrong.
+            RenderPipeline lightmap = (RenderPipeline) Class
+                    .forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("LIGHTMAP").get(null);
+            device.precompilePipeline(lightmap, source);
+            check("lightmap pipeline compiled and registered", device.pipelineFor(lightmap) != null, "");
+            if (device.pipelineFor(lightmap) != null) {
+                lightmapCheck(device, lightmap);
+            }
+
             // Post-processing. MC builds these pipelines from POST_PROCESSING_SNIPPET, which declares
             // no colour target and no vertex format, and precompiles them through the one-argument
             // precompilePipeline(pipeline) that passes a null ShaderSource. Both are unlike anything
@@ -1189,6 +1202,109 @@ public final class RenderCheck {
         vertices.close();
         view.close();
         target.close();
+    }
+
+    /**
+     * Render the lightmap pass and check the light levels it produces.
+     *
+     * <p>{@code core/lightmap} turns the fragment's texture coordinate into a block level and a sky
+     * level with {@code floor(texCoord * 16) / 15} and computes a colour from {@code LightmapInfo}.
+     * The uniform block is six floats followed by four {@code vec3}s, so its std140 padding is
+     * exactly the kind a hand-built layout gets wrong, and the shader reads all four of the fields
+     * this check sets.
+     *
+     * <p>{@code screenquad.vsh} builds the triangle from {@code gl_VertexID}, so no vertex buffer is
+     * bound, and the target is the 16x16 the engine uses. With ambient and night vision at black and
+     * the two light colours deliberately different in every channel - {@code SkyLightColor} at
+     * (0.25, 0.5, 1.0) and {@code BlockLightTint} at (1.0, 0.5, 0.25) - the corners should read:
+     *
+     * <pre>
+     *   texCoord (0.03, 0.97)  low block, high sky  ->  64 128 255
+     *   texCoord (0.03, 0.03)  neither              ->   0   0   0
+     *   texCoord (0.97, 0.03)  high block, low sky  -> 255 242 236
+     * </pre>
+     *
+     * <p><b>All three channels are asserted, not just red.</b> The first version of this check
+     * compared only the red channel, and dropping the four bytes of padding before
+     * {@code BlockLightTint} - the classic std140 mistake - still passed it, because red happened to
+     * land back on the right byte. Channel-distinct colours plus a full RGB comparison are what make
+     * a shifted field visible.
+     *
+     * <p>The block-only corner is {@code mix(BlockLightTint, white, 0.9)} because
+     * {@code parabolicMixFactor(1)} is 1, which is what gives it its own distinct triple.
+     */
+    private static void lightmapCheck(MetalDevice device, RenderPipeline pipeline) {
+        final int SIZE = 16;
+        GpuTexture target = device.createTexture("lightmap", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
+        GpuTextureView targetView = device.createTextureView(target);
+        GpuBuffer info = device.createBuffer(() -> "LightmapInfo",
+                GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, lightmapInfo());
+        GpuBuffer readback = device.createBuffer(() -> "readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long) SIZE * SIZE * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "lightmap")
+                .withColorAttachment(targetView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, SIZE, SIZE));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("LightmapInfo", info.slice());
+        // No vertex buffer: screenquad.vsh generates the triangle from gl_VertexID alone.
+        pass.draw(3, 1, 0, 0);
+        encoder.submitRenderPass();
+        encoder.copyTextureToBuffer(target, readback, 0L, null, 0, 0, 0, SIZE, SIZE);
+
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        checkLightmapPixel(pixels, SIZE, 0, 0, "sky light only at texCoord (0.03, 0.97)", 64, 128, 255);
+        checkLightmapPixel(pixels, SIZE, 0, 15, "no light at texCoord (0.03, 0.03)", 0, 0, 0);
+        checkLightmapPixel(pixels, SIZE, 15, 15, "block light at texCoord (0.97, 0.97)",
+                255, 242, 236);
+
+        readback.close();
+        info.close();
+        targetView.close();
+        target.close();
+    }
+
+    /** Compare one lightmap texel against the colour the shader's maths should produce for it. */
+    private static void checkLightmapPixel(ByteBuffer pixels, int size, int x, int y, String where,
+                                           int wantR, int wantG, int wantB) {
+        int at = (y * size + x) * 4;
+        int r = pixels.get(at) & 0xFF;
+        int g = pixels.get(at + 1) & 0xFF;
+        int b = pixels.get(at + 2) & 0xFF;
+        check("lightmap: " + where + " -> " + r + " " + g + " " + b + " (expected " + wantR + " "
+                        + wantG + " " + wantB + ")",
+                Math.abs(r - wantR) <= 3 && Math.abs(g - wantG) <= 3 && Math.abs(b - wantB) <= 3, "");
+    }
+
+    /**
+     * std140 LightmapInfo: six floats, then BlockLightTint, SkyLightColor, AmbientColor and
+     * NightVisionColor, each vec3 aligned to 16 bytes.
+     *
+     * <p>Deliberately non-symmetric - sky at half, block fully white, ambient black - so the three
+     * sampled corners cannot share an answer by accident.
+     */
+    private static ByteBuffer lightmapInfo() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(96).order(ByteOrder.nativeOrder());
+        buffer.putFloat(1.0f);   // SkyFactor
+        buffer.putFloat(1.0f);   // BlockFactor
+        buffer.putFloat(0.0f);   // NightVisionFactor
+        buffer.putFloat(0.0f);   // DarknessScale
+        buffer.putFloat(0.0f);   // BossOverlayWorldDarkeningFactor
+        buffer.putFloat(0.0f);   // BrightnessFactor
+        buffer.putFloat(0.0f).putFloat(0.0f);                  // padding to 32
+        buffer.putFloat(1.0f).putFloat(0.5f).putFloat(0.25f);  // BlockLightTint
+        buffer.putFloat(0.0f);                                 // padding to 48
+        buffer.putFloat(0.25f).putFloat(0.5f).putFloat(1.0f);  // SkyLightColor
+        buffer.putFloat(0.0f);                                 // padding to 64
+        buffer.putFloat(0.0f).putFloat(0.0f).putFloat(0.0f);   // AmbientColor
+        buffer.putFloat(0.0f);                                 // padding to 80
+        buffer.putFloat(0.0f).putFloat(0.0f).putFloat(0.0f);   // NightVisionColor
+        buffer.putFloat(0.0f);                                 // padding to 96
+        buffer.flip();
+        return buffer;
     }
 
     /**
