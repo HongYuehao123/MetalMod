@@ -184,10 +184,19 @@ MMM_API int mmm_copy_buffer_to_buffer(void* queue,
 /// carries CameraBlockPos/CameraOffset, plus lighting, projection and weather). Vulkan stages the
 /// bytes and records a vkCmdCopyBuffer into the frame, so the destination is rewritten only after
 /// the previous frame has finished reading it; a CPU memcpy overwrites it immediately and lets one
-/// frame read the next frame camera position. The temporary staging buffer is retained by the
-/// command buffer until it completes.
+/// frame read the next frame camera position. The bytes are staged in the frame's staging ring and
+/// the copy is batched into the pending utility command buffer.
 MMM_API int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
                                    const void* bytes, int64_t length);
+
+/// Mark the end of a frame for the utility submission batcher.
+///
+/// Buffer copies and uploads share one command buffer instead of each committing their own, which
+/// is a large win when the engine uploads chunk meshes - but the staging memory those copies read
+/// from has to be recycled carefully across frames. Call this once per frame, before the frame's
+/// work starts (the layer acquire path does). It commits anything still pending and rotates the
+/// staging ring, waiting only on a slot the GPU has had several frames to finish.
+MMM_API void mmm_utility_end_frame(void);
 
 /// Clear only the given rectangle, leaving everything outside it untouched.
 ///

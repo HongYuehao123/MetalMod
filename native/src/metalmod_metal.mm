@@ -46,7 +46,7 @@ int32_t mmm_capture_read_reset(uint64_t* out, int32_t count) {
     return MMM_CAPTURE_METRIC_COUNT;
 }
 
-static id<MTLCommandBuffer> mmm_make_command_buffer(id<MTLCommandQueue> queue) {
+static id<MTLCommandBuffer> mmm_raw_command_buffer(id<MTLCommandQueue> queue) {
     MMMCaptureTimer timer(MMM_CAPTURE_COMMAND_BUFFER_CREATE_NS);
     return [queue commandBuffer];
 }
@@ -55,6 +55,121 @@ static void mmm_commit_command_buffer(id<MTLCommandBuffer> buffer) {
     MMMCaptureTimer timer(MMM_CAPTURE_COMMIT_NS);
     [buffer commit];
     if (buffer != nil) mmm_capture_count(MMM_CAPTURE_SUBMISSIONS);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Utility submission batching
+//
+// Every writeToBuffer and every blit used to create, encode and commit its own command buffer.
+// Rebuilding chunk meshes issues ~50 of those in a single frame, and creating that many command
+// buffers costs more than the copies themselves: on the captured frames the upload path spent
+// ~11 ms per frame inside the copy calls and ~8 ms inside [queue commandBuffer], against a 16.7 ms
+// frame budget. Utility work is now appended to one pending command buffer with a single blit
+// encoder, and that buffer is committed only when something that needs its own command buffer is
+// about to be created.
+//
+// The ordering the per-write commits provided is preserved exactly. A queue executes command
+// buffers in commit order, so committing the pending buffer immediately before the next command
+// buffer is created yields the same order the one-buffer-per-write scheme produced.
+//
+// The bytes are staged in a ring of shared buffers, one slot per frame in flight: the CPU memcpy
+// lands in the slot and the GPU blit reads it back. A slot is only reused after MMM_STAGING_SLOTS
+// frames, and the command buffer that last read it is awaited first, so a memcpy can never
+// overwrite bytes a pending blit has not consumed yet. Slots grow on demand instead of being
+// sized up front; a replaced slot stays alive because the command buffer retains the resources
+// its blits reference.
+#define MMM_STAGING_SLOTS 3
+#define MMM_STAGING_INITIAL_BYTES (256u * 1024u)
+#define MMM_STAGING_MAX_BYTES (32u * 1024u * 1024u)
+
+static id<MTLCommandBuffer> g_UtilityBuffer = nil;
+static id<MTLCommandQueue> g_UtilityQueue = nil;
+static id<MTLBlitCommandEncoder> g_UtilityBlit = nil;
+static id<MTLBuffer> g_StagingSlots[MMM_STAGING_SLOTS] = {};
+static size_t g_StagingCapacities[MMM_STAGING_SLOTS] = {};
+static id<MTLCommandBuffer> g_StagingReaders[MMM_STAGING_SLOTS] = {};
+static size_t g_StagingCursor = 0;
+static int g_StagingSlot = 0;
+
+/// Commit whatever utility work is pending. Safe to call when there is none.
+static void mmm_utility_flush(void) {
+    if (g_UtilityBlit != nil) {
+        [g_UtilityBlit endEncoding];
+        g_UtilityBlit = nil;
+    }
+    if (g_UtilityBuffer != nil) {
+        g_StagingReaders[g_StagingSlot] = g_UtilityBuffer;
+        g_UtilityBuffer.label = @"MetalMod utility";
+        mmm_commit_command_buffer(g_UtilityBuffer);
+        g_UtilityBuffer = nil;
+        g_UtilityQueue = nil;
+    }
+}
+
+/// The blit encoder of the pending utility command buffer, creating both on first use. A command
+/// buffer belongs to the queue it came from, so a queue switch commits what is pending first.
+static id<MTLBlitCommandEncoder> mmm_utility_blit(id<MTLCommandQueue> queue) {
+    if (g_UtilityBuffer != nil && g_UtilityQueue != queue) mmm_utility_flush();
+    if (g_UtilityBuffer == nil) {
+        g_UtilityBuffer = mmm_raw_command_buffer(queue);
+        if (g_UtilityBuffer == nil) return nil;
+        g_UtilityQueue = queue;
+    }
+    if (g_UtilityBlit == nil) {
+        g_UtilityBlit = [g_UtilityBuffer blitCommandEncoder];
+    }
+    return g_UtilityBlit;
+}
+
+/// Reserve staging space for `length` CPU-written bytes and return where to put them, or NULL if
+/// the caller should use a buffer of its own (the request is larger than a slot may ever be).
+/// Never blocks: a slot that cannot fit the request is left behind rather than awaited, because
+/// anything already recorded in it belongs to this frame and waiting would stall the pipeline.
+static void* mmm_staging_reserve(id<MTLDevice> device, size_t length) {
+    if (length > MMM_STAGING_MAX_BYTES) return NULL;
+
+    size_t capacity = g_StagingCapacities[g_StagingSlot];
+    if (g_StagingSlots[g_StagingSlot] == nil || g_StagingCursor + length > capacity) {
+        size_t wanted = capacity > 0 ? capacity : MMM_STAGING_INITIAL_BYTES;
+        while (wanted < g_StagingCursor + length) wanted *= 2;
+        if (wanted > MMM_STAGING_MAX_BYTES) wanted = MMM_STAGING_MAX_BYTES;
+        if (wanted < g_StagingCursor + length) return NULL;
+
+        MMMCaptureTimer timer(MMM_CAPTURE_STAGING_ALLOC_NS);
+        id<MTLBuffer> grown = [device newBufferWithLength:wanted
+                                                  options:MTLResourceStorageModeShared];
+        if (grown == nil) return NULL;
+        mmm_capture_count(MMM_CAPTURE_STAGING_ALLOCATIONS);
+        g_StagingSlots[g_StagingSlot] = grown;
+        g_StagingCapacities[g_StagingSlot] = wanted;
+        g_StagingCursor = 0;
+    }
+
+    id<MTLBuffer> slot = g_StagingSlots[g_StagingSlot];
+    void* destination = (void*)((uint8_t*)slot.contents + g_StagingCursor);
+    g_StagingCursor += length;
+    return destination;
+}
+
+/// Retire the frame's staging slot. Called once per frame, at the start of drawable acquisition.
+void mmm_utility_end_frame(void) {
+    mmm_utility_flush();
+    g_StagingSlot = (g_StagingSlot + 1) % MMM_STAGING_SLOTS;
+    // Reuse is MMM_STAGING_SLOTS frames behind, so this wait is normally already satisfied. It is
+    // what makes the ring safe: this slot's bytes are only overwritten once the GPU is done with
+    // the last blit that read them.
+    if (g_StagingReaders[g_StagingSlot] != nil) {
+        [g_StagingReaders[g_StagingSlot] waitUntilCompleted];
+        g_StagingReaders[g_StagingSlot] = nil;
+    }
+    g_StagingCursor = 0;
+}
+
+static id<MTLCommandBuffer> mmm_make_command_buffer(id<MTLCommandQueue> queue) {
+    // Anything already pending in the utility buffer must reach the queue first, or it would be
+    // executed after work the caller is about to commit.
+    mmm_utility_flush();
+    return mmm_raw_command_buffer(queue);
 }
 
 static id<MTLRenderCommandEncoder> mmm_make_render_encoder(id<MTLCommandBuffer> buffer,
@@ -422,6 +537,9 @@ bool mmm_fence_wait(void* fence, int64_t timeoutNanos) {
     id<MTLSharedEvent> event = (__bridge id<MTLSharedEvent>)fence;
     if (event == nil) return true;
     if (event.signaledValue >= 1) return true;
+    // About to block. Hand the GPU the utility work this thread is still holding, or the queue
+    // drains and the wait covers a gap that the pending copies would have filled.
+    mmm_utility_flush();
     uint64_t timeoutMs;
     if (timeoutNanos <= 0) {
         timeoutMs = 0;
@@ -1139,10 +1257,8 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
     if (width <= 0 || height <= 0 || depth <= 0) return -2;
 
     @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
-        commandBuffer.label = @"MetalMod texture copy";
         mmm_capture_count(MMM_CAPTURE_TEXTURE_COPIES);
-        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> blit = mmm_utility_blit(metalQueue);
         if (blit == nil) return -3;
         [blit copyFromTexture:src
                  sourceSlice:(NSUInteger)MAX(0, sourceSlice)
@@ -1153,8 +1269,6 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
           destinationSlice:(NSUInteger)MAX(0, targetSlice)
           destinationLevel:(NSUInteger)MAX(0, targetLevel)
          destinationOrigin:MTLOriginMake((NSUInteger)MAX(0, targetX), (NSUInteger)MAX(0, targetY), 0)];
-        [blit endEncoding];
-        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1177,19 +1291,15 @@ int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
     if ((uint64_t)targetOffset + (uint64_t)length > dst.length) return -4;
 
     @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
-        commandBuffer.label = @"MetalMod buffer copy";
         mmm_capture_count(MMM_CAPTURE_BUFFER_COPIES);
         mmm_capture_count(MMM_CAPTURE_BUFFER_COPY_BYTES, length);
-        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> blit = mmm_utility_blit(metalQueue);
         if (blit == nil) return -5;
         [blit copyFromBuffer:src
                 sourceOffset:(NSUInteger)sourceOffset
                     toBuffer:dst
            destinationOffset:(NSUInteger)targetOffset
                         size:(NSUInteger)length];
-        [blit endEncoding];
-        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1203,8 +1313,9 @@ int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
 // CPU memcpy writes the destination immediately, while the previous frame may still be drawing from
 // it: with the camera moving, part of one frame reads the next frame camera position, the terrain
 // shifts, and the seam opens up as a dark patch - most visible on a large flat water plane and at
-// section borders. The temporary staging buffer is retained by the command buffer until it
-// completes, so releasing it here is safe.
+// section borders. The bytes go into the frame's staging ring and the copy is batched into the
+// pending utility command buffer (see the batching note above), which is what makes this cheap
+// when the engine uploads dozens of chunk meshes in one frame.
 int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
                            const void* bytes, int64_t length) {
     MMMCaptureTimer timer(MMM_CAPTURE_UPLOAD_API_NS);
@@ -1216,29 +1327,32 @@ int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
     if ((uint64_t)targetOffset + (uint64_t)length > dst.length) return -3;
 
     @autoreleasepool {
-        id<MTLBuffer> staging;
-        {
+        id<MTLBuffer> source = nil;
+        NSUInteger sourceOffset = 0;
+        void* staged = mmm_staging_reserve(metalQueue.device, (size_t)length);
+        if (staged != NULL) {
+            memcpy(staged, bytes, (size_t)length);
+            source = g_StagingSlots[g_StagingSlot];
+            sourceOffset = (NSUInteger)((uint8_t*)staged - (uint8_t*)source.contents);
+        } else {
+            // Bigger than a staging slot may ever be, which the engine does not do in practice.
             MMMCaptureTimer allocationTimer(MMM_CAPTURE_STAGING_ALLOC_NS);
-            staging = [metalQueue.device newBufferWithBytes:bytes length:(NSUInteger)length
+            source = [metalQueue.device newBufferWithBytes:bytes length:(NSUInteger)length
                                                    options:MTLResourceStorageModeShared];
+            if (source != nil) mmm_capture_count(MMM_CAPTURE_STAGING_ALLOCATIONS);
         }
-        if (staging != nil) {
-            mmm_capture_count(MMM_CAPTURE_BUFFER_WRITES);
-            mmm_capture_count(MMM_CAPTURE_BUFFER_UPLOAD_BYTES, length);
-            mmm_capture_count(MMM_CAPTURE_STAGING_ALLOCATIONS);
-        }
-        if (staging == nil) return -4;
-        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
-        commandBuffer.label = @"MetalMod buffer write";
-        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        if (source == nil) return -4;
+
+        mmm_capture_count(MMM_CAPTURE_BUFFER_WRITES);
+        mmm_capture_count(MMM_CAPTURE_BUFFER_UPLOAD_BYTES, length);
+
+        id<MTLBlitCommandEncoder> blit = mmm_utility_blit(metalQueue);
         if (blit == nil) return -5;
-        [blit copyFromBuffer:staging
-                sourceOffset:0
+        [blit copyFromBuffer:source
+                sourceOffset:sourceOffset
                     toBuffer:dst
            destinationOffset:(NSUInteger)targetOffset
                         size:(NSUInteger)length];
-        [blit endEncoding];
-        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1299,6 +1413,9 @@ int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool vsync) 
 }
 
 int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture) {
+    // A frame boundary: the previous frame's utility work is committed (its present already did
+    // that) and its staging slot is retired for the ring to reuse MMM_STAGING_SLOTS frames later.
+    mmm_utility_end_frame();
     MMMCaptureTimer timer(MMM_CAPTURE_DRAWABLE_WAIT_NS);
     CAMetalLayer* metalLayer = mmm_layer(layer);
     if (metalLayer == nil || outDrawable == NULL || outTexture == NULL) return -1;

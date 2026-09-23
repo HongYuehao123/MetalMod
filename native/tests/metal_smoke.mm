@@ -944,7 +944,9 @@ static void test_capture(void) {
     check("capture rejects undersized output", mmm_capture_read_reset(metrics, 1) == -1, "");
     check("capture schema length", mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT)
             == MMM_CAPTURE_METRIC_COUNT, "");
-    check("counts every submission including fence and sync", metrics[MMM_CAPTURE_SUBMISSIONS] == 4, "");
+    check("counts every submission including fence and sync", metrics[MMM_CAPTURE_SUBMISSIONS] == 3, "");
+    check("upload and copy share one submission", metrics[MMM_CAPTURE_BUFFER_WRITES] == 1
+            && metrics[MMM_CAPTURE_BUFFER_COPIES] == 1, "");
     check("only CPU upload allocates staging", metrics[MMM_CAPTURE_STAGING_ALLOCATIONS] == 1, "");
     check("upload bytes", metrics[MMM_CAPTURE_BUFFER_UPLOAD_BYTES] == 64, "");
     check("buffer copy bytes", metrics[MMM_CAPTURE_BUFFER_COPY_BYTES] == 64, "");
@@ -963,6 +965,68 @@ static void test_capture(void) {
     check("disabled capture does not count", metrics[MMM_CAPTURE_SUBMISSIONS] == 0, "");
     mmm_fence_release(fence);
     mmm_buffer_release(source);
+    mmm_buffer_release(target);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
+// The frame shape this exists for: while the camera moves underground the engine rebuilds chunk
+// meshes and issues dozens of CommandEncoder.writeToBuffer/copyToBuffer calls in a single frame.
+// Each used to create and commit its own command buffer, and on the captured frames that cost more
+// inside [queue commandBuffer] than the copies cost in total. This pins the batching that replaced
+// it, including the staging ring the batched copies read from.
+static void test_utility_batching(void) {
+    printf("\n== utility submission batching ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("batching device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int blockSize = 4096;
+    const int blocks = 128;
+    void* target = mmm_buffer_create(device, (int64_t)blockSize * blocks);
+    if (queue == NULL || target == NULL) {
+        check("batching resources", false, "allocation failed");
+        mmm_buffer_release(target);
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+
+    uint64_t metrics[MMM_CAPTURE_METRIC_COUNT] = {};
+    unsigned char block[blockSize];
+    mmm_capture_set_enabled(true);
+
+    // 512 KiB as 4 KiB writes: more than one staging slot holds, so this also walks the growth path
+    // that replaces a slot while blits already recorded against the old one are still pending.
+    int issued = 0;
+    for (int i = 0; i < blocks; ++i) {
+        memset(block, i + 1, sizeof(block));
+        if (mmm_write_buffer_bytes(queue, target, (int64_t)i * blockSize, block, blockSize) != 0) break;
+        issued++;
+    }
+    check("every batched write is accepted", issued == blocks, "");
+
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("a frame of writes commits nothing on its own", metrics[MMM_CAPTURE_SUBMISSIONS] == 0, "");
+    check("staging grows per frame instead of allocating per write",
+          metrics[MMM_CAPTURE_STAGING_ALLOCATIONS] <= 2, "");
+
+    mmm_utility_end_frame();
+    mmm_queue_synchronize(queue);
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("a batched frame plus a sync is two submissions", metrics[MMM_CAPTURE_SUBMISSIONS] == 2, "");
+
+    unsigned char* contents = (unsigned char*)mmm_buffer_contents(target);
+    bool exact = true;
+    for (int i = 0; i < blocks && exact; ++i) {
+        for (int j = 0; j < blockSize; j += 41) {
+            if (contents[(size_t)i * blockSize + j] != (unsigned char)(i + 1)) { exact = false; break; }
+        }
+    }
+    check("every batched write lands at its own offset", exact, "");
+
+    mmm_capture_set_enabled(false);
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
     mmm_buffer_release(target);
     mmm_queue_release(queue);
     mmm_device_release(device);
@@ -987,6 +1051,7 @@ int main(void) {
         test_draw();
         test_surface();
         test_capture();
+        test_utility_batching();
     }
     printf("\n==================================================\n");
     if (g_failures == 0) printf("ALL CHECKS PASSED\n");

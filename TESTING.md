@@ -76,10 +76,11 @@ in the CSV but are excluded from gameplay statistics. A session closed before re
 cancelled without exporting an empty report. Normal game shutdown saves an active capture.
 
 All native durations are **CPU wall time in API calls**, not GPU execution time. `upload_api_ns`
-contains staging allocation and submission time; `copy_api_ns` also contains submission time.
-Those nested durations must not be summed. `gc_reported_ms` is reported collection time, not an
-exact pause measurement. `ffi_calls` now includes both typed and generic wrappers; older F3 counts
-omitted generic downcalls, so their absolute values are not directly comparable.
+contains the staging memcpy but *not* the submission that later carries the copy, because utility
+copies are batched (see below). Those nested durations must not be summed. `gc_reported_ms` is
+reported collection time, not an exact pause measurement. `ffi_calls` now includes both typed and
+generic wrappers; older F3 counts omitted generic downcalls, so their absolute values are not
+directly comparable.
 
 ### F3 MetalMod lines
 
@@ -90,9 +91,16 @@ The averages update every 60 frames; **use F8 to capture hitches**, which averag
 **Drawable wait is only one wait site.** Low drawable wait does not prove the frame is CPU-bound:
 fence waits, queue backpressure during command-buffer creation, readbacks and display pacing can
 also contribute. The capture counts all native submissions, including utility copies, clears and
-fence signals; the existing F3 render/present count covers fewer operations. Copy counts do not
-mean staging allocations: only CPU buffer writes allocate staging in the current implementation.
-A coincidence between a copy spike and a hitch is evidence to investigate, not proof of causation.
+fence signals; the existing F3 render/present count covers fewer operations. A coincidence between
+a copy spike and a hitch is evidence to investigate, not proof of causation.
+
+**`submissions` is far below `buffer_writes` by design.** Utility copies and uploads share one
+command buffer and commit only when something that needs its own command buffer is created, so a
+frame with 50 chunk-mesh uploads is a handful of submissions, not 50. `staging_allocations` counts
+*actual* Metal buffer allocations: a per-frame ring is reused across writes and grown only when a
+frame outgrows it, so a healthy run shows a few allocations rather than one per write. If a capture
+shows `staging_allocations` tracking `buffer_writes` again, the batching is not being used. Read a
+large `buffer_writes` spike as "the engine rebuilt this many meshes", not as that many GPU copies.
 
 The `draw 'pipeline' -> target` census and the unbound-binding report run on every draw, so they
 stop themselves after about ten seconds (the log says so). `-Dmetalmod.census=on` keeps them for a
@@ -148,6 +156,47 @@ play**, not with a menu open (the world must be ticking):
 
 Earlier numbers (taken with a menu open) suggested a CPU floor around 3.1 ms and roughly
 0.42 ms/Mpx of GPU cost. Treat those as indicative only.
+
+### What the first paired capture measured
+
+Two 60-second F8 captures of the same world, 5120x2664, render distance 32, vsync off, FPS limit
+260 (`20260923-192349` Metal, `20260923-192616` Vulkan):
+
+| | Metal | Vulkan |
+|---|---|---|
+| gameplay frames | 6224 | 7835 |
+| mean frame | 9.43 ms (106 FPS) | 7.51 ms (133 FPS) |
+| median | 8.19 ms | 6.85 ms |
+| p95 / p99 | 19.55 / 27.75 ms | 17.47 / 20.39 ms |
+| frames over 33 ms | 21 | 7 |
+| mean above ground (Y>=63) | 8.20 ms | 6.47 ms |
+| mean underground (Y<63) | 17.64 ms | 12.06 ms |
+| **median underground** | **15.24 ms** | **15.33 ms** |
+
+The two underground medians being equal is the useful part: a typical underground frame is the same
+speed on both, so the gap is entirely a tail of Metal-specific hitches, not a slower steady state.
+Binning the Metal frames by `buffer_writes` shows where the tail comes from — writes per frame
+predict frame time monotonically, and nothing else does:
+
+| `buffer_writes` | frames | mean frame | `upload_api_ns` | `command_buffer_create_ns` |
+|---|---|---|---|---|
+| 1-2 | 4850 | 8.52 ms | 0.16 ms | 0.45 ms |
+| 3-8 | 560 | 9.54 ms | 0.30 ms | 0.46 ms |
+| 9-20 | 361 | 9.92 ms | 0.52 ms | 0.79 ms |
+| 21-50 | 150 | 12.20 ms | 1.60 ms | 2.86 ms |
+| 51-120 | 106 | 18.26 ms | 7.92 ms | 6.75 ms |
+| 121-500 | 197 | 23.76 ms | 10.97 ms | 8.36 ms |
+
+Underground the engine issues 53.5 buffer writes per frame against 4.0 above ground, every one of
+them a chunk-mesh upload. Summed over the run, `upload_api_ns` is 7.5% of wall time and
+`command_buffer_create_ns` 9.4%, against 29.3% for the drawable wait. The upload path is therefore
+the thing to attack, and it is what utility submission batching (see the `submissions` note above)
+targets; the drawable wait is
+the GPU actually being busy, which CPU-side work cannot remove.
+
+The rest of the tail is a second, different signature: frames with ~18k draws, negligible upload
+bytes and a 26-36 ms drawable wait. Those are GPU-bound frames, and Vulkan has them too (its worst
+frame was 125 ms); the fix there is less GPU work per frame, not less CPU work.
 
 ## 5. Troubleshooting
 
