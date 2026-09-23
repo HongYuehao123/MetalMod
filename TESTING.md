@@ -198,6 +198,38 @@ The rest of the tail is a second, different signature: frames with ~18k draws, n
 bytes and a 26-36 ms drawable wait. Those are GPU-bound frames, and Vulkan has them too (its worst
 frame was 125 ms); the fix there is less GPU work per frame, not less CPU work.
 
+### After utility submission batching
+
+A second Metal capture of the same world, descending to a fixed depth and then holding station there
+(`20260923-193845`). Comparing the underground band against the run above, at matching work:
+
+| `0 <= Y < 63` | before | after |
+|---|---|---|
+| frames | 811 | 1260 |
+| mean frame | 17.64 ms | 13.90 ms |
+| draws / `ffi_calls` | 17420 / 54087 | 17198 / 52409 |
+| `upload_api_ns` | 3.689 ms | 0.219 ms |
+| `command_buffer_create_ns` | 3.129 ms | 0.104 ms |
+| `upload_api_ns` + `command_buffer_create_ns` | 6.818 ms | 0.323 ms |
+| `staging_allocations` | 53.5 | 0.0 |
+| `submissions` | 106.0 | 40.6 |
+| frames over 33 ms | 18 | 3 |
+| ms per 1000 draws | 1.013 | 0.808 |
+
+The upload path cost 95% less and the same workload ran 21% faster. The hitch signature changed
+completely: the worst frames before were upload/queue-bound (53.5 ms with a 40.5 ms upload and a
+37.5 ms command-buffer creation, 400 submissions in another), and the worst frames after have
+`upload_api_ns` at or below 0.33 ms with every one of them dominated by a 16-31 ms drawable wait.
+One 30.1 ms `command_buffer_create_ns` stall remains in ten; treating a saturated queue as the GPU
+falling behind, that belongs to the same GPU-bound class.
+
+**Cross-backend numbers from this pair are not trustworthy.** Vulkan ran ten minutes later and
+degraded monotonically while standing still at a fixed depth (16.2 → 20.4 → 21.7 ms over 30 seconds
+with the player not moving), which is heat soak or background load, not workload. The earlier pair
+put Vulkan 26% ahead; this one puts Metal ahead in every Y band and by 2-2.7x in the stationary
+deep phase. Settle it with an interleaved A/B/A/B capture of one route rather than two runs minutes
+apart: same world, same coordinates, let meshes settle, then compare the settled interval.
+
 ## 5. Troubleshooting
 
 - **`libmetalmod.dylib` fails to load.** The Java bindings resolve native symbols by name and throw

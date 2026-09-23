@@ -104,11 +104,13 @@ These are the reasons the mod is not a drop-in replacement yet.
 1. **Phase 5 verification.** The Select World list scissor (BUG-001) is fixed pending one in-game
    look; BUG-002 (selection outline) and BUG-003 (flat-black terrain/entities) are confirmed fixed.
    See [bug.md](bug.md).
-2. **Performance parity is close but not there.** A paired 60-second F8 capture of the same world
-   measured Metal at 106 FPS mean against Vulkan's 133, with equal underground medians (15.2 vs
-   15.3 ms) and the gap concentrated in a tail of upload-driven hitches. Utility submission batching
-   now collapses the per-mesh command buffers that tail was made of, but the two builds have not been
-   re-compared since. See [TESTING.md](TESTING.md) for the numbers and the procedure.
+2. **Performance: the CPU-side upload hitches are gone; parity now hinges on GPU work.** A paired
+   capture put Metal at 106 FPS against Vulkan's 133, and the gap turned out to be a tail of hitches
+   from the chunk-mesh upload path — 53.5 per-frame uploads underground, each creating its own command
+   buffer. Utility submission batching cut that path's cost by 95% per frame and the same workload
+   ran 21% faster, with the remaining slow frames all GPU-bound (drawable waits). Cross-backend
+   numbers still disagree between runs, so a drift-controlled A/B comparison is owed. See
+   [TESTING.md](TESTING.md) for the numbers and the procedure.
 3. **MetalFX / frame generation are not implemented (Phase 8).** They return against the backend's
    own textures, and frame generation additionally needs a display-link pacer so two drawables land
    on different refreshes.
