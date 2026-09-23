@@ -332,6 +332,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             return;
         }
         int length = data.remaining();
+        MetalDevice.countCopy();
         // GPU-ordered, not a CPU memcpy: the engine rewrites its per-frame uniform buffers (Globals -
         // which carries CameraBlockPos/CameraOffset - plus lighting, projection and weather) with no
         // fence, so a direct write races the previous frame still drawing from the same buffer while
@@ -376,6 +377,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (length <= 0) {
             return;
         }
+        MetalDevice.countCopy();
         // A GPU blit on the device queue, not a CPU memcpy. The engine frees and immediately reuses
         // a mesh region in its staging->uber-buffer upload, and on Vulkan the copy is a
         // vkCmdCopyBuffer recorded into the frame, so the queue serialises the overwrite behind the
@@ -517,6 +519,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         int result = MetalNative.copyTextureToTexture(this.device.queueHandle(), src.handle(),
                 depthOrLayers, sourceMipLevel, x, y, dst.handle(), depthOrLayers, targetMipLevel,
                 x, y, width, height, 1);
+        MetalDevice.countCopy();
         if (result != 0) {
             MetalDevice.reportResourceFailure("copyTextureToTexture returned " + result
                     + " mip " + sourceMipLevel + "->" + targetMipLevel
@@ -528,6 +531,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
     public GpuFence createFence() {
         // Signals when everything committed before this point has completed, which is what the
         // engine's ring buffers wait on before recycling a slot.
+        MetalDevice.countFence();
         return new MetalFence(MetalNative.fenceCreate(this.device.queueHandle()));
     }
 

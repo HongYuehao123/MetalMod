@@ -56,7 +56,7 @@ Launch with the backend on, load a world, press **F3**, and let it run at least 
 ```
 [MetalMod] Backend: Metal (active)
 [MetalMod] Resolution: <framebuffer width>x<height>
-[MetalMod] Frame 17.5 ms avg | GPU wait 2.1 ms avg | 6400 draws (37 passes, 18400 native calls) (CPU-bound)
+[MetalMod] Frame 17.5 ms avg | GPU wait 2.1 ms avg | 6400 draws (37 passes, 18400 native calls, 40 copies, 6 fences) (CPU-bound)
 [MetalMod] unbound/missingAttr/failed: 0 (0/0/0 = bindings, missing vertex attributes, pipeline builds)
 ```
 
@@ -75,7 +75,11 @@ Caveat: with vsync on, a *fast* frame waits for the display too, so only read "G
 frame is also slower than the refresh rate. `passes` is the per-frame command-buffer count for the
 engine's render passes (plus the present blit); a high number is submission overhead. `native calls`
 is the number of Panama FFI downcalls per frame — every draw makes several, so it is the figure that
-says whether the FFI path is load-bearing.
+says whether the FFI path is load-bearing. `copies` counts buffer uploads/copies and texture copies
+(each allocates a staging buffer and commits its own command buffer) and `fences` counts fences (each
+allocates a shared event and commits a signal command buffer). Those last two are the ones to watch
+when the frame *hitches* while chunk meshes rebuild: if they spike in the same frame as the hitch,
+the upload path is the cause.
 
 The `draw 'pipeline' -> target` census and the unbound-binding report run on every draw, so they
 stop themselves after about ten seconds (the log says so). `-Dmetalmod.census=on` keeps them for a

@@ -132,10 +132,14 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     private static int drawsThisFrame;
     private static int commandBuffersThisFrame;
+    private static int copiesThisFrame;
+    private static int fencesThisFrame;
     private static int framesInWindow;
     private static double frameMsSumInWindow;
     private static double acquireWaitMsSumInWindow;
     private static long commandBuffersSumInWindow;
+    private static long copiesSumInWindow;
+    private static long fencesSumInWindow;
     private static long ffiSumInWindow;
     private static long lastFfiSample;
 
@@ -143,6 +147,8 @@ public final class MetalDevice implements GpuDeviceBackend {
     private static volatile float lastFrameMs;
     private static volatile float lastAcquireWaitMs;
     private static volatile long lastCommandBuffers;
+    private static volatile long lastCopies;
+    private static volatile long lastFences;
     private static volatile long lastFfiCalls;
     private static long lastFrameNanos;
 
@@ -154,6 +160,20 @@ public final class MetalDevice implements GpuDeviceBackend {
     /** Count one committed command buffer, so F3 shows how much submission work a frame does. */
     static void countCommandBuffer() {
         commandBuffersThisFrame++;
+    }
+
+    /**
+     * A buffer upload/copy (mesh staging, uniform write) or a texture copy. Each of these allocates
+     * its own staging buffer and commits its own command buffer, so this is the counter that
+     * explains a hitch when lots of chunk meshes are being built.
+     */
+    static void countCopy() {
+        copiesThisFrame++;
+    }
+
+    /** A fence, which allocates a shared event and commits a signal command buffer. */
+    static void countFence() {
+        fencesThisFrame++;
     }
 
     /**
@@ -178,6 +198,10 @@ public final class MetalDevice implements GpuDeviceBackend {
         drawsThisFrame = 0;
         commandBuffersSumInWindow += commandBuffersThisFrame;
         commandBuffersThisFrame = 0;
+        copiesSumInWindow += copiesThisFrame;
+        copiesThisFrame = 0;
+        fencesSumInWindow += fencesThisFrame;
+        fencesThisFrame = 0;
         long ffiNow = MetalNative.ffiCalls;
         ffiSumInWindow += ffiNow - lastFfiSample;
         lastFfiSample = ffiNow;
@@ -188,11 +212,15 @@ public final class MetalDevice implements GpuDeviceBackend {
             lastFrameMs = (float) (frameMsSumInWindow / framesInWindow);
             lastAcquireWaitMs = (float) (acquireWaitMsSumInWindow / framesInWindow);
             lastCommandBuffers = commandBuffersSumInWindow / framesInWindow;
+            lastCopies = copiesSumInWindow / framesInWindow;
+            lastFences = fencesSumInWindow / framesInWindow;
             lastFfiCalls = ffiSumInWindow / framesInWindow;
             framesInWindow = 0;
             frameMsSumInWindow = 0.0;
             acquireWaitMsSumInWindow = 0.0;
             commandBuffersSumInWindow = 0L;
+            copiesSumInWindow = 0L;
+            fencesSumInWindow = 0L;
             ffiSumInWindow = 0L;
         }
     }
@@ -227,6 +255,20 @@ public final class MetalDevice implements GpuDeviceBackend {
      */
     public static long lastFfiCalls() {
         return lastFfiCalls;
+    }
+
+    /**
+     * Average buffer uploads/copies and texture copies per frame. Each allocates a staging buffer
+     * and commits its own command buffer, so this is the number to watch when the frame hitches
+     * while chunk meshes are being rebuilt.
+     */
+    public static long lastCopies() {
+        return lastCopies;
+    }
+
+    /** Average fences per frame; each allocates a shared event and commits a signal command buffer. */
+    public static long lastFences() {
+        return lastFences;
     }
 
     // A shader that samples a texture the engine never bound reads garbage - usually black, which

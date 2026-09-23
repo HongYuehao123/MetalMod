@@ -69,7 +69,9 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms avg§r | GPU wait §b"
                 + oneDecimal(waitMs) + " ms avg§r | §b" + net.metalmod.backend.MetalDevice.lastFrameDraws()
                 + "§r draws §7(" + net.metalmod.backend.MetalDevice.lastCommandBuffers()
-                + " passes, " + net.metalmod.backend.MetalDevice.lastFfiCalls() + " native calls)§r"
+                + " passes, " + net.metalmod.backend.MetalDevice.lastFfiCalls() + " native calls, "
+                + net.metalmod.backend.MetalDevice.lastCopies() + " copies, "
+                + net.metalmod.backend.MetalDevice.lastFences() + " fences)§r"
                 + bound);
 
         // The backend's health counters. These are the numbers that explain a black or missing
