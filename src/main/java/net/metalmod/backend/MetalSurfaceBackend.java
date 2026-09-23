@@ -63,7 +63,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     public void acquireNextTexture() throws SurfaceException {
         final MemorySegment[] result;
         // nextDrawable blocks until the GPU (or the display) frees a drawable, so the time spent
-        // here is the frame's wait on the GPU. MetalDevice turns it into the CPU/GPU split F3 shows.
+        // here is drawable acquisition time. Other GPU-related waits are captured separately by F8.
         long waitStart = System.nanoTime();
         try {
             result = MetalNative.layerAcquire(this.layer);

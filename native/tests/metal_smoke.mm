@@ -918,6 +918,56 @@ static void test_draw(void) {
     mmm_device_release(device);
 }
 
+static void test_capture(void) {
+    printf("\n== opt-in frame capture ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("capture device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+    void* source = mmm_buffer_create(device, 64);
+    void* target = mmm_buffer_create(device, 64);
+    if (queue == NULL || source == NULL || target == NULL) {
+        check("capture resources", false, "allocation failed");
+        mmm_buffer_release(source);
+        mmm_buffer_release(target);
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+    uint64_t metrics[MMM_CAPTURE_METRIC_COUNT] = {};
+    unsigned char bytes[64] = {42};
+    mmm_capture_set_enabled(true);
+    check("captured upload succeeds", mmm_write_buffer_bytes(queue, source, 0, bytes, 64) == 0, "");
+    check("captured copy succeeds", mmm_copy_buffer_to_buffer(queue, source, 0, target, 0, 64) == 0, "");
+    void* fence = mmm_fence_create(queue);
+    check("captured fence completes", mmm_fence_wait(fence, INT64_MAX), "");
+    mmm_queue_synchronize(queue);
+    check("capture rejects undersized output", mmm_capture_read_reset(metrics, 1) == -1, "");
+    check("capture schema length", mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT)
+            == MMM_CAPTURE_METRIC_COUNT, "");
+    check("counts every submission including fence and sync", metrics[MMM_CAPTURE_SUBMISSIONS] == 4, "");
+    check("only CPU upload allocates staging", metrics[MMM_CAPTURE_STAGING_ALLOCATIONS] == 1, "");
+    check("upload bytes", metrics[MMM_CAPTURE_BUFFER_UPLOAD_BYTES] == 64, "");
+    check("buffer copy bytes", metrics[MMM_CAPTURE_BUFFER_COPY_BYTES] == 64, "");
+    check("fence counters", metrics[MMM_CAPTURE_FENCE_CREATES] == 1
+            && metrics[MMM_CAPTURE_FENCE_WAIT_CALLS] == 1, "");
+    check("CPU API timers", metrics[MMM_CAPTURE_COMMAND_BUFFER_CREATE_NS] > 0
+            && metrics[MMM_CAPTURE_UPLOAD_API_NS] >= metrics[MMM_CAPTURE_STAGING_ALLOC_NS], "");
+    check("instrumentation preserves copied bytes", ((unsigned char*)mmm_buffer_contents(target))[0] == 42, "");
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    bool reset = true;
+    for (int i = 0; i < MMM_CAPTURE_METRIC_COUNT; ++i) reset &= metrics[i] == 0;
+    check("frame snapshot resets every counter", reset, "");
+    mmm_capture_set_enabled(false);
+    mmm_queue_synchronize(queue);
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("disabled capture does not count", metrics[MMM_CAPTURE_SUBMISSIONS] == 0, "");
+    mmm_fence_release(fence);
+    mmm_buffer_release(source);
+    mmm_buffer_release(target);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -936,6 +986,7 @@ int main(void) {
         test_base_instance();
         test_draw();
         test_surface();
+        test_capture();
     }
     printf("\n==================================================\n");
     if (g_failures == 0) printf("ALL CHECKS PASSED\n");

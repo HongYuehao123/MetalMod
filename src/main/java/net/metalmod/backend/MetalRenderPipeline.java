@@ -94,6 +94,16 @@ public final class MetalRenderPipeline {
     /** Compile both stages and build the native pipeline. Returns null on any failure. */
     public static MetalRenderPipeline create(MetalDevice device, MetalShaderCompiler compiler,
                                              RenderPipeline pipeline, ShaderSource source) {
+        long started = MetalNative.beginPipelineCapture();
+        try {
+            return createUnprofiled(device, compiler, pipeline, source);
+        } finally {
+            MetalNative.endPipelineCapture(started);
+        }
+    }
+
+    private static MetalRenderPipeline createUnprofiled(MetalDevice device, MetalShaderCompiler compiler,
+                                                        RenderPipeline pipeline, ShaderSource source) {
         try {
             // Inject the pipeline's own shader defines on top of the source the ShaderManager
             // produced. Without these, defines like PORTAL_LAYERS are undefined, and worse, a

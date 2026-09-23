@@ -21,6 +21,19 @@ public final class MetalNative {
 
     private static boolean available = false;
     private static String loadError = null;
+    private static MethodHandle mhCaptureSetEnabled, mhCaptureReadReset;
+    private static boolean capturing;
+    private static Thread captureThread;
+    private static long capturePipelineNanos, capturePipelineCount;
+
+    // Order is the ABI in MMMCaptureMetric (metalmod_metal.h). All *_ns values are CPU wall time.
+    public static final java.util.List<String> CAPTURE_METRICS = java.util.List.of(
+            "submissions", "command_buffer_create_ns", "commit_ns", "buffer_writes",
+            "buffer_upload_bytes", "staging_allocations", "staging_alloc_ns", "buffer_copies",
+            "buffer_copy_bytes", "texture_copies", "texture_uploads", "texture_upload_bytes",
+            "clears", "fence_creates", "fence_wait_calls", "fence_wait_ns", "queue_wait_ns",
+            "upload_api_ns", "copy_api_ns", "readback_api_ns", "render_passes", "draws",
+            "drawable_wait_ns");
 
     private static MethodHandle mhDeviceCreate, mhDeviceRelease, mhDeviceInfo,
             mhDeviceMaxTextureSize, mhDeviceMaxBufferSize, mhDeviceRecommendedWorkingSet;
@@ -83,6 +96,12 @@ public final class MetalNative {
         var B = ValueLayout.JAVA_BOOLEAN;
         var F = ValueLayout.JAVA_FLOAT;
         var D = ValueLayout.JAVA_DOUBLE;
+
+        // Optional diagnostics must not disable rendering when an older dylib is installed.
+        mhCaptureSetEnabled = lookup.find("mmm_capture_set_enabled")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(B))).orElse(null);
+        mhCaptureReadReset = lookup.find("mmm_capture_read_reset")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, I))).orElse(null);
 
         mhDeviceCreate = linker.downcallHandle(symbol(lookup, "mmm_device_create"), FunctionDescriptor.of(A));
         mhDeviceRelease = linker.downcallHandle(symbol(lookup, "mmm_device_release"), FunctionDescriptor.ofVoid(A));
@@ -173,16 +192,58 @@ public final class MetalNative {
     public static boolean isAvailable() { return available; }
     public static String getLoadError() { return loadError; }
 
+    public static boolean captureAvailable() {
+        return available && mhCaptureSetEnabled != null && mhCaptureReadReset != null;
+    }
+
+    public static void captureSetEnabled(boolean enabled) {
+        try {
+            mhCaptureSetEnabled.invokeExact(enabled);
+            capturing = enabled;
+            captureThread = enabled ? Thread.currentThread() : null;
+            capturePipelineNanos = capturePipelineCount = 0;
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    /** Caller owns and reuses the destination; diagnostics downcalls are excluded from ffiCalls. */
+    public static void captureReadReset(MemorySegment destination) {
+        try {
+            int count = (int) mhCaptureReadReset.invokeExact(destination, CAPTURE_METRICS.size());
+            if (count != CAPTURE_METRICS.size()) throw new IllegalStateException("Capture ABI mismatch");
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static long ffiCallCount() { return ffiCalls; }
+    public static long capturePipelineNanos() { return capturePipelineNanos; }
+    public static long capturePipelineCount() { return capturePipelineCount; }
+    static long beginPipelineCapture() {
+        return capturing && Thread.currentThread() == captureThread ? System.nanoTime() : 0;
+    }
+    static void endPipelineCapture(long started) {
+        if (started != 0) {
+            capturePipelineNanos += System.nanoTime() - started;
+            capturePipelineCount++;
+        }
+    }
+
     private static MemorySegment addr(MethodHandle h, Object... a) {
+        ffiCalls++;
         try { return (MemorySegment) h.invokeWithArguments(a); } catch (Throwable t) { throw new RuntimeException(t); }
     }
     private static int i(MethodHandle h, Object... a) {
+        ffiCalls++;
         try { return (int) h.invokeWithArguments(a); } catch (Throwable t) { throw new RuntimeException(t); }
     }
     private static long l(MethodHandle h, Object... a) {
+        ffiCalls++;
         try { return (long) h.invokeWithArguments(a); } catch (Throwable t) { throw new RuntimeException(t); }
     }
     private static void v(MethodHandle h, Object... a) {
+        ffiCalls++;
         try { h.invokeWithArguments(a); } catch (Throwable t) { throw new RuntimeException(t); }
     }
     private static boolean isNull(MemorySegment s) { return s == null || s.address() == 0; }
@@ -437,8 +498,16 @@ public final class MetalNative {
     // ffiCalls counts them so the F3 line can show whether this path is actually load-bearing,
     // instead of that being assumed.
 
-    /** Native calls issued since startup. The renderer samples the delta once per frame. */
-    public static long ffiCalls;
+    /**
+     * Native calls issued since startup. Read the delta once per frame through
+     * {@link #ffiCallCount()}.
+     *
+     * <p>Deliberately not volatile and not public: it is a plain counter incremented on whichever
+     * thread makes the call and read on the render thread, so it is only meaningful when the calls
+     * and the read are on that thread - which is the case for everything the renderer does. The
+     * capture read/reset downcalls do not count themselves.
+     */
+    private static long ffiCalls;
 
     private static RuntimeException ffiFailure(Throwable t) {
         return new RuntimeException(t);

@@ -20,6 +20,22 @@ extern "C" {
 
 #define MMM_API __attribute__((visibility("default")))
 
+// Opt-in, calling-thread-only capture. Read/reset once per frame, after presentation. Durations
+// measure CPU wall time inside API calls, not GPU execution. API totals contain nested timings.
+enum MMMCaptureMetric {
+    MMM_CAPTURE_SUBMISSIONS, MMM_CAPTURE_COMMAND_BUFFER_CREATE_NS, MMM_CAPTURE_COMMIT_NS,
+    MMM_CAPTURE_BUFFER_WRITES, MMM_CAPTURE_BUFFER_UPLOAD_BYTES, MMM_CAPTURE_STAGING_ALLOCATIONS,
+    MMM_CAPTURE_STAGING_ALLOC_NS, MMM_CAPTURE_BUFFER_COPIES, MMM_CAPTURE_BUFFER_COPY_BYTES,
+    MMM_CAPTURE_TEXTURE_COPIES, MMM_CAPTURE_TEXTURE_UPLOADS, MMM_CAPTURE_TEXTURE_UPLOAD_BYTES,
+    MMM_CAPTURE_CLEARS, MMM_CAPTURE_FENCE_CREATES, MMM_CAPTURE_FENCE_WAIT_CALLS,
+    MMM_CAPTURE_FENCE_WAIT_NS, MMM_CAPTURE_QUEUE_WAIT_NS, MMM_CAPTURE_UPLOAD_API_NS,
+    MMM_CAPTURE_COPY_API_NS, MMM_CAPTURE_READBACK_API_NS, MMM_CAPTURE_RENDER_PASSES,
+    MMM_CAPTURE_DRAWS, MMM_CAPTURE_DRAWABLE_WAIT_NS, MMM_CAPTURE_METRIC_COUNT
+};
+MMM_API void mmm_capture_set_enabled(bool enabled);
+/// Returns the metric count, or -1 if the destination is too small. Does not reset on error.
+MMM_API int32_t mmm_capture_read_reset(uint64_t* out, int32_t count);
+
 // ---------------------------------------------------------------------------------------------
 // Device
 // ---------------------------------------------------------------------------------------------

@@ -105,24 +105,12 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Frame timing: the CPU/GPU split
+    // Frame timing and drawable acquisition (F3 averages).
     //
-    // Two GPU figures were tried first and both were wrong: summing each committed command buffer's
-    // GPUStartTime->GPUEndTime span. Command buffers on one queue may overlap execution, so the sum
-    // is a union-sized number, not a busy time - it read ~3x the frame time in one scene and ~8x in
-    // another, and it went *down* when the scene got heavier.
-    //
-    // This uses a signal that cannot lie. Minecraft submits a frame, then calls
-    // acquireNextTexture() for the next one, which blocks in CAMetalLayer.nextDrawable() until the
-    // GPU (or the display) releases a drawable. The time spent inside that call is therefore time
-    // the frame spent waiting for the GPU; everything else in the interval is CPU work.
-    //
-    //   wait ~ 0            -> CPU-bound: the GPU keeps up, the interval is CPU work
-    //   wait ~ frame time   -> GPU-bound: the CPU finishes early and then waits
-    //
-    // Caveat: with vsync on, a *fast* frame also waits for the display, so a large wait only means
-    // "GPU-bound" when the frame is also slower than the refresh rate - which the frame time shows.
-    // A real per-frame GPU time needs MTLCounterSampleBuffer timestamps, not command-buffer spans.
+    // Drawable acquisition measures one wait site, not the CPU/GPU split. Fence waits, readbacks
+    // and command-buffer allocation can also stall the render thread. F8 records those separately.
+    // A large drawable wait may also be display pacing. No actual GPU execution time is reported;
+    // summing command-buffer GPUStartTime/GPUEndTime spans over-counts overlapping execution.
     //
     // All figures are window averages (~1s). The draw count is instantaneous: it describes the frame
     // just encoded, and averaging it would only hide a spike.
@@ -163,9 +151,9 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
-     * A buffer upload/copy (mesh staging, uniform write) or a texture copy. Each of these allocates
-     * its own staging buffer and commits its own command buffer, so this is the counter that
-     * explains a hitch when lots of chunk meshes are being built.
+     * A buffer upload/copy (mesh staging, uniform write) or a texture copy. Each commits a
+     * command buffer; only CPU buffer writes allocate staging. F8 records individual frame
+     * counters and durations to investigate a possible relationship with hitches.
      */
     static void countCopy() {
         copiesThisFrame++;
@@ -177,8 +165,7 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
-     * Record how long acquireNextTexture() blocked, in milliseconds. That call is the render thread
-     * waiting for the GPU to hand back a drawable, so it is the CPU/GPU split signal.
+     * Record how long acquireNextTexture() took, in milliseconds, including drawable/display wait.
      */
     static void noteAcquireWait(double millis) {
         acquireWaitMsSumInWindow += Math.max(0.0, millis);
@@ -202,7 +189,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         copiesThisFrame = 0;
         fencesSumInWindow += fencesThisFrame;
         fencesThisFrame = 0;
-        long ffiNow = MetalNative.ffiCalls;
+        long ffiNow = MetalNative.ffiCallCount();
         ffiSumInWindow += ffiNow - lastFfiSample;
         lastFfiSample = ffiNow;
         framesInWindow++;
@@ -231,8 +218,7 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
-     * Average time per frame the render thread spent blocked in acquireNextTexture(), i.e. waiting
-     * for a drawable. Compared with {@link #lastFrameMs()} this is the CPU/GPU split.
+     * Average time per frame in acquireNextTexture(). This is one wait site, not total GPU wait.
      */
     public static float lastAcquireWaitMs() {
         return lastAcquireWaitMs;
@@ -258,9 +244,8 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
-     * Average buffer uploads/copies and texture copies per frame. Each allocates a staging buffer
-     * and commits its own command buffer, so this is the number to watch when the frame hitches
-     * while chunk meshes are being rebuilt.
+     * Average buffer uploads/copies and texture copies per frame. These are activity counts,
+     * not allocation counts; F8 retains the individual frames instead of averaging away hitches.
      */
     public static long lastCopies() {
         return lastCopies;

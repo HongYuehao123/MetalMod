@@ -1,0 +1,288 @@
+package net.metalmod.debug;
+
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.metalmod.backend.MetalDevice;
+import net.metalmod.backend.MetalNative;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
+
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+
+/** F8 -> five-second countdown -> 60 seconds -> background export. All capture state is client-thread owned. */
+public final class PerformanceCapture {
+    private static final long DURATION = 60_000_000_000L;
+    private static final long COUNTDOWN = 5_000_000_000L;
+    private static PerformanceRecording recording;
+    private static Arena arena;
+    private static MemorySegment nativeSample;
+    private static List<GarbageCollectorMXBean> collectors;
+    private static long readyAt, startedAt, lastFrame, lastFfi, lastCompile, lastCompileCount;
+    private static long lastGcCount, lastGcMillis;
+    private static int lastSeconds = -1;
+    private static boolean nativeEnabled, previousPaused, previousScreen, previousFocused;
+    private static String metadata, prefix;
+    private static Path outputRoot;
+    private static volatile boolean saving;
+    private static Thread writerThread;
+    private static boolean frameHookSeen;
+    private static volatile String status = "F8: record performance (60s)";
+
+    private PerformanceCapture() {}
+
+    public static String status() { return status; }
+    public static boolean isRecording() { return recording != null; }
+
+    public static void toggle(Minecraft minecraft) {
+        if (!frameHookSeen) {
+            notify(minecraft, "Capture frame hook is unavailable; check latest.log for mixin errors.");
+            return;
+        }
+        if (saving) {
+            notify(minecraft, "Still saving the previous capture.");
+            return;
+        }
+        if (recording != null) {
+            finish(minecraft, "stopped with F8", false);
+            return;
+        }
+        if (minecraft.level == null || minecraft.player == null) {
+            notify(minecraft, "Load a world before recording performance.");
+            return;
+        }
+        try {
+            // Allocate before the countdown so this setup does not become a measured hitch.
+            recording = new PerformanceRecording(36_000, MetalNative.CAPTURE_METRICS);
+            collectors = ManagementFactory.getGarbageCollectorMXBeans();
+            outputRoot = minecraft.gameDirectory.toPath().resolve("debug/metalmod");
+            String backend = RenderSystem.getDevice().getDeviceInfo().backendName();
+            nativeEnabled = "Metal".equals(backend) && MetalNative.captureAvailable();
+            if (nativeEnabled) {
+                arena = Arena.ofConfined();
+                nativeSample = arena.allocate(ValueLayout.JAVA_LONG, MetalNative.CAPTURE_METRICS.size());
+            }
+            prefix = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))
+                    + "-" + backend.replaceAll("[^A-Za-z0-9_-]", "_");
+            metadata = "Backend: " + backend + "\nNative metrics: " + nativeEnabled
+                    + "\nMinecraft: " + minecraft.getLaunchedVersion()
+                    + "\nOS: " + System.getProperty("os.name") + " " + System.getProperty("os.version")
+                    + "\nJava: " + System.getProperty("java.version")
+                    + "\nResolution at start: " + minecraft.getWindow().getWidth() + "x" + minecraft.getWindow().getHeight()
+                    + "\nRender distance: " + minecraft.options.renderDistance().get()
+                    + "\nVsync: " + minecraft.options.enableVsync().get()
+                    + "\nFPS limit: " + minecraft.options.framerateLimit().get()
+                    + "\nCapture limit: 60 seconds or 36000 frames"
+                    + "\nBoundary: after GpuSurface.present(), on any backend. First partial interval discarded."
+                    + "\nCensus diagnostics at start: " + (nativeEnabled && MetalDevice.censusEnabled());
+            startedAt = lastFrame = 0;
+            lastSeconds = -1;
+            readyAt = System.nanoTime() + COUNTDOWN;
+            status = "Capture starts in 5s; F8 stops";
+            notify(minecraft, status);
+        } catch (RuntimeException error) {
+            fail(minecraft, error);
+        }
+    }
+
+    /** Runs at the surface presentation boundary, including submission of the final present pass. */
+    public static void framePresented(Minecraft minecraft) {
+        frameHookSeen = true;
+        if (recording == null) return;
+        try {
+            if (minecraft.level == null || minecraft.player == null) {
+                finish(minecraft, "world closed", false);
+                return;
+            }
+            long now = System.nanoTime();
+            if (now < readyAt) {
+                updateStatus(minecraft, "Capture starts in ", (int) Math.ceil((readyAt - now) / 1e9));
+                return;
+            }
+            if (lastFrame == 0) {
+                if (nativeEnabled) MetalNative.captureSetEnabled(true);
+                startedAt = lastFrame = now;
+                lastFfi = MetalNative.ffiCallCount();
+                lastCompile = lastCompileCount = 0;
+                lastGcCount = gcTotal(false);
+                lastGcMillis = gcTotal(true);
+                rememberContext(minecraft);
+                updateStatus(minecraft, "Recording performance: ", 60);
+                return;
+            }
+            recording.put(PerformanceRecording.COL_ELAPSED_NS, now - startedAt);
+            recording.put(PerformanceRecording.COL_FRAME_NS, now - lastFrame);
+            recording.put(PerformanceRecording.COL_PAUSED, previousPaused || minecraft.isPaused() ? 1 : 0);
+            recording.put(PerformanceRecording.COL_SCREEN_OPEN, previousScreen || minecraft.gui.screen() != null ? 1 : 0);
+            recording.put(PerformanceRecording.COL_WINDOW_ACTIVE, previousFocused && focused(minecraft) ? 1 : 0);
+            recording.put(PerformanceRecording.COL_WIDTH, minecraft.getWindow().getWidth());
+            recording.put(PerformanceRecording.COL_HEIGHT, minecraft.getWindow().getHeight());
+            recording.put(PerformanceRecording.COL_PLAYER_X, minecraft.player.getBlockX());
+            recording.put(PerformanceRecording.COL_PLAYER_Y, minecraft.player.getBlockY());
+            recording.put(PerformanceRecording.COL_PLAYER_Z, minecraft.player.getBlockZ());
+            if (nativeEnabled) {
+                MetalNative.captureReadReset(nativeSample);
+                long ffi = MetalNative.ffiCallCount();
+                long compile = MetalNative.capturePipelineNanos();
+                long compileCount = MetalNative.capturePipelineCount();
+                recording.put(PerformanceRecording.COL_FFI_CALLS, ffi - lastFfi);
+                recording.put(PerformanceRecording.COL_PIPELINE_COMPILES, compileCount - lastCompileCount);
+                recording.put(PerformanceRecording.COL_PIPELINE_COMPILE_NS, compile - lastCompile);
+                lastFfi = ffi;
+                lastCompile = compile;
+                lastCompileCount = compileCount;
+                recording.put(PerformanceRecording.COL_CENSUS_ACTIVE, MetalDevice.censusEnabled() ? 1 : 0);
+                for (int i = 0; i < MetalNative.CAPTURE_METRICS.size(); i++) {
+                    recording.put(PerformanceRecording.COL_FIRST_NATIVE + i,
+                            nativeSample.getAtIndex(ValueLayout.JAVA_LONG, i));
+                }
+            }
+            long gcCount = gcTotal(false), gcMillis = gcTotal(true);
+            recording.put(PerformanceRecording.COL_GC_COLLECTIONS, delta(gcCount, lastGcCount));
+            recording.put(PerformanceRecording.COL_GC_REPORTED_MS, delta(gcMillis, lastGcMillis));
+            lastGcCount = gcCount;
+            lastGcMillis = gcMillis;
+            rememberContext(minecraft);
+            recording.commitFrame();
+            lastFrame = now;
+            if (now - startedAt >= DURATION || recording.full()) {
+                finish(minecraft, recording.full() ? "36000-frame capacity reached" : "60 seconds elapsed", false);
+            } else {
+                updateStatus(minecraft, "Recording performance: ", (int) Math.ceil((DURATION - now + startedAt) / 1e9));
+            }
+        } catch (RuntimeException error) {
+            fail(minecraft, error);
+        }
+    }
+
+    private static long delta(long current, long previous) {
+        return current < 0 || previous < 0 ? -1 : Math.max(0, current - previous);
+    }
+
+    private static long gcTotal(boolean time) {
+        long sum = 0;
+        for (GarbageCollectorMXBean collector : collectors) {
+            long value = time ? collector.getCollectionTime() : collector.getCollectionCount();
+            if (value < 0) return -1;
+            sum += value;
+        }
+        return sum;
+    }
+
+    private static void rememberContext(Minecraft minecraft) {
+        previousPaused = minecraft.isPaused();
+        previousScreen = minecraft.gui.screen() != null;
+        previousFocused = focused(minecraft);
+    }
+
+    private static boolean focused(Minecraft minecraft) {
+        return minecraft.isWindowActive() && !minecraft.getWindow().isMinimized();
+    }
+
+    private static void updateStatus(Minecraft minecraft, String lead, int seconds) {
+        if (seconds == lastSeconds) return;
+        lastSeconds = seconds;
+        status = lead + seconds + "s; F8 stops";
+        minecraft.gui.hud.setOverlayMessage(Component.literal("[MetalMod] " + status), false);
+    }
+
+    public static void close(Minecraft minecraft) {
+        try {
+            if (recording != null) finish(minecraft, "game closing", true);
+            // Minecraft may explicitly exit the JVM after close(), even with a non-daemon writer.
+            if (writerThread != null) writerThread.join(5000);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException error) {
+            // Shutting down: any export has to finish before the JVM can exit.
+            fail(minecraft, error, true);
+        }
+    }
+
+    private static void releaseNative() {
+        try {
+            if (nativeEnabled) MetalNative.captureSetEnabled(false);
+        } finally {
+            nativeEnabled = false;
+            if (arena != null) arena.close();
+            arena = null;
+            nativeSample = null;
+        }
+    }
+
+    private static void fail(Minecraft minecraft, RuntimeException error) {
+        fail(minecraft, error, false);
+    }
+
+    /**
+     * Report a capture failure.
+     *
+     * <p>Whatever was collected is still exported: a 60-second run is expensive to lose, and the
+     * failure reason belongs in the summary next to the samples. The exception is never rethrown -
+     * it would escape into the render loop.
+     */
+    private static void fail(Minecraft minecraft, RuntimeException error, boolean synchronous) {
+        System.err.println("[MetalMod] Performance capture failed: " + error);
+        PerformanceRecording partial = recording;
+        try {
+            releaseNative();
+        } catch (RuntimeException ignored) {
+        }
+        if (partial != null && partial.size() > 0 && !saving) {
+            recording = partial;
+            finish(minecraft, "failed: " + error, synchronous);
+            return;
+        }
+        recording = null;
+        status = "Capture failed; see latest.log";
+        notify(minecraft, status);
+    }
+
+    private static void finish(Minecraft minecraft, String reason, boolean synchronous) {
+        PerformanceRecording completed = recording;
+        recording = null;
+        releaseNative();
+        if (completed.size() == 0) {
+            status = "Capture cancelled; F8 records again";
+            notify(minecraft, status);
+            return;
+        }
+        // Ownership transfers once. No frame can mutate this recording while it is being written.
+        String completedMetadata = metadata, completedPrefix = prefix;
+        Path completedRoot = outputRoot;
+        saving = true;
+        status = "Saving performance capture...";
+        Runnable writer = () -> {
+            String message;
+            try {
+                Path directory = completed.write(completedRoot, completedPrefix, completedMetadata, reason);
+                message = "Capture saved: " + directory.toAbsolutePath();
+                status = "Capture saved in debug/metalmod; F8 records again";
+            } catch (Exception error) {
+                message = "Could not save capture: " + error;
+                status = "Capture save failed; see latest.log";
+            } finally {
+                saving = false;
+            }
+            System.out.println("[MetalMod] " + message);
+            String finalMessage = message;
+            if (!synchronous) minecraft.execute(() -> notify(minecraft, finalMessage));
+        };
+        if (synchronous) writer.run();
+        else {
+            writerThread = new Thread(writer, "MetalMod-Capture-Writer");
+            writerThread.start();
+        }
+    }
+
+    private static void notify(Minecraft minecraft, String message) {
+        minecraft.gui.hud.setOverlayMessage(Component.literal("[MetalMod] " + message), false);
+        minecraft.showDebugChat(Component.literal("[MetalMod] " + message));
+    }
+}

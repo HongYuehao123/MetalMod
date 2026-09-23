@@ -8,6 +8,61 @@
 #include "metalmod/metalmod_metal.h"
 
 #include <string.h>
+#include <chrono>
+
+// Capture stays on the render/calling thread: GPU completion handlers never touch these counters.
+// No clocks, allocations or atomics on the draw path, and no clocks at all when capture is off.
+static thread_local bool g_CaptureEnabled = false;
+static thread_local uint64_t g_CaptureMetrics[MMM_CAPTURE_METRIC_COUNT] = {};
+
+static uint64_t mmm_capture_clock() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+struct MMMCaptureTimer {
+    int metric;
+    uint64_t start;
+    explicit MMMCaptureTimer(int index)
+        : metric(index), start(g_CaptureEnabled ? mmm_capture_clock() : 0) {}
+    ~MMMCaptureTimer() {
+        if (start) g_CaptureMetrics[metric] += mmm_capture_clock() - start;
+    }
+};
+
+static void mmm_capture_count(int metric, uint64_t amount = 1) {
+    if (g_CaptureEnabled) g_CaptureMetrics[metric] += amount;
+}
+
+void mmm_capture_set_enabled(bool enabled) {
+    g_CaptureEnabled = enabled;
+    memset(g_CaptureMetrics, 0, sizeof(g_CaptureMetrics));
+}
+
+int32_t mmm_capture_read_reset(uint64_t* out, int32_t count) {
+    if (out == NULL || count < MMM_CAPTURE_METRIC_COUNT) return -1;
+    memcpy(out, g_CaptureMetrics, sizeof(g_CaptureMetrics));
+    memset(g_CaptureMetrics, 0, sizeof(g_CaptureMetrics));
+    return MMM_CAPTURE_METRIC_COUNT;
+}
+
+static id<MTLCommandBuffer> mmm_make_command_buffer(id<MTLCommandQueue> queue) {
+    MMMCaptureTimer timer(MMM_CAPTURE_COMMAND_BUFFER_CREATE_NS);
+    return [queue commandBuffer];
+}
+
+static void mmm_commit_command_buffer(id<MTLCommandBuffer> buffer) {
+    MMMCaptureTimer timer(MMM_CAPTURE_COMMIT_NS);
+    [buffer commit];
+    if (buffer != nil) mmm_capture_count(MMM_CAPTURE_SUBMISSIONS);
+}
+
+static id<MTLRenderCommandEncoder> mmm_make_render_encoder(id<MTLCommandBuffer> buffer,
+                                                         MTLRenderPassDescriptor* descriptor) {
+    id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:descriptor];
+    if (encoder != nil) mmm_capture_count(MMM_CAPTURE_RENDER_PASSES);
+    return encoder;
+}
 
 // Command-buffer completion hook. GPUStartTime/GPUEndTime are deliberately NOT summed into a
 // frame-time figure: command buffers on one queue may overlap execution, so a sum over-counts by
@@ -276,12 +331,15 @@ void* mmm_texture_create_view(void* texture, int64_t pixelFormat, int32_t textur
 int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
                                int32_t x, int32_t y, int32_t width, int32_t height,
                                const void* data, size_t bytesPerRow) {
+    MMMCaptureTimer timer(MMM_CAPTURE_UPLOAD_API_NS);
     id<MTLTexture> tex = mmm_texture(texture);
     if (tex == nil || data == NULL || width <= 0 || height <= 0) return -1;
     if (tex.storageMode == MTLStorageModePrivate) return -2;  // not CPU-writable
 
     @autoreleasepool {
         MTLRegion region = MTLRegionMake2D(x, y, width, height);
+        mmm_capture_count(MMM_CAPTURE_TEXTURE_UPLOADS);
+        mmm_capture_count(MMM_CAPTURE_TEXTURE_UPLOAD_BYTES, bytesPerRow * (size_t)height);
         [tex replaceRegion:region
                mipmapLevel:mipLevel
                      slice:slice
@@ -295,6 +353,7 @@ int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
 int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t slice,
                             int32_t x, int32_t y, int32_t width, int32_t height,
                             void* out, size_t capacity, size_t bytesPerRow) {
+    MMMCaptureTimer timer(MMM_CAPTURE_READBACK_API_NS);
     id<MTLTexture> tex = mmm_texture(texture);
     if (tex == nil || out == NULL || width <= 0 || height <= 0) return -1;
     if (tex.storageMode != MTLStorageModeShared) return -2;  // private textures are not CPU-readable
@@ -320,9 +379,10 @@ void mmm_queue_synchronize(void* queue) {
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     if (metalQueue == nil) return;
     @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod sync";
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
+        MMMCaptureTimer waitTimer(MMM_CAPTURE_QUEUE_WAIT_NS);
         [commandBuffer waitUntilCompleted];
     }
 }
@@ -344,18 +404,21 @@ void* mmm_fence_create(void* queue) {
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     if (metalQueue == nil) return NULL;
     @autoreleasepool {
+        mmm_capture_count(MMM_CAPTURE_FENCE_CREATES);
         id<MTLSharedEvent> event = [metalQueue.device newSharedEvent];
         if (event == nil) return NULL;
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod fence signal";
         [commandBuffer encodeSignalEvent:event value:1];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
         return (__bridge_retained void*)event;
     }
 }
 
 /// Wait for the fence. timeoutNanos <= 0 means do not wait; a very large value waits indefinitely.
 bool mmm_fence_wait(void* fence, int64_t timeoutNanos) {
+    MMMCaptureTimer timer(MMM_CAPTURE_FENCE_WAIT_NS);
+    mmm_capture_count(MMM_CAPTURE_FENCE_WAIT_CALLS);
     id<MTLSharedEvent> event = (__bridge id<MTLSharedEvent>)fence;
     if (event == nil) return true;
     if (event.signaledValue >= 1) return true;
@@ -648,7 +711,7 @@ void* mmm_render_pass_begin(void* commandBuffer, int32_t colorCount, void* const
             }
         }
 
-        id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:descriptor];
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(buffer, descriptor);
         if (encoder == nil) return NULL;
         [encoder setViewport:(MTLViewport){0.0, 0.0, (double)width, (double)height, 0.0, 1.0}];
         [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
@@ -770,6 +833,7 @@ void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart, 
                           int32_t instanceCount, int32_t firstInstance) {
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     if (metalEncoder == nil) return;
+    mmm_capture_count(MMM_CAPTURE_DRAWS);
     [metalEncoder drawPrimitives:(MTLPrimitiveType)topology
                      vertexStart:(NSUInteger)MAX(0, vertexStart)
                      vertexCount:(NSUInteger)MAX(0, vertexCount)
@@ -838,6 +902,7 @@ void mmm_render_pass_draw_fan(void* encoder, int32_t vertexStart, int32_t vertex
 
     id<MTLBuffer> indices = mmm_fan_index_buffer((NSUInteger)(vertexCount - 2));
     if (indices == nil) return;
+    mmm_capture_count(MMM_CAPTURE_DRAWS);
     [metalEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                              indexCount:(NSUInteger)((vertexCount - 2) * 3)
                               indexType:MTLIndexTypeUInt16
@@ -859,6 +924,7 @@ void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBu
     if (firstIndex > 0) {
         offset += (NSUInteger)firstIndex * (indexType == MTLIndexTypeUInt16 ? 2u : 4u);
     }
+    mmm_capture_count(MMM_CAPTURE_DRAWS);
     [metalEncoder drawIndexedPrimitives:(MTLPrimitiveType)topology
                              indexCount:(NSUInteger)MAX(0, indexCount)
                               indexType:(MTLIndexType)indexType
@@ -892,11 +958,12 @@ int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
             descriptor.depthAttachment.storeAction = MTLStoreActionStore;
             descriptor.depthAttachment.clearDepth = depthValue;
         }
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod clear";
-        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        mmm_capture_count(MMM_CAPTURE_CLEARS);
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(commandBuffer, descriptor);
         [encoder endEncoding];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1031,9 +1098,10 @@ int mmm_clear_textures_region(void* queue, void* colorTexture, bool hasColor,
             descriptor.depthAttachment.storeAction = MTLStoreActionStore;
         }
 
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod region clear";
-        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        mmm_capture_count(MMM_CAPTURE_CLEARS);
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(commandBuffer, descriptor);
         if (encoder == nil) return -3;
         [encoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)clear->pipeline];
         if (clear->depthState != NULL) {
@@ -1050,9 +1118,10 @@ int mmm_clear_textures_region(void* queue, void* colorTexture, bool hasColor,
             float depthFloat = (float)depthValue;
             [encoder setFragmentBytes:&depthFloat length:sizeof(float) atIndex:1];
         }
+        mmm_capture_count(MMM_CAPTURE_DRAWS);
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1062,6 +1131,7 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
                                 void* target, int32_t targetSlice, int32_t targetLevel,
                                 int32_t targetX, int32_t targetY, int32_t width, int32_t height,
                                 int32_t depth) {
+    MMMCaptureTimer timer(MMM_CAPTURE_COPY_API_NS);
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     id<MTLTexture> src = mmm_texture(source);
     id<MTLTexture> dst = mmm_texture(target);
@@ -1069,8 +1139,9 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
     if (width <= 0 || height <= 0 || depth <= 0) return -2;
 
     @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod texture copy";
+        mmm_capture_count(MMM_CAPTURE_TEXTURE_COPIES);
         id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
         if (blit == nil) return -3;
         [blit copyFromTexture:src
@@ -1083,7 +1154,7 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
           destinationLevel:(NSUInteger)MAX(0, targetLevel)
          destinationOrigin:MTLOriginMake((NSUInteger)MAX(0, targetX), (NSUInteger)MAX(0, targetY), 0)];
         [blit endEncoding];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1095,6 +1166,7 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
 // old mesh, which shows up as a transient wrong/black section while the camera moves.
 int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
                               void* target, int64_t targetOffset, int64_t length) {
+    MMMCaptureTimer timer(MMM_CAPTURE_COPY_API_NS);
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     id<MTLBuffer> src = (__bridge id<MTLBuffer>)source;
     id<MTLBuffer> dst = (__bridge id<MTLBuffer>)target;
@@ -1105,8 +1177,10 @@ int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
     if ((uint64_t)targetOffset + (uint64_t)length > dst.length) return -4;
 
     @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod buffer copy";
+        mmm_capture_count(MMM_CAPTURE_BUFFER_COPIES);
+        mmm_capture_count(MMM_CAPTURE_BUFFER_COPY_BYTES, length);
         id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
         if (blit == nil) return -5;
         [blit copyFromBuffer:src
@@ -1115,7 +1189,7 @@ int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
            destinationOffset:(NSUInteger)targetOffset
                         size:(NSUInteger)length];
         [blit endEncoding];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1133,6 +1207,7 @@ int mmm_copy_buffer_to_buffer(void* queue, void* source, int64_t sourceOffset,
 // completes, so releasing it here is safe.
 int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
                            const void* bytes, int64_t length) {
+    MMMCaptureTimer timer(MMM_CAPTURE_UPLOAD_API_NS);
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     id<MTLBuffer> dst = (__bridge id<MTLBuffer>)target;
     if (metalQueue == nil || dst == nil || bytes == NULL) return -1;
@@ -1141,11 +1216,19 @@ int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
     if ((uint64_t)targetOffset + (uint64_t)length > dst.length) return -3;
 
     @autoreleasepool {
-        id<MTLBuffer> staging = [metalQueue.device newBufferWithBytes:bytes
-                                                             length:(NSUInteger)length
-                                                            options:MTLResourceStorageModeShared];
+        id<MTLBuffer> staging;
+        {
+            MMMCaptureTimer allocationTimer(MMM_CAPTURE_STAGING_ALLOC_NS);
+            staging = [metalQueue.device newBufferWithBytes:bytes length:(NSUInteger)length
+                                                   options:MTLResourceStorageModeShared];
+        }
+        if (staging != nil) {
+            mmm_capture_count(MMM_CAPTURE_BUFFER_WRITES);
+            mmm_capture_count(MMM_CAPTURE_BUFFER_UPLOAD_BYTES, length);
+            mmm_capture_count(MMM_CAPTURE_STAGING_ALLOCATIONS);
+        }
         if (staging == nil) return -4;
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod buffer write";
         id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
         if (blit == nil) return -5;
@@ -1155,7 +1238,7 @@ int mmm_write_buffer_bytes(void* queue, void* target, int64_t targetOffset,
            destinationOffset:(NSUInteger)targetOffset
                         size:(NSUInteger)length];
         [blit endEncoding];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
 }
@@ -1216,6 +1299,7 @@ int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool vsync) 
 }
 
 int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture) {
+    MMMCaptureTimer timer(MMM_CAPTURE_DRAWABLE_WAIT_NS);
     CAMetalLayer* metalLayer = mmm_layer(layer);
     if (metalLayer == nil || outDrawable == NULL || outTexture == NULL) return -1;
 
@@ -1248,10 +1332,10 @@ void mmm_layer_present(void* layer, void* drawable) {
             g_PresentQueue = [metalLayer.device newCommandQueue];
             g_PresentQueue.label = @"MetalMod present queue";
         }
-        id<MTLCommandBuffer> presentBuffer = [g_PresentQueue commandBuffer];
+        id<MTLCommandBuffer> presentBuffer = mmm_make_command_buffer(g_PresentQueue);
         presentBuffer.label = @"MetalMod present";
         [presentBuffer presentDrawable:metalDrawable];
-        [presentBuffer commit];
+        mmm_commit_command_buffer(presentBuffer);
 
         id<CAMetalDrawable> released = (__bridge_transfer id<CAMetalDrawable>)drawable;
         (void)released;
@@ -1266,7 +1350,7 @@ void* mmm_command_buffer_create(void* queue) {
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     if (metalQueue == nil) return NULL;
     @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod command buffer";
         return (__bridge_retained void*)commandBuffer;
     }
@@ -1279,7 +1363,7 @@ void mmm_command_buffer_commit(void* commandBuffer) {
         [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
             mmm_note_command_buffer_completion(completed);
         }];
-        [buffer commit];
+        mmm_commit_command_buffer(buffer);
     }
 }
 
@@ -1287,6 +1371,7 @@ void mmm_command_buffer_wait(void* commandBuffer) {
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
     if (buffer == nil) return;
     @autoreleasepool {
+        MMMCaptureTimer waitTimer(MMM_CAPTURE_QUEUE_WAIT_NS);
         [buffer waitUntilCompleted];
     }
 }
@@ -1315,7 +1400,7 @@ void* mmm_begin_clear_pass(void* commandBuffer, void* texture,
         descriptor.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, a);
 
         // The default render area is the full attachment, which is what a clear wants.
-        id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:descriptor];
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(buffer, descriptor);
         encoder.label = @"MetalMod clear pass";
         return (__bridge_retained void*)encoder;
     }
@@ -1420,17 +1505,18 @@ int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) 
             g_PresentQueue = [dev newCommandQueue];
             g_PresentQueue.label = @"MetalMod present queue";
         }
-        id<MTLCommandBuffer> commandBuffer = [g_PresentQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(g_PresentQueue);
         commandBuffer.label = @"MetalMod present (blit)";
 
         MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
         descriptor.colorAttachments[0].texture = metalDrawable.texture;
         descriptor.colorAttachments[0].loadAction = MTLLoadActionDontCare;
         descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(commandBuffer, descriptor);
         [encoder setRenderPipelineState:g_BlitPipeline];
         [encoder setFragmentTexture:source atIndex:0];
         [encoder setFragmentSamplerState:g_BlitSampler atIndex:0];
+        mmm_capture_count(MMM_CAPTURE_DRAWS);
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
 
@@ -1438,7 +1524,7 @@ int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) 
             mmm_note_command_buffer_completion(completed);
         }];
         [commandBuffer presentDrawable:metalDrawable];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
 
         id<CAMetalDrawable> released = (__bridge_transfer id<CAMetalDrawable>)drawable;
         (void)released;
@@ -1460,7 +1546,7 @@ int mmm_layer_present_clear(void* layer, void* drawable,
             g_PresentQueue = [dev newCommandQueue];
             g_PresentQueue.label = @"MetalMod present queue";
         }
-        id<MTLCommandBuffer> commandBuffer = [g_PresentQueue commandBuffer];
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(g_PresentQueue);
         commandBuffer.label = @"MetalMod present (clear)";
 
         MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1468,11 +1554,11 @@ int mmm_layer_present_clear(void* layer, void* drawable,
         descriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
         descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
         descriptor.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, a);
-        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptor];
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(commandBuffer, descriptor);
         [encoder endEncoding];
 
         [commandBuffer presentDrawable:metalDrawable];
-        [commandBuffer commit];
+        mmm_commit_command_buffer(commandBuffer);
 
         id<CAMetalDrawable> released = (__bridge_transfer id<CAMetalDrawable>)drawable;
         (void)released;

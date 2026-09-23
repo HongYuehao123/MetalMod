@@ -5,6 +5,8 @@
   "compatibilityLevel": "JAVA_22",
   "client": [
     "GameRendererMixin",
+    "PerformanceCaptureMixin",
+    "PerformanceCaptureKeyMixin",
     "WindowMixin",
     "DebugScreenEntriesAccessor",
     "DebugScreenEntryListMixin",

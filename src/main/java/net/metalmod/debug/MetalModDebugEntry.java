@@ -56,23 +56,19 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         }
         displayer.addLine("§6[MetalMod]§r Resolution: §b" + resolution);
 
-        // Frame timing and the CPU/GPU split. "wait" is the time the render thread spent blocked in
-        // nextDrawable, i.e. waiting on the GPU; the rest of the frame interval is CPU work. Wait
-        // near the frame time means GPU-bound, wait near zero means CPU-bound. (A fast vsync-capped
-        // frame also waits for the display, so only read "GPU-bound" when the frame is slower than
-        // that.) Draws is the number that grows underground.
+        // Drawable acquisition is just one wait site. F8 also measures fences, queue backpressure
+        // and uploads; a low drawable wait does not establish that the frame is CPU-bound.
         float frameMs = net.metalmod.backend.MetalDevice.lastFrameMs();
         float waitMs = net.metalmod.backend.MetalDevice.lastAcquireWaitMs();
-        String bound = frameMs <= 0.0f ? ""
-                : waitMs >= frameMs * 0.5f ? " §7(GPU-bound)§r"
-                : waitMs <= frameMs * 0.15f ? " §7(CPU-bound)§r" : " §7(mixed)§r";
-        displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms avg§r | GPU wait §b"
+        if (metalActive) {
+            displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms avg§r | Drawable wait §b"
                 + oneDecimal(waitMs) + " ms avg§r | §b" + net.metalmod.backend.MetalDevice.lastFrameDraws()
                 + "§r draws §7(" + net.metalmod.backend.MetalDevice.lastCommandBuffers()
-                + " passes, " + net.metalmod.backend.MetalDevice.lastFfiCalls() + " native calls, "
+                + " render/present buffers, " + net.metalmod.backend.MetalDevice.lastFfiCalls() + " native calls, "
                 + net.metalmod.backend.MetalDevice.lastCopies() + " copies, "
-                + net.metalmod.backend.MetalDevice.lastFences() + " fences)§r"
-                + bound);
+                + net.metalmod.backend.MetalDevice.lastFences() + " fences)§r");
+        }
+        displayer.addLine("§6[MetalMod]§r " + PerformanceCapture.status());
 
         // The backend's health counters. These are the numbers that explain a black or missing
         // object: a shader sampling something nothing bound, an attribute dropped from the vertex
@@ -112,6 +108,8 @@ public class MetalModDebugEntry implements DebugScreenEntry {
     }
 
     private static String oneDecimal(float value) {
-        return String.format("%.1f", value);
+        // LOCALE.ROOT: under a German locale the default format prints "17,5", and the capture
+        // summary is pinned the same way.
+        return String.format(java.util.Locale.ROOT, "%.1f", value);
     }
 }

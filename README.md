@@ -72,6 +72,13 @@ vanilla and Sodium. Registration takes three parts, because `DebugScreenEntries.
 `private static` **and** a registered entry stays hidden unless it is given a status — see
 `net.metalmod.debug.DebugScreenRegistration`.
 
+### Performance capture
+Press **F8** in a world to record 60 seconds after a five-second countdown (press again to stop).
+MetalMod saves a readable summary and per-frame CSV under the game's `debug/metalmod/` folder.
+It captures hitches, uploads, allocations, submissions and waits on Metal, and basic frame times
+on Vulkan/OpenGL for comparison. A capture button is also available in Mod Menu → MetalMod.
+See [TESTING.md](TESTING.md) for the simple comparison procedure.
+
 ### Apple Silicon unified-memory telemetry
 Physical RAM, available/compressed memory, swap, process footprint, Metal allocated bytes and the
 working-set cap, plus the macOS kernel memory-pressure level, shown on the F3 overlay. A

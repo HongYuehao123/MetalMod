@@ -51,35 +51,48 @@ Useful one-off: print the generated MSL for a shader pair, or all of them, by ad
 
 Launch with the backend on, load a world, press **F3**, and let it run at least 30 seconds.
 
+### Simple performance capture (F8)
+
+1. Restart after installing the new jar, load your usual world, and let chunks settle for 30 seconds.
+2. Press **F8** (or **Fn+F8** if macOS uses the media keys). There is a five-second countdown,
+   followed by a 60-second recording. An on-screen message shows the remaining time.
+   Alternatively, use **Mod Menu → MetalMod → Record performance (60 seconds)**; it returns to play.
+3. For the transition hitch, spend about 15 seconds above ground, travel underground, stay there
+   for about 15 seconds, then return above ground. Keep playing until the recording stops itself.
+   Press F8 again to stop early. Closing the world also ends the capture.
+4. The chat and game log report the saved folder under **`<game directory>/debug/metalmod/`**.
+   Each capture contains **`summary.txt`** and **`frames.csv`**. The summary has average, median,
+   p95, p99, worst frame, hitch counts, and the ten slowest gameplay frames with their upload,
+   submission, allocation, fence and compilation activity. No spreadsheet or profiler is needed.
+5. For a Vulkan baseline, disable the Metal backend, restart, and repeat F8 on the same route with
+   the same resolution, render distance, FPS limit and vsync. Metal-specific CSV fields are `-1`
+   (unavailable) on other backends, rather than misleading zeroes.
+
+The capture records every interval between surface presentations. It keeps samples in bounded
+memory (maximum 36000 frames, about 11 MiB), then formats/writes them on a background thread after
+recording stops. There is no per-frame disk I/O. Positions are block coordinates, all data stays on
+this machine, and each recording gets a unique folder. Menu, paused and unfocused intervals remain
+in the CSV but are excluded from gameplay statistics. A session closed before recording begins is
+cancelled without exporting an empty report. Normal game shutdown saves an active capture.
+
+All native durations are **CPU wall time in API calls**, not GPU execution time. `upload_api_ns`
+contains staging allocation and submission time; `copy_api_ns` also contains submission time.
+Those nested durations must not be summed. `gc_reported_ms` is reported collection time, not an
+exact pause measurement. `ffi_calls` now includes both typed and generic wrappers; older F3 counts
+omitted generic downcalls, so their absolute values are not directly comparable.
+
 ### F3 MetalMod lines
 
-```
-[MetalMod] Backend: Metal (active)
-[MetalMod] Resolution: <framebuffer width>x<height>
-[MetalMod] Frame 17.5 ms avg | GPU wait 2.1 ms avg | 6400 draws (37 passes, 18400 native calls, 40 copies, 6 fences) (CPU-bound)
-[MetalMod] unbound/missingAttr/failed: 0 (0/0/0 = bindings, missing vertex attributes, pipeline builds)
-```
+The F3 overlay shows backend, resolution, average frame/drawable-acquisition times, draw count,
+render/present command buffers, native calls, copies, fences, capture status and health counters.
+The averages update every 60 frames; **use F8 to capture hitches**, which averages can obscure.
 
-The **Frame** line is the performance indicator, and both timings are averages over about a second.
-
-`GPU wait` is the time the render thread spent blocked in `nextDrawable()` — waiting for the GPU to
-hand back a drawable. The rest of the frame interval is CPU work, so:
-
-- **wait ≈ 0** → **CPU-bound**: the GPU keeps up, and the frame time is CPU work (per-draw encoding,
-  binding, submission). The `draws` count is what scales here.
-- **wait ≈ Frame** → **GPU-bound**: the CPU finishes early and then waits for the GPU. Optimising
-  the CPU side will not move the frame rate.
-- **wait in between** → mixed.
-
-Caveat: with vsync on, a *fast* frame waits for the display too, so only read "GPU-bound" when the
-frame is also slower than the refresh rate. `passes` is the per-frame command-buffer count for the
-engine's render passes (plus the present blit); a high number is submission overhead. `native calls`
-is the number of Panama FFI downcalls per frame — every draw makes several, so it is the figure that
-says whether the FFI path is load-bearing. `copies` counts buffer uploads/copies and texture copies
-(each allocates a staging buffer and commits its own command buffer) and `fences` counts fences (each
-allocates a shared event and commits a signal command buffer). Those last two are the ones to watch
-when the frame *hitches* while chunk meshes rebuild: if they spike in the same frame as the hitch,
-the upload path is the cause.
+**Drawable wait is only one wait site.** Low drawable wait does not prove the frame is CPU-bound:
+fence waits, queue backpressure during command-buffer creation, readbacks and display pacing can
+also contribute. The capture counts all native submissions, including utility copies, clears and
+fence signals; the existing F3 render/present count covers fewer operations. Copy counts do not
+mean staging allocations: only CPU buffer writes allocate staging in the current implementation.
+A coincidence between a copy spike and a hitch is evidence to investigate, not proof of causation.
 
 The `draw 'pipeline' -> target` census and the unbound-binding report run on every draw, so they
 stop themselves after about ten seconds (the log says so). `-Dmetalmod.census=on` keeps them for a
@@ -123,7 +136,7 @@ Every counter must stay at zero. There must be no `@Mixin target ... was not fou
   at the top-left is the right way up (BUG-024, BUG-025).
 - Open the config screen from Mod Menu: it shows the Metal backend and UMA toggles.
 
-## 4. Performance parity (still to be measured)
+## 4. Comparing performance
 
 The roadmap's exit criterion is a comparable frame rate to Vulkan/MoltenVK. Measure **in normal
 play**, not with a menu open (the world must be ticking):
@@ -131,7 +144,7 @@ play**, not with a menu open (the world must be ticking):
 1. Load the same world and stand in the same place on Metal and on Vulkan.
 2. Record F3 fps and the frame time at native resolution, then at roughly half the window area.
 3. Optionally corroborate with `sudo powermetrics --samplers gpu_power -i 1000 -n 20`: consistently
-   below ~70% GPU busy means the frame is CPU-bound, so resolution changes will not move it much.
+   GPU busy can corroborate a trace, but it does not by itself identify the cause of a slow frame.
 
 Earlier numbers (taken with a menu open) suggested a CPU floor around 3.1 ms and roughly
 0.42 ms/Mpx of GPU cost. Treat those as indicative only.

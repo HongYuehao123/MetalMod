@@ -25,6 +25,7 @@ public class StandaloneTestRunner {
         testUmaOwnershipRouting();
         failures += net.metalmod.backend.MetalRenderPassBackendTest.runTests();
         failures += net.metalmod.backend.MetalFormatTest.runTests();
+        failures += net.metalmod.debug.PerformanceRecordingTest.runTests();
 
         UnifiedMemoryTest.runTests();
 

@@ -47,10 +47,21 @@ public class MetalModConfigScreen extends Screen {
         }).bounds(centerX - buttonWidth / 2, startY + 24, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(metalBackendButton);
 
-        // 3. Done.
+        // Capture closes the menu and allows five seconds to resume before recording.
+        Button captureButton = Button.builder(Component.literal(
+                net.metalmod.debug.PerformanceCapture.isRecording()
+                        ? "Stop performance recording" : "Record performance (60 seconds)"), btn -> {
+            if (this.minecraft != null) {
+                net.metalmod.debug.PerformanceCapture.toggle(this.minecraft);
+                if (this.minecraft.level != null) this.minecraft.setScreenAndShow(null);
+            }
+        }).bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+        this.addRenderableWidget(captureButton);
+
+        // Done.
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 56, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 80, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
     }
 
