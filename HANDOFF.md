@@ -109,16 +109,28 @@ Measured before the first CPU pass:
 | above ground | 6 400 | 17.5 ms | 2–3 ms | CPU-bound |
 | underground (spectator) | 17 965 | 42.4 ms | ~0 ms | CPU-bound |
 
-And after it (`071bdb0`: cached per-pipeline facts, a skip-redundant-bind shadow, the per-draw census
-retired):
+And after the CPU passes (`071bdb0` cached per-pipeline facts and a skip-redundant-bind shadow;
+`b615256` moved every hot native call to `invokeExact` and binds only names that changed; the
+per-section vertex-buffer rebind is now dropped as well):
 
-| scene | frame | fps | read as |
-|---|---|---|---|
-| above ground | ~10 ms | ~100 | mixed — the ~2–3 ms of GPU work is now a real share of the frame |
-| underground | ~17–20 ms | 50–60 | still CPU-bound, but usable |
+| scene | frame | fps | native calls/frame | read as |
+|---|---|---|---|---|
+| above ground | 6–10 ms (peak ~14) | ~100–167 | ~27 000 | between mixed and CPU-bound |
+| underground (spectator) | ~17 ms | ~59 | ~70 000 | still CPU-bound |
 
-For reference, the MoltenVK/Vulkan path reaches 120–200 fps in the same scenes, so per-draw CPU cost
-is still the largest remaining gap; above ground, GPU work now matters too.
+That is roughly 4 native calls per draw (70 000 / 17 965), which is the floor for this architecture:
+one for the per-section uniform block, one for the draw, plus pipeline/texture work amortised.
+
+**The MoltenVK comparison is above ground only.** MoltenVK reaches 120–200 fps above ground; on that
+basis MetalMod is within ~1.2–1.5×, not the 2–4× the earlier note implied. **Underground has no
+MoltenVK baseline yet** — measuring it (switch `preferMetalBackend` off) is the next step before
+treating 17 ms as a deficit.
+
+Worth not re-investigating: the terrain path is structurally identical on both backends.
+`ChunkSectionsToRender.renderGroup` binds the pipeline once per layer and calls `drawMultipleIndexed`,
+and `VulkanRenderPass.drawMultipleIndexed` loops per section exactly as this backend does.
+`multiDrawIndexed` — the one call that batches on Vulkan via `vkCmdDrawMultiIndexedEXT` — has **no
+engine caller at all**. So there is no batching deficit to close by implementing indirect draws.
 
 Earlier numbers taken by resizing the window with a menu open (world not ticking) are superseded -
 they measured resolution scaling only, and the CPU floor they implied was optimistic.

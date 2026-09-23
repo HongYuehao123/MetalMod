@@ -51,6 +51,13 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private MetalRenderPipeline pipeline;
     private RenderPipeline lastEnginePipeline;
     private int topology = 3;
+
+    // The last vertex-buffer binding handed to this encoder, so a repeated bind is skipped. Only
+    // the attribute slots go through here; uniform buffers are bound above them at
+    // VERTEX_BUFFER_INDEX_OFFSET and are not tracked.
+    private int lastVertexBufferSlot = -1;
+    private long lastVertexBufferHandle;
+    private long lastVertexBufferOffset;
     private MemorySegment indexBuffer = MemorySegment.NULL;
     private long indexBufferOffset;
     private int indexType = 1;
@@ -307,7 +314,22 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
-        MetalNative.renderPassSetVertexBuffer(this.encoder, handle, absoluteOffset(slice), index);
+        long offset = absoluteOffset(slice);
+        // Terrain hands every section the same uber buffer at offset 0 - the per-section offset
+        // travels as baseVertex, not as a vertex-buffer binding (LevelRenderer builds the Draw with
+        // `slice.vertexBuffer()` and `baseVertex = vertexBufferOffset / vertexSize`). So the bind is
+        // identical for every section in a layer and is dropped when it repeats, which removes one
+        // of the three native calls a section draw makes. Compared by handle+offset rather than by
+        // identity: GpuBuffer.slice() mints a fresh object each call.
+        if (index == this.lastVertexBufferSlot
+                && handle.address() == this.lastVertexBufferHandle
+                && offset == this.lastVertexBufferOffset) {
+            return;
+        }
+        this.lastVertexBufferSlot = index;
+        this.lastVertexBufferHandle = handle.address();
+        this.lastVertexBufferOffset = offset;
+        MetalNative.renderPassSetVertexBuffer(this.encoder, handle, offset, index);
     }
 
     @Override
