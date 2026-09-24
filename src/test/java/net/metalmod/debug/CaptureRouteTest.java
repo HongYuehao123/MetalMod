@@ -143,6 +143,10 @@ public final class CaptureRouteTest {
                 summary.contains("1.0 70.0 2.0") && summary.contains("3.0 40.0 4.0"), "");
         check("the summary names the route",
                 summary.contains("route 'overworld': 2 waypoints"), "");
+        // Draw count is what says whether a stage measured a scene at all; with no draws column it
+        // must say so rather than print a misleading zero.
+        check("a stage with no draw data reports it as unavailable",
+                summary.contains("Per-waypoint gameplay frames") && summary.contains("      -  "), "");
         check("no route means no per-waypoint section",
                 !recording.summary("Backend: Metal", "test", null).contains("Per-waypoint"), "");
 

@@ -206,7 +206,7 @@ public final class PerformanceRecording {
      */
     private void appendStageTable(StringBuilder out, List<Integer> rows, CaptureRoute route) {
         out.append("\nPer-waypoint gameplay frames (").append(route.describe()).append("):\n")
-                .append("stage  frames   mean_ms  median_ms     p95_ms     max_ms    mean_x    mean_y    mean_z   waypoint\n");
+                .append("stage  frames   mean_ms  median_ms     p95_ms     max_ms   draws    mean_x    mean_y    mean_z   waypoint\n");
         for (int stage = 0; stage < route.stageCount(); stage++) {
             List<Integer> stageRows = new ArrayList<>();
             for (int row : rows) {
@@ -216,15 +216,30 @@ public final class PerformanceRecording {
             long[] times = stageRows.stream().mapToLong(r -> value(r, COL_FRAME_NS)).sorted().toArray();
             CaptureRoute.Waypoint waypoint = route.waypoint(stage);
             out.append(String.format(Locale.ROOT,
-                    "%5d  %6d  %8.2f  %9.2f  %8.2f  %8.2f  %8.1f  %8.1f  %8.1f   %.1f %.1f %.1f (dwell %dms)\n",
+                    "%5d  %6d  %8.2f  %9.2f  %8.2f  %8.2f  %7s  %8.1f  %8.1f  %8.1f   %.1f %.1f %.1f (dwell %dms)\n",
                     stage, stageRows.size(), Arrays.stream(times).average().orElse(0) / 1e6,
                     percentile(times, .5) / 1e6, percentile(times, .95) / 1e6,
                     times[times.length - 1] / 1e6,
+                    meanDraws(stageRows),
                     stageRows.stream().mapToLong(r -> value(r, COL_PLAYER_X)).average().orElse(0),
                     stageRows.stream().mapToLong(r -> value(r, COL_PLAYER_Y)).average().orElse(0),
                     stageRows.stream().mapToLong(r -> value(r, COL_PLAYER_Z)).average().orElse(0),
                     waypoint.x(), waypoint.y(), waypoint.z(), waypoint.dwellMs()));
         }
+    }
+
+    /**
+     * Mean draw count for a stage, or "-" where the backend does not report draws.
+     *
+     * <p>This is what says whether a stage measured a scene at all. A waypoint teleported inside solid
+     * rock has almost nothing to draw, so its frame time is meaningless as a performance measurement
+     * even though it compares consistently between runs. A few hundred draws where the other stage has
+     * thousands is the tell.
+     */
+    private String meanDraws(List<Integer> rows) {
+        long[] draws = rows.stream().mapToLong(r -> value(r, "draws")).filter(v -> v >= 0).toArray();
+        return draws.length == 0 ? "-" : String.format(Locale.ROOT, "%.0f",
+                Arrays.stream(draws).average().orElse(0));
     }
 
     /** Only called by the writer after ownership of this recording leaves the render thread. */

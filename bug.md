@@ -10,7 +10,8 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ## BUG-025 — Inventory player preview is upside down, and the item icons vanished
 
-**Status:** **FIXED** (Phase 5) — pending an in-game look.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. The player preview is upright and the
+item icons are present in their slots and the right way up.
 **Severity:** medium. The inventory is usable but the preview is wrong and the icons were missing.
 
 ### Symptoms
@@ -54,8 +55,8 @@ correct for an entity drawn in a flipped pass.
 
 ## BUG-001 — "Select World" list entry has no background panel (and a garbled name line)
 
-**Status:** **FIXED** (Phase 5) — the scissor rectangle was mirrored vertically; pending an in-game
-look to confirm.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. The scissor rectangle was mirrored
+vertically; Select World entries now have their background panels and a single normal name line.
 **Severity:** low. The world is selectable and the screen is usable; it just looks wrong.
 **Seen on:** Metal backend enabled, build `ab30f94` (phase 3) + `15c0133`, window
 `5120x2880 -> 5120x2880 (Native)`, 60 fps cap, no resource packs.
@@ -191,7 +192,8 @@ by their position, which still works.
 
 ## BUG-002 — Block selection outline is drawn as a huge wireframe box
 
-**Status:** root cause fixed (BUG-012); needs an in-game look to confirm.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Root cause was BUG-012; the selection
+outline now hugs the targeted block.
 **Severity:** low / cosmetic. Nothing breaks; it just looks wrong and is distracting.
 **Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native, 111 fps.
 **Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)
@@ -270,7 +272,8 @@ Turn the selection outline off in Options (if the pack allows) or ignore it; it 
 
 ## BUG-024 — Inventory item icons are upside down, and some never appear
 
-**Status:** **FIXED** (Phase 5) — pending a look at the inventory on a fresh run.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. The inventory icons are present and
+the right way up.
 **Severity:** medium - the screen works, the icons are wrong.
 **Found on:** the second in-game run. Reported as "everything might not show up, and for those showed
 up, it is upside down."
@@ -592,7 +595,8 @@ frame's mask or geometry.
 
 ## BUG-022 — Sky light never reached the ground: the lightmap was stored mirrored
 
-**Status:** **FIXED** (Phase 5) — pending a look on a fresh run.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Torch light reads correctly in caves and
+sky light reaches the ground.
 **Severity:** critical for appearance. The whole world rendered at night-time brightness under a
 daylight sky.
 **Found on:** the first successful in-game run, from "the lighting from the sky doesn't seem to work
@@ -689,7 +693,7 @@ named for what it is.
 
 ## BUG-020 — Entering a world aborted: texel buffers were one row wide
 
-**Status:** **FIXED** (Phase 5) — pending confirmation on a fresh run.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. The world loads normally.
 **Severity:** critical. The first frame in a world killed the process.
 **Found on:** the first in-game run of the Phase 5 fixes, build `424b111`.
 
@@ -858,7 +862,8 @@ temporarily reporting 0.
 
 ## BUG-017 — A pipeline with no depth state inherited the previous one's
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. No z-fighting on water edges, item
+frames or the hotbar.
 **Severity:** high; 30 of the 87 vanilla pipelines declare no depth state.
 **Found by:** asking what *else* is encoder state after finding BUG-016.
 
@@ -901,7 +906,8 @@ passing after.
 
 ## BUG-016 — Depth bias leaked from one pipeline to every later draw
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Depth bias no longer leaks; no z-fighting
+on coplanar surfaces.
 **Severity:** high; five vanilla pipelines set a depth bias and they are mixed into the world pass.
 **Found by:** auditing every pipeline state dimension against how Metal actually stores each one.
 
@@ -948,7 +954,7 @@ native fix and passing after.
 
 ## BUG-015 — `TRIANGLE_FAN` had no Metal primitive, so the sky disc was truncated
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. The sky renders as a full dome.
 **Severity:** high for the sky; the sky disc is a single fan draw.
 **Found by:** taking a census of every vanilla pipeline's `PrimitiveTopology`.
 
@@ -999,7 +1005,8 @@ sample points is covered, which is the truncation described above.
 
 ## BUG-014 — `LINES` was drawn as line primitives instead of triangles
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Block outlines and F3+G chunk border
+lines are clean.
 **Severity:** high; this is the block-selection outline of BUG-002, plus chunk borders and leash lines.
 **Found by:** comparing every `PrimitiveTopology` mapping against the Vulkan backend's.
 
@@ -1042,7 +1049,7 @@ pattern.
 
 ## BUG-013 — Texel buffers had no binding path (vanilla clouds)
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Clouds are visible and drifting.
 **Severity:** clouds rendered with undefined data; also a Sodium prerequisite.
 **Found by:** chasing the `CloudFaces` half of BUG-005.
 
@@ -1534,7 +1541,8 @@ no longer needs `build_mod.sh` edited.
 
 ## BUG-005 — Two pipelines draw with bindings that were never set
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. F3 reads
+`unbound/missingAttr/failed: 0/0/0` with no `unbound` log lines.
 **Severity:** high for world appearance — one of these is the lightmap.
 **Found by:** the Phase 4 unbound-binding diagnostic, in-game (run `[10:21:31]`, see below).
 
@@ -1591,7 +1599,8 @@ None. Fixed in Phase 5.
 
 ## BUG-004 — Multi-draw chunk passes never upload their per-draw uniforms
 
-**Status:** **FIXED** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Terrain renders without snapping or
+sections at the wrong offset.
 **Severity:** high for world rendering; was a direct cause of missing/wrong terrain.
 **Found by:** the Phase 4 binding audit, then confirmed by reading the shaders.
 
@@ -1683,7 +1692,8 @@ None. Use the default (Vulkan/OpenGL) backend for normal play.
 > entities that are being drawn, but without their textures/lighting. They only look unrecognisable
 > because entity rendering is unfinished. Filed so the missing entity/world shading is tracked.
 
-**Status:** **both paths verified offline** (Phase 5) — pending in-game confirmation.
+**Status:** **FIXED** (Phase 5) — **confirmed in game**. Both paths were verified offline first;
+terrain and entities render shaded rather than as flat black silhouettes.
 **Severity:** low / cosmetic, but it is the most visible sign that Phase 5 shading work is unfinished.
 **Seen on:** Metal backend enabled, in-world, build `ab30f94`+, `5120x2880` native.
 **Screenshot:** [`docs/bugs/inworld-2026-09-22.png`](bugs/inworld-2026-09-22.png)

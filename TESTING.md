@@ -402,7 +402,7 @@ run 1 and waypoint 1 of run 3 are the same place doing the same thing.
 | 0 (above ground) | | | |
 | 1 (underground) | | | |
 
-Then check the three things that make the numbers trustworthy before believing any of them:
+Then check the four things that make the numbers trustworthy before believing any of them:
 
 - **`privateCpuAccess` is 0** in the resource summary, and `refused` does not appear in the log. A
   non-zero value means a texture the CPU uploads into was given private storage.
@@ -411,6 +411,11 @@ Then check the three things that make the numbers trustworthy before believing a
 - **Each waypoint's mean position matches its coordinates** in the same table. A stage whose mean
   position is somewhere else means the teleport failed - most likely a coordinate outside the world or
   a dimension id that does not resolve - and that stage measured the wrong place.
+- **Each stage's mean draw count is what you expect for the scene.** This is the one that is easy to
+  miss: a waypoint teleported *inside* solid rock draws almost nothing, so its frame time compares
+  consistently between runs but does not mean anything. If the underground stage shows a few hundred
+  draws where the above-ground stage shows thousands, the camera is buried rather than in a cave, and
+  that waypoint should be re-recorded somewhere with something to look at.
 
 Conclusions to write down: whether run 2 differs from run 1 at all (private storage), and how far run 3
 is from run 1 (parity). If run 3 is within roughly 10% the criterion is met; if it is not, the
@@ -418,8 +423,13 @@ per-waypoint split says *where* it is not, which is the useful part.
 
 ### 5.5 Visual confirmation pass
 
-One play session, no captures needed. These are the fourteen fixes whose code is done and whose
-appearance has not been looked at. Each line is what to look at and what "correct" looks like.
+**Status: done (2026-09-23).** All fourteen were confirmed in game - menus and the inventory, the sky
+and clouds, lighting, terrain and entities, selection and chunk-border lines, depth behaviour, and the
+F3 health counters at zero. [bug.md](bug.md) records the confirmation on each entry. The checklist is
+kept because it is also the regression list to walk after any change to the shader, pipeline or
+attachment paths; those are the symptoms that a backend change tends to reintroduce.
+
+One play session, no captures needed. Each line is what to look at and what "correct" looks like.
 
 **Menus, no world needed**
 

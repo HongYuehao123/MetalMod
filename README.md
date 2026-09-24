@@ -110,9 +110,12 @@ the underground chunk-mesh path needed. Both are described under [TESTING.md](TE
 
 These are the reasons the mod is not a drop-in replacement yet.
 
-1. **Phase 5 verification.** The Select World list scissor (BUG-001) is fixed pending one in-game
-   look; BUG-002 (selection outline) and BUG-003 (flat-black terrain/entities) are confirmed fixed.
-   See [bug.md](bug.md).
+1. **Phase 5 verification: visual parity confirmed, frame-rate parity still owed.** All fourteen
+   fixes that were awaiting an in-game look are now confirmed (see [bug.md](bug.md)): menus and the
+   inventory, sky and clouds, lighting, terrain and entities, selection and chunk-border lines, depth
+   behaviour, and the F3 health counters at zero. The frame-rate half of the exit criterion has not
+   been measured cleanly yet - the two existing capture pairs disagree - so what remains is the
+   controlled comparison in [TESTING.md](TESTING.md) §5, not more code.
 2. **Performance: the CPU-side upload hitches are gone; parity now hinges on GPU work.** A paired
    capture put Metal at 106 FPS against Vulkan's 133, and the gap turned out to be a tail of hitches
    from the chunk-mesh upload path — 53.5 per-frame uploads underground, each creating its own command
