@@ -22,7 +22,7 @@ Instead of translating Vulkan through MoltenVK, it plugs into Minecraft's Blaze3
 ### Phase Roadmap Status
 - **Phases 0–5 (Foundations to Vanilla Parity): COMPLETE.** Backend selection, resources, pipelines, draw calls, all 87 vanilla pipelines + 9 post-processing passes compile, and visual/performance parity confirmed on Apple Silicon (M4 Pro).
 - **Phase 6 (Dynamic Lighting): COMPLETE.** Light snapshotting, moving sources (held/dropped items, entities, moving blocks), 16-block clustered grid evaluator, and published light-record ABI v1 (`docs/lighting-abi.md`).
-- **Phase 7 (MetalFX & Pacing): IN PROGRESS.** Native MetalFX spatial and temporal scalers (`native/src/metalmod_metalfx.mm`) and display-link pacer over backend-owned textures.
+- **Phase 7 (MetalFX & Pacing): 7A DONE (verified offline, awaiting one in-game run); 7B PARTIAL; 7C NOT STARTED.** Native MetalFX spatial and temporal scalers (`native/src/metalmod_metalfx.mm`), render-resolution scaling of the level into its own target, projection jitter and history lifecycle. Temporal is gated off because nothing publishes motion vectors; frame generation needs those plus frame-loop pacing. Per-increment record: `docs/phase7-plan.md`.
 - **Phase 8 (Native Material & Lighting Foundations): PLANNED.** Linear-light/HDR composition, G-buffer layouts, Phase 8B ray visibility occlusion/shadowing.
 - **Phase 9 (Hybrid Ray Tracing): PLANNED.** Metal ray tracing pipeline (`MTLAccelerationStructure`).
 - **Optional (GLSL Shaderpacks): DEFERRED.** Preserved as optional compatibility; not an RT prerequisite.
@@ -57,15 +57,17 @@ Always build the mod using:
 
 ## 3. The 5 Mandatory Offline Verification Gates
 
-Before trusting any code changes or declaring work complete, an agent must verify that all applicable offline verification gates pass:
+Before trusting any code changes or declaring work complete, an agent must verify that all applicable offline verification gates pass. The original five are the baseline; 6 and 7 were added in Phase 7 because the scaling frame and the mixin targets are not observable any other way without launching the game:
 
 | Gate | Command | Pass Criteria | What It Exercises |
 |---|---|---|---|
 | **1. Mod Build** | `./scripts/build_mod.sh` | `SUCCESS -> build/libs/metalmod-1.0.0.jar` | Native dylib compilation, Java compilation against real client JAR, mod packaging, test compilation. |
 | **2. Native Smoke Test** | `./native/build/metalmod_smoke`<br>*(or `./scripts/run_smoke.sh`)* | `ALL CHECKS PASSED` | Native device, queue, command buffers, textures, views, buffers, pipelines, draws, clear, staging uploads, texel buffers, fences, MetalFX spatial/temporal scalers. |
 | **3. Shader Inventory** | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics | Compiles all 87 vanilla pipelines and 9 post-processing passes offline through GLSL → SPIR-V → MSL. |
-| **4. Pixel Render Check** | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (167+ pixel assertions) | Offscreen real pipeline execution: GUI, terrain, entities, cutout, lines, mipmaps, scissor conversions, blend modes, lightmap, Phase 6 dynamic lighting paths. |
+| **4. Pixel Render Check** | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 pixel assertions) | Offscreen real pipeline execution: GUI, terrain, entities, cutout, lines, mipmaps, scissor conversions, blend modes, lightmap, Phase 6 dynamic lighting paths, Phase 7A MetalFX spatial upscaling. |
 | **5. Standalone Tests** | See runner command below | `ALL TESTS PASSED SUCCESSFULLY!` | Panama FFI bridge loading, UMA allocator routing, format mappings, sub-buffer offsets, Phase 6 cluster grid / ABI byte offsets. |
+| **6. Phase 7A Scaling Check** | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (47 checks) | The scaled level target built from the engine's own `MainTarget`, written through the engine's own `FrameGraphBuilder` as an imported external resource, upscaled to native, resized, released; plus the jitter sequence. |
+| **7. Mixin Target Check** | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (58 checks) | Every mixin's target class, injected method, `@Shadow` member and `@At` descriptor resolved against the real client jar. Catches the quiet failures `defaultRequire: 0` produces. |
 
 #### Running Gate 5 (Standalone Tests):
 ```bash
@@ -159,6 +161,8 @@ MetalMod/
 │
 ├── tools/
 │   ├── render_check/run.sh             # Gate 4: Offscreen real pipeline pixel verification
+│   ├── scaling_check/run.sh            # Gate 6: Phase 7A scaled target + MetalFX upscale, offscreen
+│   ├── mixin_check/run.sh              # Gate 7: Mixin injection points against the client jar
 │   ├── shader_inventory/run.sh         # Gate 3: Compiles all 87 vanilla pipelines + 9 post passes
 │   └── shader_repro/run.sh             # Offline reproduction/debug of single shader pairs
 │
@@ -169,6 +173,7 @@ MetalMod/
 │   ├── debug/                          # F3 debug overlay, performance capture (F8), route player (F7)
 │   ├── ffi/                            # Panama foreign function bindings (MetalBridge)
 │   ├── lighting/                       # Phase 6 dynamic lighting (collector, cluster grid, snapshot, variants)
+│   ├── metalfx/                        # Phase 7 render scale, world target, MetalFX, projection jitter
 │   ├── memory/                         # Memory telemetry and pressure management
 │   └── mixin/                          # Mixin injectors for backend selection and hooks
 │
@@ -177,6 +182,7 @@ MetalMod/
 │   ├── backend-api.md                  # Blaze3D 134-member API dump
 │   ├── lighting-abi.md                 # Phase 6 GPU light record ABI contract
 │   ├── phase6-plan.md                  # Phase 6 execution plan and verification log
+│   ├── phase7-plan.md                  # Phase 7 per-increment record and integration contract
 │   └── raytracing-plan.md              # Long-term Phase 9 ray tracing plan
 └── config/
     └── metalmod.properties             # Runtime configuration properties
@@ -206,7 +212,7 @@ Add `-Dmetalmod.dumpMsl=<substring>` to any tool or JVM launch command:
 ```
 
 ### Runtime Configuration & Toggles
-Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the in-game GUI (**Options → MetalMod... → Lighting**).
+Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the in-game GUI: **Options → MetalMod… → MetalFX Upscaling** (Phase 7A render scale and upscaler, with a live status line) and **Options → MetalMod… → Lighting** (Phase 6).
 *Precedence:* In-Game UI > JVM `-D` flag > `metalmod.properties`.
 
 | Flag / Property | Description | Default |
@@ -216,9 +222,12 @@ Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the
 | `-Dmetalmod.clusteredLights=true` / `enableClusteredLights=true` | Evaluates dynamic lights via 16-block clustered grid | `false` |
 | `-Dmetalmod.pointLightProof=true` / `enablePointLightProof=true` | Single camera-centred amber test light | `false` |
 | `-Dmetalmod.privateTextures=all` | Forces private storage mode on render targets (measured slower) | `false` |
+| `-Dmetalmod.renderScale=0.5` / `renderScale=0.5` | Fraction of the window the world renders at; 1.0 is off (Phase 7A) | `1.0` |
+| `-Dmetalmod.upscaler=spatial` / `upscaler=spatial` | `spatial`, `off`; `temporal` resolves to spatial until motion vectors exist | `spatial` |
+| `upscalingNotice=true` | Announce an upscaling change as an in-world toast | `true` |
 
 ### In-Game Performance Capture & Telemetry
-- **F3 Overlay:** MetalMod section reports selected backend, render resolution, CPU/GPU wait time proxy, active dynamic light count, and health counters (`unbound/missingAttr/failed`).
+- **F3 Overlay:** MetalMod section reports selected backend, render resolution, CPU/GPU wait time proxy, active dynamic light count, health counters (`unbound/missingAttr/failed`), the Phase 7 `upscale` line (sizes, `fx`/`blit` counts, failure reason) and the `pacing` line (last interval, p95, steady share, dropped count).
 - **F8 Key:** Starts a 60-second performance capture (saves summary and per-frame CSV under `debug/metalmod/`).
 - **F7 Key:** Records or plays back reproducible movement routes for rigorous A/B benchmarking.
 

@@ -440,42 +440,65 @@ Carry forward the following, in order of relevance to current gameplay:
 dynamic lighting off and on, using the same scene and settings. This is a comparison baseline for
 upscaling regressions, not a substitute for the deferred scaling/performance acceptance runs.
 
+**Carried forward into Phase 7.** That baseline capture was not taken before 7A landed. The
+comparison it was for - native versus scaled, same scene, same settings - is still owed and is the
+"measured quality and performance" half of 7A's exit criterion; [TESTING.md](TESTING.md) §6.D has the
+procedure. Phase 7A itself needs no further code for it.
+
 ### Phase 7 — MetalFX, natively  · **M–L**
 
-MetalMod owns the device, textures and swapchain, so MetalFX can operate on our own resources
-without interop or presentation conflicts. Shaderpack support is not a prerequisite: validate the
-integration against the vanilla rendering path first, then reuse it for native lighting and RT.
+**7A complete and verified offline (2026-09-25); 7B partially delivered; 7C not implemented.** The
+per-increment record, the evidence and the gaps are in [the Phase 7 plan](docs/phase7-plan.md).
+MetalMod owns the device, textures and swapchain, so MetalFX operates on its own resources with no
+interop and no presentation conflict - which is what the retired MoltenVK design could never do.
 
-Deliver in three increments:
+- **7A — Spatial upscaling. DONE.** Render-resolution presets, a level render target of its own,
+  MetalFX spatial upscaling into the native target, the interface still drawn at native resolution,
+  resize handling, live settings and an F3 line. Verified by a native smoke test, a scaling harness
+  that drives the engine's own `MainTarget` and `FrameGraphBuilder`, a mixin-target check, and pixel
+  assertions in the render check. **Not yet confirmed in game** - see the plan's §2.4 for the six
+  observations that settle it.
+- **7B — Temporal upscaling. Partial.** The native temporal scaler, the mean-centred Halton
+  projection jitter and history reset helpers are implemented; live temporal/reset integration and motion vectors remain outstanding,
+  and without them a temporal filter ghosts camera movement, so the path is gated off rather than
+  enabled. The producer is a motion-vector pass, which is Phase 8C's scene contract.
+- **7C — Frame generation. Not implemented.** Blocked on 7B's motion vectors and on frame-loop
+  pacing; a stub would misrepresent that. What is delivered is the pacing measurement
+  (`presentedTime` intervals, p95, dropped count) that a `CAMetalDisplayLink` pacer is validated
+  against.
 
-- **7A — Spatial upscaling.** Add render-resolution controls and spatial upscaling, keep the HUD at
-  native resolution, handle window resizing, and measure image quality and performance against
-  native-resolution rendering.
-- **7B — Temporal upscaling.** Add projection jitter, motion information and temporal-history
-  lifecycle management, including resets on camera cuts, world changes and resolution changes.
-  Depth reprojection can describe camera motion but is not sufficient for independently moving
-  objects. Validate entities, particles, water and camera movement for ghosting and instability.
-- **7C — Frame generation.** A separate milestone for interpolation and presentation pacing via
-  `CAMetalDisplayLink`. Validate delivery of interpolated frames, hardware/OS capability fallback,
-  frame pacing and input latency; treat latency as a measured tradeoff, not a free performance win.
+**Integration contract:** published and implemented - see the plan's §5. It fixes what the scaler
+reads and writes, the resolution and coordinate conventions, that upscaling sits after everything the
+level draws (including its post chains) and before the interface, that history belongs to the scaler
+alone, and that scale 1.0 allocates nothing.
 
-**Integration contract:** define the scene-colour, depth and motion inputs, their resolution and
-coordinate conventions, and temporal-history ownership. Specify where upscaling/interpolation sits
-relative to post-processing and HUD composition so Phases 8–9 can compose native lighting and RT
-against this contract. Optional pack integration must declare its own temporal-processing ownership.
+**Done when:** spatial and temporal modes render correctly through resizing and history resets, with
+measured quality and performance; frame generation passes its separate pacing and latency checks.
+**7A meets this for spatial** (correctness verified offline, quality and performance measurement
+procedured in TESTING.md §6 but not yet run; no in-game confirmation). Temporal and frame generation
+do not.
 
-**Done when:** spatial and temporal modes render correctly through resizing and history resets,
-with measured quality and performance; frame generation passes its separate pacing and latency
-checks on supported hardware. Unsupported modes fall back cleanly, and the feature-off path retains
-native-resolution rendering.
+**Dependencies:** builds on Phase 5's rendering and presentation foundations. Frame generation is
+independently validated and is not an algorithmic prerequisite for ray tracing; neither is temporal
+upscaling, which is why Phase 8 is not blocked by this phase's remainder.
 
-**Dependencies:** builds on Phase 5's rendering and presentation foundations. Complete Phase 6's
-existing gates before starting this phase. Frame generation is independently validated and is not
-an algorithmic prerequisite for ray tracing.
+**Risks:** owning presentation removed the old interoperability obstacle, but motion correctness and
+temporal reconstruction remain substantial work - which is what 7B and 7C ran into. The measured
+risk that did *not* materialise is the one the roadmap named first: the HUD. Because the level gets
+its own target rather than the engine's being resized, the interface never changes resolution, and
+the scissor-rectangle failure that reverted the pre-Phase-5 attempt cannot occur by construction.
 
-**Risks:** owning presentation removes the old interoperability obstacle, but motion correctness,
-temporal reconstruction and frame generation remain substantial work. Validate each increment
-independently rather than treating all three as a small scaler integration.
+### Anti-aliasing — Temporal first; separate AA optional afterward
+
+Finish Phase 7B Temporal first, bringing forward the current/previous-frame scene contract shared
+with 8C. Temporal combines AA and upscaling, but still needs camera and moving-geometry motion,
+live resource/encode integration, history resets and transparency validation.
+
+[The anti-aliasing plan](docs/antialiasing-plan.md) records the corrected alternatives. Apple recommends
+antialiased input for Spatial, so optional FXAA/SMAA before Spatial is a valid later experiment.
+MSAA adds geometric coverage information, but requires attachment, resolve and depth-path work;
+4× MSAA does not imply fourfold fragment shading or automatically consume the scaling gain.
+Separate AA work is deferred until after Temporal evaluation, and only if time remains.
 
 ### Phase 8 — Native material and lighting foundations  · **M–L**
 
@@ -558,13 +581,20 @@ must not delay Phases 8–9.
 
 ## 7. Immediate next step
 
-**Phase 7 — MetalFX, natively; Phase 8 in parallel for the lighting gaps.** Phase 6 is complete: the
-dynamic-lighting model, its clustered path, its in-game switches and its published light-record ABI
-exist and are exercised in game. What it deliberately leaves behind is named in
-[the Phase 6 plan](docs/phase6-plan.md#phase-6-closed-2026-09-25) — occlusion and linear composition
-to 8B, consumer/ownership to 8, and two uncaptured evidence items (a wall scene and the scaling and
-performance records) that any future session can pick up. The scaling/performance record belongs with
-Phase 8, which is where true GPU timing arrives; until then flat remains the default path.
+**Finish Phase 7B Temporal next, then consider separate AA only if time remains.** Bring forward
+8C's current/previous-frame transform contract for motion vectors; the rest of Phase 8 need not
+finish first. Wire the live temporal path, resets and transparency handling, then compare image
+quality and frame cost against native and Spatial. Retain the outstanding 7A visual checks and
+BUG-029 verification; this scheduling decision does not establish that they passed.
+
+Temporal already includes AA. A later separate AA experiment would primarily improve the Spatial
+fallback if evaluation establishes a need. Frame generation remains separate work.
+
+Phase 6's own carryovers are unchanged and stay named in
+[the Phase 6 plan](docs/phase6-plan.md#phase-6-closed-2026-09-25) - occlusion and linear composition
+to 8B, consumer/ownership to 8, and two uncaptured evidence items (a wall scene and the lighting
+scaling/performance records). Flat remains the default lighting path until the clustered path is
+measured.
 
 ## 8. Verified facts and how to re-verify
 

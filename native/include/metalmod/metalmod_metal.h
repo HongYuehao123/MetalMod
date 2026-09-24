@@ -302,7 +302,12 @@ MMM_API int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool
 /// Acquire the next drawable. On success both out-params are set; the drawable is +1 retained and
 /// the texture is borrowed from it (do NOT release the texture separately).
 /// Returns 0 on success, non-zero on failure.
-MMM_API int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture);
+/// `outPresentTime` and `outPresentInterval` (both optional) report where the drawable the layer just
+/// handed out was previously shown, and the gap since the presentation before it - the pacing
+/// measurement Phase 7C needs. See mmm_present_time in metalmod_metalfx.h for why it is read here
+/// rather than at present time.
+MMM_API int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture,
+                              double* outPresentTime, double* outPresentInterval);
 
 /// Schedule presentation of a previously acquired drawable and release it.
 MMM_API void mmm_layer_present(void* layer, void* drawable);

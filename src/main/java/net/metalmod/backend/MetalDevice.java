@@ -26,6 +26,7 @@ import net.metalmod.lighting.LightSnapshot;
 import net.metalmod.lighting.PointLight;
 
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -570,6 +571,19 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     private static final int TIMING_WINDOW_FRAMES = 60;
 
+    /**
+     * Every frame interval in the current window, for the percentile.
+     *
+     * <p>The mean frame time is not what a player sees: a frame that averages 13 ms while alternating
+     * 8 and 18 is visibly less smooth than one that holds 13, and on a display-paced loop the frames
+     * that miss a refresh are exactly the ones that read as stutter. The percentile is what makes
+     * "it does not feel smooth" measurable instead of arguable.
+     */
+    private static final double[] windowIntervalsMs = new double[TIMING_WINDOW_FRAMES];
+    private static int windowIntervalCount;
+    private static volatile float lastFrameP95Ms;
+    private static volatile float lastFrameMaxMs;
+
     private static int drawsThisFrame;
     private static int commandBuffersThisFrame;
     private static int copiesThisFrame;
@@ -624,13 +638,95 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
+     * A rolling frame count, so the log can report a rate without anyone pressing F3.
+     *
+     * <p>This exists for one measurement: whether the frame is limited by the world's fragment work.
+     * Render scaling only pays off if it is, and the way to tell is to compare the same scene at two
+     * scales - so the number has to be available from a log, repeatedly, without a HUD.
+     */
+    private static final java.util.ArrayDeque<long[]> FRAME_STAMPS = new java.util.ArrayDeque<>();
+
+    private static void noteFrameRate() {
+        long now = System.nanoTime();
+        FRAME_STAMPS.addLast(new long[]{now});
+        // Ten seconds at any plausible rate, and bounded regardless of it.
+        while (FRAME_STAMPS.size() > 4000) {
+            FRAME_STAMPS.pollFirst();
+        }
+        while (!FRAME_STAMPS.isEmpty() && now - FRAME_STAMPS.peekFirst()[0] > 10_000_000_000L) {
+            FRAME_STAMPS.pollFirst();
+        }
+    }
+
+    /** Frames per second over the last ten seconds, or 0 before there is a window to measure. */
+    public static double recentFps() {
+        if (FRAME_STAMPS.size() < 2) return 0.0;
+        long newest = FRAME_STAMPS.peekLast()[0];
+        long oldest = FRAME_STAMPS.peekFirst()[0];
+        double seconds = (newest - oldest) / 1e9;
+        return seconds <= 0.0 ? 0.0 : (FRAME_STAMPS.size() - 1) / seconds;
+    }
+
+    private static long framesThisWindow;
+    private static long windowStartedNanos;
+
+    /**
+     * Publish a frame-rate sample to the log every few seconds.
+     *
+     * <p>Called from the present path because that is where a frame is complete. It reports the rate
+     * over the last ten seconds, the render scale and which upscale path ran, so one log line is
+     * enough to say whether a scale change did anything.
+     */
+    private static void maybeLogFrameRate() {
+        long now = System.nanoTime();
+        framesThisWindow++;
+        if (windowStartedNanos == 0) {
+            windowStartedNanos = now;
+            return;
+        }
+        if (now - windowStartedNanos < 10_000_000_000L) {
+            return;
+        }
+        double elapsed = (now - windowStartedNanos) / 1e9;
+        double fps = framesThisWindow / elapsed;
+        framesThisWindow = 0;
+        windowStartedNanos = now;
+        // The engine's own limiter, and what it is limiting to. A cap that comes from here is
+        // Minecraft's, not Metal's, and it is invisible from the outside: the frame rate simply stops
+        // moving and every resolution change looks like it did nothing.
+        int engineLimit = -1;
+        String engineReason = "?";
+        try {
+            net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
+            if (minecraft != null && minecraft.getFramerateLimitTracker() != null) {
+                engineLimit = minecraft.getFramerateLimitTracker().getFramerateLimit();
+                engineReason = minecraft.getFramerateLimitTracker().getThrottleReason().name();
+            }
+        } catch (Throwable ignored) {
+            // Not on the render thread, or the API moved; the counters below still stand.
+        }
+        System.out.println(String.format(java.util.Locale.ROOT,
+                "[MetalMod] frame rate: %.1f fps over %.1fs | %s | drawable wait %.1f ms | draws %d"
+                        + " | frame %.1f ms p95 %.1f max %.1f | engine limit %d (%s)",
+                fps, elapsed, net.metalmod.metalfx.WorldRenderTarget.describeForLog(),
+                lastAcquireWaitMs, lastFrameDraws, lastFrameMs, lastFrameP95Ms, lastFrameMaxMs,
+                engineLimit, engineReason));
+    }
+
+    /**
      * Close out a frame at present: accumulate the interval, the acquire wait and the command-buffer
      * count into the current timing window and, once the window is full, publish the averages.
      */
     public static void endFrame() {
+        noteFrameRate();
+        maybeLogFrameRate();
         long now = System.nanoTime();
         if (lastFrameNanos != 0L) {
-            frameMsSumInWindow += (now - lastFrameNanos) / 1_000_000.0;
+            double intervalMs = (now - lastFrameNanos) / 1_000_000.0;
+            frameMsSumInWindow += intervalMs;
+            if (windowIntervalCount < windowIntervalsMs.length) {
+                windowIntervalsMs[windowIntervalCount++] = intervalMs;
+            }
         }
         lastFrameNanos = now;
         lastFrameDraws = drawsThisFrame;
@@ -649,6 +745,16 @@ public final class MetalDevice implements GpuDeviceBackend {
 
         if (framesInWindow >= TIMING_WINDOW_FRAMES) {
             lastFrameMs = (float) (frameMsSumInWindow / framesInWindow);
+            // Sorted copy: the window is 60 entries, so this is cheaper than anything cleverer and it
+            // runs once per 60 frames.
+            double[] sorted = java.util.Arrays.copyOf(windowIntervalsMs, windowIntervalCount);
+            java.util.Arrays.sort(sorted);
+            if (sorted.length > 0) {
+                lastFrameMaxMs = (float) sorted[sorted.length - 1];
+                int index = Math.min(sorted.length - 1, (int) Math.ceil(sorted.length * 0.95) - 1);
+                lastFrameP95Ms = (float) sorted[Math.max(0, index)];
+            }
+            windowIntervalCount = 0;
             lastAcquireWaitMs = (float) (acquireWaitMsSumInWindow / framesInWindow);
             lastCommandBuffers = commandBuffersSumInWindow / framesInWindow;
             lastCopies = copiesSumInWindow / framesInWindow;
@@ -676,9 +782,117 @@ public final class MetalDevice implements GpuDeviceBackend {
         return lastAcquireWaitMs;
     }
 
+    /** The 95th-percentile frame interval in the last window; the stutter the mean hides. */
+    public static float lastFrameP95Ms() {
+        return lastFrameP95Ms;
+    }
+
+    /** The longest frame interval in the last window. */
+    public static float lastFrameMaxMs() {
+        return lastFrameMaxMs;
+    }
+
     /** Average render-pass command buffers per frame; a high count is submission overhead. */
     public static long lastCommandBuffers() {
         return lastCommandBuffers;
+    }
+
+    // Presentation pacing (Phase 7C groundwork). Read from the native present path, which is where the
+    // display's own report of when a frame landed is available and nowhere else is: a CPU timer says
+    // when a frame was submitted, not when it was shown.
+    private static long presentFrames;
+    private static long presentUnreported;
+    private static long presentSteady;
+    private static long presentDropped;
+    private static double lastPresentIntervalMs;
+
+    /**
+     * One presented frame's pacing, as the display reported it.
+     *
+     * <p>{@code p95Ms} over a rolling window is the number a pacer is judged by: an average frame
+     * interval says nothing about whether every refresh was filled, and the p95 is where a stall
+     * shows up as a visible hitch.
+     */
+    public record Pacing(long frames, long unreported, long steady, long dropped,
+                         double lastIntervalMs, double p95Ms) {
+        /** Share of reported intervals that did not wait for an extra refresh. */
+        public double steadyFraction() {
+            long reported = steady + dropped;
+            return reported == 0 ? 0.0 : (double) steady / reported;
+        }
+    }
+
+    /** A snapshot of the pacing counters. Never null; the counters are simply zero before any frame. */
+    public static Pacing presentPacing() {
+        return new Pacing(presentFrames, presentUnreported, presentSteady, presentDropped,
+                lastPresentIntervalMs, pacingP95Ms());
+    }
+
+    /**
+     * Fold one presented frame's display time into the pacing counters.
+     *
+     * <p>Called from the surface's present path. A zero interval means the system reported nothing -
+     * a detached layer, or a frame the display has not reached - and is counted rather than treated as
+     * a zero-length frame, which would make the average meaningless.
+     */
+    public static void notePresent(double intervalSeconds) {
+        if (intervalSeconds > 0.0) {
+            presentFrames++;
+            lastPresentIntervalMs = intervalSeconds * 1000.0;
+            pacingIntervals.add(intervalSeconds);
+            if (pacingIntervals.size() > PACING_WINDOW) {
+                pacingIntervals.pollFirst();
+            }
+        }
+    }
+
+    /**
+     * The last few seconds of intervals, for a percentile.
+     *
+     * <p>Bounded on purpose: this is diagnostic output read once per F3 line, and an unbounded history
+     * would make the percentile describe the whole session rather than what is happening now.
+     */
+    private static final java.util.ArrayDeque<Double> pacingIntervals = new java.util.ArrayDeque<>();
+    private static final int PACING_WINDOW = 240;
+
+    /** Reusable destination for the native pacing counters, so F3 does not allocate per frame. */
+    private static MemorySegment presentMetricBuffer;
+
+    /**
+     * Refresh the steady/dropped classification from the native counters.
+     *
+     * <p>The native side owns the classification because it is the side that sees consecutive
+     * presentation times; reading it back through one pooled buffer keeps the F3 line allocation-free.
+     */
+    public static void pollPresentPacing() {
+        if (!MetalNative.presentPacingAvailable()) {
+            return;
+        }
+        try {
+            if (presentMetricBuffer == null) {
+                presentMetricBuffer = java.lang.foreign.Arena.ofAuto()
+                        .allocate(ValueLayout.JAVA_DOUBLE,
+                                MetalNative.PRESENT_METRICS.size());
+            }
+            MetalNative.presentReadReset(presentMetricBuffer);
+            presentSteady = (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 2);
+            presentDropped = (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 3);
+        } catch (Throwable t) {
+            // Diagnostics must never take the frame down; a failed read just leaves the counters.
+            presentMetricBuffer = null;
+        }
+    }
+
+    private static double pacingP95Ms() {
+        if (pacingIntervals.isEmpty()) return 0.0;
+        double[] sorted = new double[pacingIntervals.size()];
+        int i = 0;
+        for (double interval : pacingIntervals) {
+            sorted[i++] = interval;
+        }
+        java.util.Arrays.sort(sorted);
+        int index = Math.min(sorted.length - 1, (int) Math.ceil(sorted.length * 0.95) - 1);
+        return sorted[Math.max(0, index)] * 1000.0;
     }
 
     /** Draw calls encoded in the frame just presented; this is the number that grows underground. */
@@ -983,6 +1197,11 @@ public final class MetalDevice implements GpuDeviceBackend {
 
         System.out.println("[MetalMod] Metal device: " + strings[0]
                 + " | maxTexture=" + maxTexture + " | maxBuffer=" + maxBuffer);
+        // Phase 7: the log names the upscaling switches each session, the way the lighting ones are
+        // named, so a log alone says which path ran rather than leaving it to the F3 line.
+        System.out.println("[MetalMod] upscaling settings: "
+                + net.metalmod.metalfx.RenderScaleSettings.summary()
+                + " | MetalFX " + (net.metalmod.metalfx.MetalFx.available() ? "available" : "unavailable"));
         MetalDevice created = new MetalDevice(device, queue, info);
         ACTIVE = created;
         return created;
@@ -1320,6 +1539,10 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (ACTIVE == this) {
             ACTIVE = null;
         }
+        // Phase 7's render target and its MetalFX scaler are backend resources whose Metal objects are
+        // not Java-reachable, so nothing collects them: without this a device teardown (the offline
+        // tools create several) would leak the scaler and every one of its textures.
+        net.metalmod.metalfx.WorldRenderTarget.close();
         if (this.queue != null && this.queue.address() != 0) {
             MetalNative.queueRelease(this.queue);
         }

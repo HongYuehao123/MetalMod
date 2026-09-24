@@ -4,7 +4,11 @@
   "package": "net.metalmod.mixin",
   "compatibilityLevel": "JAVA_22",
   "client": [
+    "CameraJitterMixin",
+    "GameRendererFrameMixin",
     "GameRendererMixin",
+    "GameRendererScalingMixin",
+    "LevelRendererScalingMixin",
     "LevelExtractorLightMixin",
     "OptionsScreenMetalModMixin",
     "ClientChunkCacheLightMixin",

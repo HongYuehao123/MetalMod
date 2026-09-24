@@ -8,10 +8,12 @@ drawable.
 
 Apple's **MetalFX** upscaling / frame interpolation, native material/lighting foundations and hybrid
 ray tracing are the core later phases. **GLSL shaderpacks are optional future compatibility work**;
-**dynamic lighting** is Phase 6 and is in progress — see
-[docs/phase6-plan.md](docs/phase6-plan.md). Known defects are parked in [bug.md](bug.md).
+**dynamic lighting** is Phase 6 and is complete — see
+[docs/phase6-plan.md](docs/phase6-plan.md) — and **MetalFX spatial upscaling** is Phase 7A, which is
+implemented and verified offline — see [docs/phase7-plan.md](docs/phase7-plan.md). Known defects are
+parked in [bug.md](bug.md).
 
-> ## Current status: the Metal backend renders; Phase 6 dynamic lighting is in progress
+> ## Current status: the Metal backend renders; Phase 6 is complete and Phase 7A is verified offline
 >
 > Minecraft selects the **Metal backend**, creates the device and a `CAMetalLayer`, creates real
 > Metal **textures, views, buffers and samplers**, compiles the engine's shaders
@@ -35,11 +37,21 @@ ray tracing are the core later phases. **GLSL shaderpacks are optional future co
 > `-Dmetalmod.metalBackend=true`. The backend is chosen once at startup, so **restart** after
 > changing it.
 >
-> ## ⚠️ MetalFX is not implemented yet
+> ## MetalFX status: spatial upscaling works, temporal and frame generation do not
 >
-> MetalFX upscaling and frame interpolation return in Phase 7, against the backend's own textures.
-> The retired MoltenVK-interop scalers have been deleted, and the config screen no longer exposes
-> scaling/frame-generation settings that did nothing.
+> **Spatial upscaling (7A) is implemented.** The world renders into a target of its own at a chosen
+> fraction of the window and MetalFX returns it to native, while the interface keeps drawing at
+> native resolution. It is verified offline end to end - native smoke test, a harness that drives the
+> engine's own `MainTarget` and `FrameGraphBuilder`, mixin-target checks, and pixel assertions in the
+> render check - but **no in-game session has confirmed it yet**. The six observations that close it
+> are in [docs/phase7-plan.md](docs/phase7-plan.md) §2.4.
+>
+> **Temporal upscaling (7B) is partial**: the scaler, the projection jitter and the history lifecycle
+> exist and are verified, but nothing publishes motion vectors, and a temporal filter without them
+> ghosts camera movement. The path is therefore gated off, and a `Temporal` request resolves to
+> spatial. **Frame generation (7C) is not implemented** - it needs those same motion vectors plus
+> frame-loop pacing. Nothing here is a stub that does nothing: the retired MoltenVK-interop scalers
+> are deleted, and every control on the Upscaling screen configures the path that runs.
 
 ---
 
@@ -66,6 +78,30 @@ ray tracing are the core later phases. **GLSL shaderpacks are optional future co
   deferred bindings and Metal debug groups.
 - **Presentation.** The engine's render-target colour view is blitted into the drawable with a
   built-in full-screen-triangle MSL pipeline.
+
+### MetalFX spatial upscaling (Phase 7A)
+- **The level gets its own target.** Minecraft draws the level and the interface into one target, and
+  every interface coordinate is in that target's pixels - which is why resizing it breaks the GUI.
+  So the level renders into a second target at `round(native × scale)` and MetalFX returns that to
+  native, leaving the interface drawing where it always did. `GameRenderer.mainRenderTarget()` answers
+  with the scaled target while the level renders and with the engine's own at every other moment.
+- **The upscale is a backend pass.** `mmm_fx_spatial_run` creates its own command buffer, encodes the
+  MetalFX spatial scaler, commits it and releases it - all on the device queue, so it lands behind the
+  passes that wrote the input and ahead of the present. The engine's own encoders are untouched.
+- **Off by default, and the off path is untouched.** At scale 1.0 nothing is allocated, no scaler is
+  created, and the frame is the pre-Phase-7 frame.
+- **Controls**: **Options → MetalMod… → MetalFX Upscaling** (or Mod Menu → MetalMod). The page steps
+  the scale, switches between MetalFX and the plain blit, and reports the live sizes, which path ran,
+  how many frames it has upscaled, and the reason if one failed. It also shows a toast in world when a
+  change lands, so the effect is visible without opening F3. The same settings come from
+  `renderScale` / `upscaler` in `config/metalmod.properties` or
+  `-Dmetalmod.renderScale=0.5 -Dmetalmod.upscaler=spatial`; an in-game choice beats a launch flag,
+  which beats the file.
+- **How to check it works**: pick 75%, and the status line and the toast both name
+  `world <w>x<h> -> native <w>x<h>` while `Upscaled frames` counts up. Press `Native` and the world
+  sharpens again. The one thing to look at hard is the **HUD at 50%** - it must be exactly as sharp
+  as at 100%, because the whole design exists to keep it that way. [TESTING.md](TESTING.md) §6.E is
+  the five-minute pass.
 
 ### F3 debug section
 MetalMod registers a `DebugScreenEntry`, so its status lines appear in the F3 overlay alongside
@@ -124,12 +160,15 @@ These are the reasons the mod is not a drop-in replacement yet.
    heavy underground one. Before that, utility submission batching cut the chunk-mesh upload path's
    cost by 95% per frame, and private storage for render targets measured 9% *slower* and is off by
    default. See [TESTING.md](TESTING.md) for the numbers and the procedure.
-3. **MetalFX / frame generation are not implemented (Phase 7).** They return against the backend's
-   own textures, and frame generation additionally needs a display-link pacer so two drawables land
-   on different refreshes.
-4. **Internal resolution scaling is not implemented.** Shrinking the main render target breaks the
-   GUI layout (scissor rectangles exceed the render area); doing it properly means rendering the
-   world into its own target and upscaling that.
+3. **MetalFX temporal upscaling and frame generation are not implemented (Phase 7B/7C).** Both need
+   motion vectors, which Minecraft 26.2 does not publish; frame generation additionally needs a
+   display-link pacer so two drawables land on different refreshes. Spatial upscaling (7A) is
+   implemented; see [docs/phase7-plan.md](docs/phase7-plan.md).
+4. **Render-resolution scaling is not confirmed in game, and its quality/performance comparison is
+   not measured.** It is implemented against the level's own target - which is what keeps the GUI
+   intact, the failure that reverted the pre-Phase-5 attempt - and verified offline, but a session
+   has not looked at it, and the native-versus-scaled frame-time comparison in
+   [TESTING.md](TESTING.md) §6.D has not been run.
 5. **Indirect draws are no-ops.** `drawIndirect` and `drawIndexedIndirect` are unimplemented, and the
    matching `DeviceFeatures` are reported `false` so the engine never takes those paths. Vanilla is
    unaffected; this is the gap to close before batching mods (e.g. Sodium).
@@ -195,6 +234,12 @@ $JAVA --enable-native-access=ALL-UNNAMED \
 # every vanilla pipeline and every post-processing pass: exits 0 only when all compile
 ./tools/shader_inventory/run.sh        # static 87/87, post 9/9
 
+# every mixin's injection point, resolved against the real client jar (no game launch)
+./tools/mixin_check/run.sh             # MIXIN CHECK PASSED
+
+# Phase 7A end to end, offscreen: the scaled level target, the engine's own frame graph, the upscale
+./tools/scaling_check/run.sh           # SCALING CHECK PASSED
+
 # render real vanilla pipelines offscreen and check the pixels
 # (gui, gui_textured, solid_terrain, entity_cutout, lines, sky fan, blits, multi-draw, scissor,
 #  atlas, mip selection, blending, every blend state vanilla uses, index width/offsets, colour-target limit, lightmap, post-processing, alpha cutout, topologies, texel buffers, write masks, depth copy; 80 assertions)
@@ -227,6 +272,7 @@ MetalMod/
 │   ├── src/
 │   │   ├── metalmod_metal.mm           # The Metal backend's native substrate (device, layer,
 │   │   │                               #  textures, buffers, pipelines, render passes, blit)
+│   │   ├── metalmod_metalfx.mm         # MetalFX spatial/temporal scalers, frame pacing
 │   │   └── metalmod_memory.mm          # UMA pool, Mach VM telemetry, pressure source
 │   └── tests/metal_smoke.mm            # Native smoke test
 ├── scripts/
@@ -236,7 +282,9 @@ MetalMod/
 ├── tools/
 │   ├── shader_repro/run.sh             # Reproduce one shader pair's Metal pipeline offline
 │   ├── shader_inventory/run.sh         # Compile all 87 vanilla pipelines and report pass/fail
-│   └── render_check/run.sh             # Render real pipelines offscreen and check the pixels
+│   ├── render_check/run.sh             # Render real pipelines offscreen and check the pixels
+│   ├── scaling_check/run.sh            # Phase 7A: scaled level target + MetalFX upscale, offscreen
+│   └── mixin_check/run.sh              # Resolve every mixin injection point against the client jar
 ├── src/main/java/net/metalmod/
 │   ├── backend/                        # Metal GpuBackend implementation
 │   ├── client/                         # Fabric entrypoint + Mod Menu config screen
@@ -270,5 +318,27 @@ MetalMod/
 - **F3 overlay**: MetalMod status — the backend the engine selected, the framebuffer resolution, the
   active dynamic-light snapshot count, the static block-source index counters, the environment
   summary when enabled, and the `unbound/missingAttr/failed` health counters.
-- **Config screen**: the Metal backend toggle and the UMA memory option. MetalFX/scaling controls are
-  gone until Phase 7 — they configured a pipeline that no longer exists.
+- **A render-scale change requests a resource reload**, the same one F3+T performs, because the engine
+  caches pipelines and other resources against the frame's shape. It runs between frames.
+- **Anti-aliasing is not implemented.** MetalFX spatial scaling reconstructs edges but does not
+  anti-alias them, and Minecraft has no AA of its own. Three routes and a recommendation are in
+  [docs/antialiasing-plan.md](docs/antialiasing-plan.md); the short version is that MetalFX temporal
+  mode is the right answer and it is waiting on the same motion-vector pass Phase 8C owes.
+- **F10**: flip the render scale between native and your last scaled setting, in place, to compare
+  the F3 `frame` line without moving. The only fair way to judge whether the upscaler costs frames.
+- **F9**: measure what the GPU actually costs — a full-target fill at the render resolution and at
+  native, plus the MetalFX upscale — reported as a toast and in the log. Frame rate cannot answer
+  whether render scaling is worth it on a display-paced frame; this can.
+  See [TESTING.md](TESTING.md) §6.D2.
+
+  Measured in a real session at 5120x2664: **50% runs 13.5 ms / 74 fps against native's 16.9 ms /
+  61 fps** at the same spot. Render scaling saves about 20% of a full-scene frame here, and the
+  upscale itself is inside the noise. Press **F10** to take that comparison yourself - it flips the
+  scale in place so the F3 `frame` line is the only thing that changes.
+- **Config screen**: the Metal backend toggle, the UMA memory option, and two live sub-pages —
+  **Lighting** and **Upscaling**.
+- **Render scale / upscaler**: `-Dmetalmod.renderScale=0.5` and `-Dmetalmod.upscaler=spatial|off`, or
+  the Upscaling page, or `renderScale` / `upscaler` in `config/metalmod.properties`. The scale is the
+  fraction of the window the world renders at (100%, 85%, 75%, 67%, 50%); the upscaler is MetalFX
+  spatial or the backend's own blit. `temporal` is accepted but resolves to spatial, because motion
+  vectors are not published yet.

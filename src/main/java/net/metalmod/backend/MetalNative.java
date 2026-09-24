@@ -56,6 +56,14 @@ public final class MetalNative {
             mhRenderPassSetScissor, mhRenderPassSetViewport, mhRenderPassPushDebugGroup,
             mhRenderPassPopDebugGroup, mhRenderPassDraw, mhRenderPassDrawFan, mhRenderPassDrawIndexed;
 
+    // MetalFX (Phase 7). Bound as optional symbols: a stale dylib without them must leave the
+    // backend able to render, it just cannot upscale.
+    private static MethodHandle mhFxSpatialSupported, mhFxSpatialCreate, mhFxSpatialRelease,
+            mhFxSpatialEncode, mhFxSpatialRun, mhFxSpatialTextureUsage, mhFxLastError,
+            mhFxTemporalSupported, mhFxTemporalCreate, mhFxTemporalRelease, mhFxTemporalEncode,
+            mhFxTemporalDescribe, mhPresentTime, mhPresentReadReset,
+            mhGpuTimeFill, mhGpuTimeUpscale;
+
     static {
         try {
             load();
@@ -114,7 +122,8 @@ public final class MetalNative {
         mhLayerCreateForNsWindow = linker.downcallHandle(symbol(lookup, "mmm_layer_create_for_ns_window"), FunctionDescriptor.of(A, A));
         mhLayerRelease = linker.downcallHandle(symbol(lookup, "mmm_layer_release"), FunctionDescriptor.ofVoid(A));
         mhLayerConfigure = linker.downcallHandle(symbol(lookup, "mmm_layer_configure"), FunctionDescriptor.of(I, A, I, I, B));
-        mhLayerAcquire = linker.downcallHandle(symbol(lookup, "mmm_layer_acquire"), FunctionDescriptor.of(I, A, A, A));
+        mhLayerAcquire = linker.downcallHandle(symbol(lookup, "mmm_layer_acquire"),
+                FunctionDescriptor.of(I, A, A, A, A, A));
         mhLayerPresentClear = linker.downcallHandle(symbol(lookup, "mmm_layer_present_clear"), FunctionDescriptor.of(I, A, A, F, F, F, F));
         mhLayerPresentTexture = linker.downcallHandle(symbol(lookup, "mmm_layer_present_texture"), FunctionDescriptor.of(I, A, A, A));
         mhLayerSetPresentQueue = linker.downcallHandle(symbol(lookup, "mmm_layer_set_present_queue"), FunctionDescriptor.ofVoid(A));
@@ -182,6 +191,35 @@ public final class MetalNative {
         mhRenderPassDraw = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw"), FunctionDescriptor.ofVoid(A, I, I, I, I, I));
         mhRenderPassDrawFan = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_fan"), FunctionDescriptor.ofVoid(A, I, I, I, I));
         mhRenderPassDrawIndexed = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_indexed"), FunctionDescriptor.ofVoid(A, I, A, L, I, I, I, I, I, I));
+
+        // MetalFX. Every one of these is optional so that a dylib built before Phase 7 still lets the
+        // backend render; MetalFx.isAvailable() then reports false and the backend keeps its own path.
+        mhFxSpatialSupported = optional(lookup, linker, "mmm_fx_spatial_supported", FunctionDescriptor.of(B, A, L, L));
+        mhFxSpatialCreate = optional(lookup, linker, "mmm_fx_spatial_create",
+                FunctionDescriptor.of(A, A, L, L, I, I, I, I, I));
+        mhFxSpatialRelease = optional(lookup, linker, "mmm_fx_spatial_release", FunctionDescriptor.ofVoid(A));
+        mhFxSpatialEncode = optional(lookup, linker, "mmm_fx_spatial_encode", FunctionDescriptor.of(I, A, A, A, A, I, I));
+        mhFxSpatialRun = optional(lookup, linker, "mmm_fx_spatial_run", FunctionDescriptor.of(I, A, A, A, A));
+        mhFxSpatialTextureUsage = optional(lookup, linker, "mmm_fx_spatial_texture_usage", FunctionDescriptor.of(B, A, A, A));
+        mhFxLastError = optional(lookup, linker, "mmm_fx_last_error", FunctionDescriptor.of(A));
+        mhFxTemporalSupported = optional(lookup, linker, "mmm_fx_temporal_supported",
+                FunctionDescriptor.of(B, A, L, L, L, L));
+        mhFxTemporalCreate = optional(lookup, linker, "mmm_fx_temporal_create",
+                FunctionDescriptor.of(A, A, L, L, L, L, I, I, I, I, B, B, F, F, B, L, B));
+        mhFxTemporalRelease = optional(lookup, linker, "mmm_fx_temporal_release", FunctionDescriptor.ofVoid(A));
+        mhFxTemporalEncode = optional(lookup, linker, "mmm_fx_temporal_encode",
+                FunctionDescriptor.of(I, A, A, A, A, A, A, F, F, B));
+        mhFxTemporalDescribe = optional(lookup, linker, "mmm_fx_temporal_describe",
+                FunctionDescriptor.of(B, A, A, A, A, A, A, A));
+        mhPresentTime = optional(lookup, linker, "mmm_present_time", FunctionDescriptor.of(D, A));
+        mhPresentReadReset = optional(lookup, linker, "mmm_present_read_reset", FunctionDescriptor.of(I, A, I));
+        mhGpuTimeFill = optional(lookup, linker, "mmm_gpu_time_fill", FunctionDescriptor.of(D, A, A, I));
+        mhGpuTimeUpscale = optional(lookup, linker, "mmm_gpu_time_upscale", FunctionDescriptor.of(D, A, A, A, A, I));
+    }
+
+    private static MethodHandle optional(SymbolLookup lookup, Linker linker, String name,
+                                         FunctionDescriptor descriptor) {
+        return lookup.find(name).map(s -> linker.downcallHandle(s, descriptor)).orElse(null);
     }
 
     private static MemorySegment symbol(SymbolLookup lookup, String name) {
@@ -270,11 +308,26 @@ public final class MetalNative {
     }
     public static void layerRelease(MemorySegment layer) { v(mhLayerRelease, layer); }
     public static int layerConfigure(MemorySegment layer, int w, int h, boolean vsync) { return i(mhLayerConfigure, layer, w, h, vsync); }
-    public static MemorySegment[] layerAcquire(MemorySegment layer) {
+    /**
+     * Take the next drawable.
+     *
+     * <p>Returns {@code {drawable, texture, presentTimeSeconds, presentIntervalSeconds}}, where the
+     * last two describe where this drawable was previously shown. They are read here because the
+     * present path consumes the drawable, so this is the last moment it can be asked - see
+     * {@link #presentTimeAtAcquire}.
+     */
+    public static Object[] layerAcquire(MemorySegment layer) {
         try (Arena a = Arena.ofConfined()) {
             MemorySegment d = a.allocate(ValueLayout.ADDRESS), t = a.allocate(ValueLayout.ADDRESS);
-            if (i(mhLayerAcquire, layer, d, t) != 0) return new MemorySegment[]{MemorySegment.NULL, MemorySegment.NULL};
-            return new MemorySegment[]{d.get(ValueLayout.ADDRESS, 0), t.get(ValueLayout.ADDRESS, 0)};
+            MemorySegment presentTime = a.allocate(ValueLayout.JAVA_DOUBLE);
+            MemorySegment interval = a.allocate(ValueLayout.JAVA_DOUBLE);
+            if (i(mhLayerAcquire, layer, d, t, presentTime, interval) != 0) {
+                return new Object[]{MemorySegment.NULL, MemorySegment.NULL, 0.0, 0.0};
+            }
+            return new Object[]{
+                    d.get(ValueLayout.ADDRESS, 0), t.get(ValueLayout.ADDRESS, 0),
+                    presentTime.get(ValueLayout.JAVA_DOUBLE, 0),
+                    interval.get(ValueLayout.JAVA_DOUBLE, 0)};
         }
     }
     public static int layerPresentClear(MemorySegment layer, MemorySegment drawable, float r, float g, float b, float a) {
@@ -668,6 +721,256 @@ public final class MetalNative {
                     instanceCount, firstIndex, baseVertex, firstInstance);
         } catch (Throwable t) {
             throw ffiFailure(t);
+        }
+    }
+
+    // MetalFX ------------------------------------------------------------------------------------
+
+    /** Whether the dylib exports the MetalFX surface at all. */
+    public static boolean metalFxAvailable() {
+        return available && mhFxSpatialCreate != null && mhFxSpatialEncode != null
+                && mhFxSpatialRelease != null;
+    }
+
+    public static boolean fxTemporalAvailable() {
+        return metalFxAvailable() && mhFxTemporalCreate != null && mhFxTemporalEncode != null;
+    }
+
+    public static boolean fxSpatialSupported(MemorySegment device, long colorFormat, long outputFormat) {
+        if (mhFxSpatialSupported == null) return false;
+        ffiCalls++;
+        try {
+            return (boolean) mhFxSpatialSupported.invokeExact(device, colorFormat, outputFormat);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static MemorySegment fxSpatialCreate(MemorySegment device, long colorFormat, long outputFormat,
+            int inputWidth, int inputHeight, int outputWidth, int outputHeight, int colorProcessingMode) {
+        ffiCalls++;
+        try {
+            return (MemorySegment) mhFxSpatialCreate.invokeExact(device, colorFormat, outputFormat,
+                    inputWidth, inputHeight, outputWidth, outputHeight, colorProcessingMode);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void fxSpatialRelease(MemorySegment scaler) {
+        if (mhFxSpatialRelease == null || isNull(scaler)) return;
+        ffiCalls++;
+        try {
+            mhFxSpatialRelease.invokeExact(scaler);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static int fxSpatialEncode(MemorySegment scaler, MemorySegment commandBuffer,
+            MemorySegment colorTexture, MemorySegment outputTexture, int contentWidth, int contentHeight) {
+        ffiCalls++;
+        try {
+            return (int) mhFxSpatialEncode.invokeExact(scaler, commandBuffer, colorTexture, outputTexture,
+                    contentWidth, contentHeight);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static boolean fxSpatialRunAvailable() {
+        return mhFxSpatialRun != null;
+    }
+
+    private static long fxSpatialRuns;
+
+    /** How many upscales this process has run, counted where the run happens. */
+    public static long fxSpatialRunCount() {
+        return fxSpatialRuns;
+    }
+
+    /**
+     * Run one upscale as a self-contained step on `queue`: the native side creates its own command
+     * buffer, encodes, commits and releases it. Returns 0 on success.
+     */
+    public static int fxSpatialRun(MemorySegment scaler, MemorySegment queue,
+            MemorySegment sourceTexture, MemorySegment targetTexture) {
+        if (mhFxSpatialRun == null) return -1;
+        ffiCalls++;
+        try {
+            int status = (int) mhFxSpatialRun.invokeExact(scaler, queue, sourceTexture, targetTexture);
+            if (status == 0) fxSpatialRuns++;
+            return status;
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    /** Presentation-pacing metric order, matching MMMPresentMetric. */
+    public static final java.util.List<String> PRESENT_METRICS = java.util.List.of(
+            "frames", "unreported", "steady", "dropped");
+
+    public static boolean presentPacingAvailable() {
+        return available && mhPresentTime != null && mhPresentReadReset != null;
+    }
+
+    /**
+     * How long a full-target fill actually takes on the GPU, in milliseconds, fenced.
+     *
+     * <p>Negative when it could not be measured. This is the cheapest write there is, so the number is
+     * a floor on what a pass over that many pixels costs - which is what makes it able to say whether
+     * render scaling has anything to save.
+     */
+    public static double gpuTimeFill(MemorySegment queue, MemorySegment texture, int passes) {
+        if (mhGpuTimeFill == null || isNull(texture)) return -1.0;
+        ffiCalls++;
+        try {
+            return (double) mhGpuTimeFill.invokeExact(queue, texture, passes);
+        } catch (Throwable t) {
+            return -1.0;
+        }
+    }
+
+    /**
+     * How long a MetalFX spatial upscale takes, in milliseconds, fenced.
+     *
+     * <p>Takes the device rather than a raw scaler handle because the scaler belongs to the world
+     * target; see WorldRenderTarget.gpuTimeUpscale.
+     */
+    public static double gpuTimeUpscale(MemorySegment scaler, MemorySegment queue,
+            MemorySegment source, MemorySegment target, int passes) {
+        if (mhGpuTimeUpscale == null || isNull(scaler)) return -1.0;
+        ffiCalls++;
+        try {
+            return (double) mhGpuTimeUpscale.invokeExact(scaler, queue, source, target, passes);
+        } catch (Throwable t) {
+            return -1.0;
+        }
+    }
+
+    /** How many present-time reads have been recorded; for diagnostics. */
+    public static boolean presentPacingActive() {
+        return presentPacingAvailable();
+    }
+
+    /** Read and clear the pacing counters, into a caller-owned buffer of PRESENT_METRICS.size(). */
+    public static void presentReadReset(MemorySegment destination) {
+        if (mhPresentReadReset == null) return;
+        try {
+            int count = (int) mhPresentReadReset.invokeExact(destination, PRESENT_METRICS.size());
+            if (count != PRESENT_METRICS.size()) {
+                throw new IllegalStateException("Present-pacing ABI mismatch");
+            }
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    /**
+     * The usage bits MetalFX requires of the scaler's input and output textures, packed as two
+     * 32-bit values in a 2-element long array {colorUsage, outputUsage}. Returns null when the
+     * scaler is missing, which the caller reports as "no scaler".
+     */
+    public static long[] fxSpatialTextureUsage(MemorySegment scaler) {
+        if (mhFxSpatialTextureUsage == null || isNull(scaler)) return null;
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment color = a.allocate(ValueLayout.JAVA_INT);
+            MemorySegment output = a.allocate(ValueLayout.JAVA_INT);
+            ffiCalls++;
+            boolean ok = (boolean) mhFxSpatialTextureUsage.invokeExact(scaler, color, output);
+            if (!ok) return null;
+            return new long[]{Integer.toUnsignedLong(color.get(ValueLayout.JAVA_INT, 0)),
+                    Integer.toUnsignedLong(output.get(ValueLayout.JAVA_INT, 0))};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** MetalFX's own message for the most recent failure; empty when the last call succeeded. */
+    public static String fxLastError() {
+        if (mhFxLastError == null) return "";
+        try {
+            MemorySegment p = addr(mhFxLastError);
+            if (isNull(p)) return "";
+            return p.reinterpret(512).getString(0);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    public static boolean fxTemporalSupported(MemorySegment device, long colorFormat, long depthFormat,
+            long motionFormat, long outputFormat) {
+        if (mhFxTemporalSupported == null) return false;
+        ffiCalls++;
+        try {
+            return (boolean) mhFxTemporalSupported.invokeExact(device, colorFormat, depthFormat,
+                    motionFormat, outputFormat);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static MemorySegment fxTemporalCreate(MemorySegment device, long colorFormat, long depthFormat,
+            long motionFormat, long outputFormat, int inputWidth, int inputHeight,
+            int outputWidth, int outputHeight, boolean depthReversed,
+            boolean dynamicResolution, float minScale, float maxScale,
+            boolean reactiveMask, long maskFormat, boolean jitteredMotion) {
+        ffiCalls++;
+        try {
+            return (MemorySegment) mhFxTemporalCreate.invokeExact(device, colorFormat, depthFormat,
+                    motionFormat, outputFormat, inputWidth, inputHeight, outputWidth, outputHeight,
+                    depthReversed, dynamicResolution, minScale, maxScale, reactiveMask, maskFormat,
+                    jitteredMotion);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void fxTemporalRelease(MemorySegment scaler) {
+        if (mhFxTemporalRelease == null || isNull(scaler)) return;
+        ffiCalls++;
+        try {
+            mhFxTemporalRelease.invokeExact(scaler);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static int fxTemporalEncode(MemorySegment scaler, MemorySegment commandBuffer,
+            MemorySegment colorTexture, MemorySegment depthTexture, MemorySegment motionTexture,
+            MemorySegment outputTexture, float jitterX, float jitterY, boolean reset) {
+        ffiCalls++;
+        try {
+            return (int) mhFxTemporalEncode.invokeExact(scaler, commandBuffer, colorTexture, depthTexture,
+                    motionTexture, outputTexture, jitterX, jitterY, reset);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    /** {depthReversed, dynamicResolution, minScale, maxScale, reactiveMask, jitteredMotion} or null. */
+    public static Object[] fxTemporalDescribe(MemorySegment scaler) {
+        if (mhFxTemporalDescribe == null || isNull(scaler)) return null;
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment depthReversed = a.allocate(ValueLayout.JAVA_BOOLEAN);
+            MemorySegment dynamic = a.allocate(ValueLayout.JAVA_BOOLEAN);
+            MemorySegment minScale = a.allocate(ValueLayout.JAVA_FLOAT);
+            MemorySegment maxScale = a.allocate(ValueLayout.JAVA_FLOAT);
+            MemorySegment reactive = a.allocate(ValueLayout.JAVA_BOOLEAN);
+            MemorySegment jittered = a.allocate(ValueLayout.JAVA_BOOLEAN);
+            ffiCalls++;
+            boolean ok = (boolean) mhFxTemporalDescribe.invokeExact(scaler, depthReversed, dynamic,
+                    minScale, maxScale, reactive, jittered);
+            if (!ok) return null;
+            return new Object[]{
+                    depthReversed.get(ValueLayout.JAVA_BOOLEAN, 0),
+                    dynamic.get(ValueLayout.JAVA_BOOLEAN, 0),
+                    minScale.get(ValueLayout.JAVA_FLOAT, 0),
+                    maxScale.get(ValueLayout.JAVA_FLOAT, 0),
+                    reactive.get(ValueLayout.JAVA_BOOLEAN, 0),
+                    jittered.get(ValueLayout.JAVA_BOOLEAN, 0)};
+        } catch (Throwable t) {
+            return null;
         }
     }
 }

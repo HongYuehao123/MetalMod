@@ -8,6 +8,197 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-029 — The sky is brighter and less saturated at a render scale below 100%
+
+**Status:** **FIX ATTEMPTED, awaiting in-game confirmation.** A resource reload after the scale change is
+requested; the reasoning and the evidence for it are below.
+**Severity:** cosmetic but conspicuous. The sky is the largest smooth field on screen, so a shift there
+is more visible than the same shift anywhere else.
+
+### Symptom
+
+At 50% render scale with MetalFX spatial, the sky comes out brighter and less saturated than at native
+resolution. Measured in one session at one spot, by the F10 frame sampler reading the presented frame:
+
+| Sample point | Native | 50% + MetalFX | Difference |
+|---|---|---|---|
+| sky-top | 163 175 203 | 183 190 203 | +20, +15, 0 |
+| sky-left | 162 175 204 | 183 191 204 | +21, +16, 0 |
+| sky-right (pure sky) | 129 169 255 | 192 216 255 | **+63, +47, 0** |
+| ground | 212 115 167 | 211 116 166 | −1 |
+
+Green and blue rise while **red stays within a unit**, which is why it reads as "grey"; the terrain at
+the same sample point is unchanged.
+
+### What has been ruled out
+
+The scaler is not filtering the colour wrongly. Offscreen, through the real MetalFX effect:
+
+| Input | Result |
+|---|---|
+| flat sky blue (120 167 255), grass green, stone grey | **exact**, delta 0 on every channel |
+| a smooth blue-to-pale ramp, 128x128 to 256x256 | mean shifts by **0.4** |
+| the same ramp with a ±1 LSB checkerboard dither on it | mean shifts by **0.4** |
+
+A reconstruction filter cannot be blamed for a mean shift when it does not shift any mean. It is also
+worth noting the ratio here is exactly 2x, which is the scaler's most favourable case.
+
+### What is established
+
+The difference is in what the frame **contains before the upscale**, so it is resolution-dependent
+rendering rather than the effect. The sky is drawn by `core/sky`, whose fragment shader is
+`apply_fog(ColorModulator, ...)` against the `Fog` block, so the prime suspect is something in the sky
+or fog path that reads the render area or viewport rather than the window - the two differ only when
+scaling is on.
+
+### How to reproduce
+
+1. Stand with sky and ground both in view.
+2. F3 open, press F10, wait five seconds, press F10 again.
+3. Compare the `frame sample` lines for `sky-right`: the difference is tens of units.
+
+### What an offscreen reproduction could not do
+
+Drawing the real `core/sky` pipeline at two target sizes was attempted in `tools/render_check` and then
+removed. Two problems, both fatal to it as a check:
+
+1. The sky's own geometry is a large dome on the far plane, and the fragment colour is
+   `apply_fog(...)`. A synthetic quad with the sky's fog on saturates to a constant at both sizes - a
+   comparison between two identical white fields, which is a check that cannot fail. With the fog off it
+   compares the projection and viewport only, and those agree, which rules out one hypothesis and does
+   not explain the symptom.
+2. Comparing means wastes the signal. The defect is **red unchanged while green and blue rise**, and on
+   a synthetic field there is no reason for that asymmetry to appear even if the cause were present.
+
+The lesson worth keeping: a check whose output is a constant is worse than no check, because it reads
+as evidence. What this needs is the real frame, which is what the F10 sampler already reads.
+
+### The evidence that identified it
+
+**Toggling the render scale causes it, and F3+T fixes it.** That single observation is worth more than
+the offscreen work above, because a resource reload is a specific, named operation: the engine clears
+its pipeline cache and recompiles every static pipeline (`ShaderManager.reload` calls
+`GpuDevice.clearPipelineCache` and then recompiles). So a pipeline compiled while the render target was
+a different size is replaced by the reload, and the colour it produced goes with it.
+
+The reload also refreshes textures and resource-backed state, so it is not certain that the pipeline
+cache was the *only* stale thing - which is an argument for doing the reload rather than for guessing
+further.
+
+### The fix
+
+`WorldRenderTarget.refresh` detects a change in the render-scale **setting** - as opposed to a window
+resize, which was never implicated - and asks the engine for a resource reload through
+`Minecraft.delayTextureReload`, which runs it on the main thread between frames rather than inside one.
+Requested once per change, not per frame.
+
+Both halves of what the reload does are also done directly where they are cheap: the frame hook that
+rebuilds the target invalidates the compiled pipelines on the rebuild signal, so the correct pipelines
+are in place even before the reload completes.
+
+### If it does not fix it
+
+Fall back to this measurement: compare the **world target before the upscale** against the main target
+after it, in the same frame, on the same scene. That splits the remaining possibilities in one
+measurement:
+
+- the two agree in the sky region &rarr; the difference is introduced by the upscale after all, and the
+  synthetic tests were measuring the wrong input;
+- they already differ &rarr; the scaled pass renders the sky differently, and the next place to look is
+  the uniform values the engine sets for that pass - fog distances and the projection among them -
+  which are the only inputs that change between the two.
+
+The sampler needs one addition for this: reading the world target's sky strip alongside the main
+target's, in the same sample.
+
+---
+
+## BUG-026 — The render-scale predicate answered "on" at native scale
+
+**Status:** **FIXED** (Phase 7A) — found and fixed by `tools/scaling_check` before any in-game run.
+**Severity:** high had it shipped. The default configuration would have taken the scaling path.
+
+### Symptom
+
+`RenderScaleSettings.active()` reported `true` at a render scale of exactly 1.0.
+
+### Cause
+
+The predicate was expressed in terms of the scaled *dimension*:
+
+```java
+return scaledSize(1) != 1 || scaledSize(0) != 0;
+```
+
+`scaledSize` clamps its result to at least one pixel, so `scaledSize(1)` is `1` at every scale and
+`scaledSize(0)` is also `1` — the first term is always false and the second always true. The
+predicate was a constant.
+
+Nothing in the feature was wrong; the entry condition was. Had it shipped, every frame at the default
+setting would have allocated a second render target the size of the first, filled it with a copy of
+the frame and blitted it back — the feature-off path the roadmap requires to be untouched.
+
+### Fix
+
+`active()` now tests the scale itself (`renderScale() != 1.0`), and `scaledSize`'s clamping is
+documented as a pixel-count rule rather than a proxy for "is scaling on". `tools/scaling_check`
+asserts the predicate's answer in both directions, which is what caught it.
+
+---
+
+## BUG-027 — The Halton jitter sequence does not average to zero
+
+**Status:** **FIXED** (Phase 7B) — found by `tools/scaling_check`, fixed before the path was usable.
+**Severity:** would have been a slow visual defect, not a crash: a permanently drifting image.
+
+### Symptom
+
+Over one sixteen-frame cycle, the projection jitter summed to `-0.469` on the x axis and `-0.593` on
+y rather than to zero.
+
+### Cause
+
+The sequence was generated as `halton(i, base) - 0.5`, on the common assumption that a Halton sequence
+is centred. It is centred in the limit; a **finite prefix** is not. Over sixteen samples the base-2
+axis sums to `+0.47`, so subtracting `0.5` leaves a net offset of `-0.03` per frame — a sub-pixel bias
+that accumulates into a visible drift over a session.
+
+### Fix
+
+The prefix mean is measured and subtracted instead of assumed: the constants are centred by
+construction. The check asserts the sum over the cycle rather than sampling one offset, because a
+single offset looks perfectly reasonable either way.
+
+---
+
+## BUG-028 — A frame with no level in it would have cleared the wrong target
+
+**Status:** **FIXED** (Phase 7A) — found by inspection while wiring the redirect; no in-game run yet.
+**Severity:** high. The main menu, the loading screen and any interface-only frame would have shown
+the previous frame's contents behind them.
+
+### Symptom
+
+None observed. The defect is in the shape of the redirect rather than in an outcome: the frame's
+opening `clearColorAndDepthTextures` is split so the colour goes to the scaled level target and the
+depth to the engine's own, and that split is only correct when the frame is about to draw a level.
+
+### Cause
+
+The split was applied whenever the redirect was configured. The engine's clear runs *before* it
+decides whether to draw a level, so on a frame that draws only the interface — the main menu, the
+loading screen, the pause background with no world — the colour went to a target nothing would read,
+and the native target kept the previous frame. The interface then drew over stale pixels.
+
+### Fix
+
+`GameRendererFrameMixin` records the engine's own three-term decision
+(`isGameLoadFinished() && renderLevel && level != null`) at the head of the frame, before the clear,
+and the split is conditional on it. `tools/scaling_check` asserts both states of that flag; a frame
+with no level takes the engine's clear unchanged.
+
+---
+
 ## BUG-025 — Inventory player preview is upside down, and the item icons vanished
 
 **Status:** **FIXED** (Phase 5) — **confirmed in game**. The player preview is upright and the

@@ -37,12 +37,26 @@ Run all five; they are the cheap, deterministic checks.
 | `./scripts/build_mod.sh` | `SUCCESS -> build/libs/metalmod-1.0.0.jar` |
 | `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
-| `./tools/render_check/run.sh` | `RENDER CHECK PASSED` |
+| `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 assertions) |
+| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (47 checks) |
+| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (58 checks) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
 The standalone runner needs the client classpath; `build_mod.sh` prints the exact command. The
 shader tools and render check also accept an instance directory as an argument or via
 `METALMOD_MC_INSTANCE`.
+
+The last two were added in Phase 7 and are worth knowing about:
+
+- **`scaling_check`** drives Phase 7A's real machinery offscreen: the engine's own `MainTarget` and
+  `FrameGraphBuilder`, the redirect's two states, the MetalFX upscale over a real draw, the resize
+  path, the release when the scale returns to 1.0, and the jitter sequence's centring. It is the only
+  offline gate that would catch a break in the *shape* of the scaling frame.
+- **`mixin_check`** resolves every mixin's target class, `@Inject`/`@Redirect` method, `@Shadow` member
+  and `@At` descriptor against the real client jar, without launching. `defaultRequire: 0` means a hook
+  that names a method the client no longer has fails *quietly* - the feature it drives simply does
+  nothing - so this is the cheap guard against the class of defect that has cost this project the most
+  time. It cannot prove an injection applies, only that everything it names exists.
 
 Useful one-off: print the generated MSL for a shader pair, or all of them, by adding
 `-Dmetalmod.dumpMsl=<substring>` (or `=all`).
@@ -671,7 +685,219 @@ counters usually say which part disagreed.
 
 ---
 
-## 6. Troubleshooting
+## 6. Phase 7 render scaling and upscaling
+
+Phase 7A has no in-game confirmation yet. This section is what closes it: the wiring check, the
+visual check, and the native-versus-scaled measurement the roadmap's exit criterion asks for. Nothing
+here needs code changes.
+
+### The entry point
+
+**Options → MetalMod… → MetalFX Upscaling**, or Mod Menu → MetalMod → *MetalFX Upscaling: …*.
+
+The page is a control panel rather than a list of switches, because the questions a render-scale
+setting raises are about the frame, not about the setting:
+
+| Control | What it does |
+|---|---|
+| **Render scale `-` / `+` / Native** | Steps through 100% / 85% / 75% / 67% / 50%. `-` renders fewer pixels (faster, softer), `+` more (sharper, slower), `Native` turns scaling off |
+| **Upscaler** | `MetalFX spatial` or `Blit (no MetalFX)`. Blit is a real choice: it isolates "is the smaller resolution what saved the time" from "is MetalFX contributing anything" |
+| **Temporal** | Shown unavailable, with the reason. Temporal needs motion vectors the level does not publish yet, so it runs spatial instead - a disabled row with a reason is a fact about the phase; a hidden row reads as a feature that was never written |
+| **Show change notice** | An in-world toast naming the resolution the next frame will use. On by default: without it the only confirmation is F3, which does not say *when* a change landed |
+| **Live status** | What is actually happening, refreshed every frame |
+
+The live status is the part worth reading, because every number comes from the running frame rather
+than from a setting:
+
+```
+Renderer: Metal   Scale: 50%   World: 1280x666 -> native 2560x1332   Upscaled frames: 412
+```
+
+If it says **`blit fallback: N`** instead, MetalFX declined and the reason is on the page. If it says
+**`FAILED: N`**, the reason is there too. A page that restated the settings would look identical
+whether the feature worked or not, which is the failure this display exists to make impossible.
+
+### A. Wiring, once
+
+Launch with `-Dmetalmod.renderScale=0.5` (or set it on **Options → MetalMod… → MetalFX Upscaling**),
+with the Metal backend on. The log should name the target it built:
+
+```
+[MetalMod] render scale 0.50: world renders at <w>x<h>, upscaled to <w>x<h>
+[MetalMod] MetalFX spatial scaler: <w>x<h> -> <w>x<h> (colour mode 0)
+```
+
+F3's `[MetalMod] upscale` line reports the sizes, which path ran (`fx` for MetalFX, `blit` for the
+fallback) and a failure count with its reason. **`blit` counting up instead of `fx` is not a crash** -
+it is the fallback, and the reason is on the line.
+
+### B. The observation that matters most
+
+**The interface must not move.** This is the whole reason the level has its own target, and it is the
+failure that reverted the pre-Phase-5 attempt at scaling. At 50%, with the world visible:
+
+1. Open the inventory and the pause menu. Every panel, tooltip and text position must be identical to
+   what 100% produces - same place, same size, same crispness.
+2. Move the mouse across the hotbar and read the F3 line: text must be as sharp as at 100%.
+3. Resize the window, then toggle fullscreen. Nothing may shift, and no `Scissor ... out of bounds`
+   may appear in the log.
+
+If any of that fails, the redirect is leaking into the interface path and the log line to look for is
+a `render target ... yFlip` or a scissor complaint.
+
+### C. The world
+
+At 50% the terrain is genuinely softer - that is the trade, not a defect. What is a defect:
+
+- **Misalignment**: a block edge or the horizon offset from where the crosshair says it is.
+- **Stretching**: the aspect ratio wrong after a resize.
+- **A frozen or missing world** with the interface drawn over it - the case the conditional colour
+  split exists for. Open and close a menu over the world and check the world is still there.
+- **Ghosting on camera movement** at `Temporal`: temporal is gated off, so this must not happen at all.
+  If it does, the gate is broken.
+
+### D. The measured comparison
+
+The roadmap asks for image quality and performance against native-resolution rendering. Take it as a
+pair of routed captures, F8 on one route, the same scene and settings, with only the render scale
+differing:
+
+| Run | Scale | Upscaler |
+|---|---|---|
+| 1 (baseline) | 1.0 | n/a |
+| 2 | 0.75 | spatial |
+| 3 | 0.5 | spatial |
+
+Use the F7/F8 route procedure in §3 so the two captures are comparable, and record: mean frame time,
+p95, the F3 `pacing` line's last interval and p95, and the `upscale` line's `fx` count. What the
+comparison has to answer is whether the frame time falls by roughly the fraction of pixels removed -
+0.75 should be in the region of a quarter faster, 0.5 in the region of twice as fast - and if it does
+not, whether the world is GPU-bound at all. A capture that shows no gain at 0.5 says the frame is not
+limited by the world's fragment work, which is itself the answer.
+
+Expect the interface to become a *larger* share of the frame as the scale drops, since it never
+shrinks - at 0.5 the HUD can plausibly be the most expensive thing on screen.
+
+### D2. Why a frame rate cannot answer "is scaling worth it"
+
+A display paces the frame at its refresh rate. Once the loop is display-paced, the frame rate stops
+moving long before the GPU is saturated, so *"the frame rate did not improve"* is equally consistent
+with **the GPU is idle** and **the GPU is maxed out** - and those two want opposite decisions about
+render scaling. This is not a hypothesis; it is what the reference machine did: at 100%, 75% and 50%
+scale it held 60-64 fps with a quarter of the pixels, because the display offers only 30 and 60 Hz.
+
+**Press F9 in game** to measure the work instead of the rate. It times, with the GPU synchronised:
+
+- a full-target fill at the render resolution and at native resolution - the cheapest write there is,
+  so a floor on what a pass over that many pixels costs;
+- the MetalFX upscale itself.
+
+It reports both as a toast and in the log, with a verdict. Measured offscreen on the reference machine
+(Apple M4 Pro, 5120x2664), which is what `tools/scaling_check` prints:
+
+| Scale | Target | Full-target fill | MetalFX upscale |
+|---|---|---:|---:|
+| 100% | 5120x2664 | 2.03 ms (cold) | - |
+| 75% | 3840x1998 | 0.35 ms | 1.64 ms |
+| 50% | 2560x1332 | 0.13 ms | 1.49 ms |
+
+**How to read it.** A fill is the *floor* on a pass's cost, not a prediction - real terrain shades far
+more than it fills, so these numbers bound the effect but do not measure it. They are also measured
+with the engine's own target and no scene: a real frame is where the question actually gets settled.
+
+### Measured in a real session
+
+The same spot in one world, **F10** toggled between the two, F3 open. This is the measurement the
+feature should be judged on:
+
+| Setting | Frame time | FPS | Drawable wait | Draws |
+|---|---:|---:|---:|---:|
+| 50% + MetalFX spatial | **13.5 ms** | 74.4 | 4.7 ms | 6718 |
+| 100% native | **16.9 ms** | 61.2 | 8.5 ms | 6597 |
+
+**Render scaling saves 3.4 ms of a 16.9 ms frame - about 20%, and 74 fps against 61.** The drawable
+wait falls by 3.8 ms, which is more than the frame time does: the extra 3.4 ms is real rendering work
+that was being hidden behind the display's pacing, and the upscale itself is inside the noise.
+
+Two things follow, and they are the opposite of what an earlier reading of the offscreen numbers
+suggested:
+
+1. **The GPU is the limit at native resolution in a full scene.** At 50% the frame becomes
+   CPU-limited instead - the next gain has to come from draw and pass cost, not from pixels.
+2. **The cost probe's floor was misleading on its own.** A clear is not a terrain pass; a scene heavy
+   in overdraw costs far more per pixel than a fill does, which is why the in-scene comparison and not
+   the offscreen one is the number to quote.
+
+The earlier offscreen table stays in this document because it is the reason the probe exists, and
+because it is a caution: a cheap proxy for a pass's cost can point the wrong way.
+
+### D3. The comparison that settles it: F10
+
+The frame time depends far more on where you are standing than on anything render scaling does, so two
+sessions - or two positions - cannot be compared. **F10 flips the render scale between native and the
+last scaled setting, in place**, and says which way it went on the action bar. With F3 open, the `frame`
+line is then two readings a second apart in one spot:
+
+| What you see | What it means |
+|---|---|
+| native frame time **lower** than scaled | the scaler costs more than the pixels it saves; scaling is a pessimisation here |
+| about **equal** | the frame is not limited by the world's pixels at all; scaling trades sharpness for nothing |
+| scaled clearly **lower** | the feature is doing its job |
+
+F10 twice returns to exactly the configuration you started in, so it is a comparison rather than a
+reset. The reference numbers from the plans: Phase 6 at native was **10.9 ms** on this world, and
+Phase 7 at 50% with MetalFX spatial measured **9.7 ms** — which is the "about equal" row, and is why
+the cost probe's verdict on this machine is that the frame is not pixel-bound.
+
+### D4. The grey sky (BUG-029)
+
+At a render scale below 100% the sky comes out brighter and less saturated than at native - green and
+blue rise while red does not move, which is why it reads as grey. It is an open defect; the scaler has
+been cleared of causing it.
+
+**F10 logs two things**, and both are needed:
+
+```
+[MetalMod] frame sample 5120x2664 | 50% 2560x1332 -> native, MetalFX spatial (upscaled 4180) | sky-top 183 190 203 | sky-left ... | sky-right ... | ground ...
+[MetalMod] sky strip mean | world (before upscale) 143.2 171.0 230.8 | main (after) 152.1 178.4 236.7 | difference 8.9 7.4 5.9
+```
+
+The first line is the finished frame, at named points. The second compares the **same region of the
+picture before and after the upscale**, in one frame:
+
+| Second line | Conclusion |
+|---|---|
+| world and main agree | the upscale introduces the difference |
+| they already disagree | the scaled pass renders the sky differently, and the cause is in what the engine sets for that pass - fog distances and the projection among them |
+
+Press F10 once at native and once at 50% and send both pairs of lines. That is the measurement that
+closes this.
+
+### E. The five-minute pass
+
+If nothing else gets done, this does:
+
+1. Load a world on the Metal backend. Stand still and note the FPS.
+2. **Options → MetalMod… → MetalFX Upscaling**.
+3. Press `-` twice (to 75%, then 67%). A toast names the new size. The frame rate should rise.
+4. Check the status line: `Upscaled frames` counting up, no `FAILED`, no `blit fallback`.
+5. Press `Native`. The toast says native, the frame rate drops back, and the world sharpens.
+6. Press `-` four times (to 50%). Open the inventory. **The HUD must be as sharp as at 100%.**
+   This is the single observation that decides whether 7A works.
+7. Resize the window once, and check the log for `Scissor`.
+
+Anything that fails: screenshot the page (it carries the evidence) and F3 (the log line).
+
+### F. What to send back
+
+`logs/latest.log`, one F3 screenshot per scale, and the F8 capture summaries from `debug/metalmod`
+for D. A screenshot of the inventory at 50% and at 100% side by side is the single most useful thing
+for B; a screenshot of the MetalFX Upscaling page with the status line visible is the most useful
+thing for A and C together, since it carries the sizes, the path and the failure reason at once.
+
+---
+
+## 7. Troubleshooting
 
 - **`libmetalmod.dylib` fails to load.** The Java bindings resolve native symbols by name and throw
   if one is missing, so a stale dylib is reported explicitly. Rebuild with `./scripts/build_mod.sh`
@@ -686,3 +912,9 @@ counters usually say which part disagreed.
   (`DebugScreenEntryListMixin`) did not take effect. Report it.
 - **`@Mixin target ... was not found`.** Mixin rejects an entire mixin if any target is missing.
   Report the exact text.
+- **Render scale seems to do nothing.** Check F3's `upscale` line: if it is absent, the scaled target
+  was never created (look for a `could not create the scaled world target` line in the log), and if it
+  says `blit` rather than `fx`, MetalFX declined and the reason is on the same line.
+- **The interface is blurry at a render scale below 100%.** That is the defect this design exists to
+  prevent - the redirect is leaking. Report it with the scale and an F3 screenshot; do not work around
+  it by raising the scale.

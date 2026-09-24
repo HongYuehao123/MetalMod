@@ -52,6 +52,12 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             throw new SurfaceException("CAMetalLayer.configure failed with status " + rc);
         }
         this.configured = true;
+        // Which mode the engine asked for, and what it becomes here. A vsync lock is the difference
+        // between "the frame rate did not improve" and "the frame rate could not move", and without
+        // this line the two are indistinguishable from outside.
+        System.out.println("[MetalMod] surface configured " + this.width + "x" + this.height
+                + " | requested " + configuration.presentMode()
+                + " | CAMetalLayer displaySyncEnabled=" + (vsync ? "true (vsync)" : "false"));
     }
 
     @Override
@@ -61,7 +67,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     @Override
     public void acquireNextTexture() throws SurfaceException {
-        final MemorySegment[] result;
+        final Object[] result;
         // nextDrawable blocks until the GPU (or the display) frees a drawable, so the time spent
         // here is drawable acquisition time. Other GPU-related waits are captured separately by F8.
         long waitStart = System.nanoTime();
@@ -71,10 +77,17 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             throw new SurfaceException(t);
         }
         MetalDevice.noteAcquireWait((System.nanoTime() - waitStart) / 1_000_000.0);
-        if (result[0] == null || result[0].address() == 0) {
+        MemorySegment drawable = (MemorySegment) result[0];
+        if (drawable == null || drawable.address() == 0) {
             throw new SurfaceException("CAMetalLayer nextDrawable returned nil");
         }
-        this.drawable = result[0];
+        this.drawable = drawable;
+        // The drawable the layer just handed back was on screen some frames ago, so its presentation
+        // time is set now - and this is the only moment it is safe to read, because the present path
+        // consumes the drawable and the layer owns it afterwards. Reading it there instead crashed the
+        // render thread.
+        MetalDevice.notePresent(((Number) result[3]).doubleValue());
+        MetalDevice.pollPresentPacing();
     }
 
     @Override
@@ -112,6 +125,8 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
                     color[0], color[1], color[2], color[3]);
         }
         this.sourceTexture = MemorySegment.NULL;
+        // Nothing may be read from the drawable after this point: the present path consumes it.
+        // Pacing is measured at acquire time instead - see acquireNextTexture.
         if (rc != 0) {
             System.err.println("[MetalMod] CAMetalLayer present failed with status " + rc);
         } else if (!this.firstPresentLogged) {

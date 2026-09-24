@@ -51,10 +51,18 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | not started |
+| 7 — MetalFX | **7A done** (verified offline, awaiting one in-game session); 7B partial (scaler, jitter, history; no motion source); 7C not started |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
+
+## Agreed next priority
+
+Finish **Phase 7B Temporal first**, bringing forward the motion/previous-transform contract shared
+with Phase 8C and completing live temporal encoding, history resets and transparency validation.
+Temporal already includes AA. Separate AA for Spatial is optional afterward, only if time remains
+and visual evaluation justifies it. See [the corrected AA plan](docs/antialiasing-plan.md).
+This is a planning decision, not a new implementation or verification result.
 
 ## Phase 5 close-out and next step
 
@@ -66,6 +74,18 @@ Phase 6 (dynamic lighting) is **complete**; see [docs/phase6-plan.md](docs/phase
 final verdict per gate, the carried-forward evidence items and the limits, and
 [docs/lighting-abi.md](docs/lighting-abi.md) for the published light-record contract that Phase 8
 builds on. `TESTING.md` §5.6 is the final-test checklist.
+
+Phase 7 (MetalFX) is **7A done, 7B partial, 7C not started**; see
+[docs/phase7-plan.md](docs/phase7-plan.md) for the per-increment record, the integration contract,
+the three defects the work found, and the six in-game observations that close 7A. What that means in
+a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale, switches between
+MetalFX and the plain blit, shows the live sizes and which path ran, and raises a toast in world when
+a change lands. The world renders at that fraction into its own target and MetalFX returns it to
+native, while the HUD, menus and tooltips keep drawing at native resolution. **No in-game run has
+happened yet** - the design's central claim is verified offscreen against the engine's own
+`MainTarget` and `FrameGraphBuilder`, not on screen. [TESTING.md](TESTING.md) §6.E is the five-minute
+pass that closes it; the one observation that decides it is the HUD at 50%, which must be as sharp as
+at 100%.
 
 What that means in a session, concretely: held and dropped items, entities, particles and moving
 blocks light the world; a source buried in or sealed by opaque blocks contributes nothing; a placed
@@ -129,9 +149,11 @@ Run all five before trusting a change:
 | Command | Reports |
 |---|---|
 | `./scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
-| `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence, `ALL CHECKS PASSED` |
+| `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence and the MetalFX spatial/temporal scalers, `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics from any pipeline |
-| `./tools/render_check/run.sh` | 167 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths, the runtime toggle, and the measured zero-work disabled path, `RENDER CHECK PASSED` |
+| `./tools/render_check/run.sh` | 173 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths, the runtime toggle, the measured zero-work disabled path, and six MetalFX spatial upscaling assertions, `RENDER CHECK PASSED` |
+| `./tools/scaling_check/run.sh` | Phase 7A end to end offscreen: the scaled level target through the engine's own `MainTarget` and `FrameGraphBuilder`, the upscale, the resize, the release, and the jitter sequence, `SCALING CHECK PASSED` |
+| `./tools/mixin_check/run.sh` | every mixin target, injected method, `@Shadow` member and `@At` descriptor against the client jar, `MIXIN CHECK PASSED` |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets, UMA ownership |
 
 A green check is only evidence if it can fail: the scissor assertion is a case in point — it passed

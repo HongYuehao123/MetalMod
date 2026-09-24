@@ -6,6 +6,7 @@
 #import <Cocoa/Cocoa.h>
 
 #include "metalmod/metalmod_metal.h"
+#include "metalmod/metalmod_metalfx.h"
 
 #include <string.h>
 #include <chrono>
@@ -1413,12 +1414,15 @@ int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool vsync) 
     return 0;
 }
 
-int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture) {
+int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture,
+                      double* outPresentTime, double* outPresentInterval) {
     // A frame boundary: the previous frame's utility work is committed (its present already did
     // that) and its staging slot is retired for the ring to reuse MMM_STAGING_SLOTS frames later.
     mmm_utility_end_frame();
     MMMCaptureTimer timer(MMM_CAPTURE_DRAWABLE_WAIT_NS);
     CAMetalLayer* metalLayer = mmm_layer(layer);
+    if (outPresentTime != NULL) *outPresentTime = 0.0;
+    if (outPresentInterval != NULL) *outPresentInterval = 0.0;
     if (metalLayer == nil || outDrawable == NULL || outTexture == NULL) return -1;
 
     @autoreleasepool {
@@ -1432,6 +1436,11 @@ int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture) {
         // The texture is owned by the drawable; hand it out borrowed.
         *outDrawable = (__bridge_retained void*)drawable;
         *outTexture = (__bridge void*)drawable.texture;
+        // Pacing, for the Phase 7C pacer: this drawable was presented some frames ago, so its
+        // presentation time is set now - and this is the only moment it is safe to read, because the
+        // present path consumes the drawable and the layer owns it from then on.
+        double presentTime = mmm_present_time(*outTexture, outPresentInterval);
+        if (outPresentTime != NULL) *outPresentTime = presentTime;
     }
     return 0;
 }

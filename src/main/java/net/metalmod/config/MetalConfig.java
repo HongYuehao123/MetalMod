@@ -36,10 +36,22 @@ public class MetalConfig {
     public volatile boolean enableDynamicLights = false;
     public volatile boolean enableClusteredLights = false;
 
-    // The MetalFX scaling mode, quality preset, frame generation, sharpness, HDR and target-refresh
-    // settings that used to live here drove the retired MoltenVK-interop frame pipeline
-    // (ROADMAP.md §4). Nothing read them once that pipeline went away, so they were removed rather
-    // than left as controls that do nothing.
+    // Phase 7 upscaling. The render scale is the fraction of the native resolution the world is
+    // rendered at, and the upscaler names the effect that returns it to native: "spatial",
+    // "temporal" or "off". These are live settings like the lighting switches - the renderer
+    // rebuilds the world target at the next frame boundary - and each is settable per launch with
+    // -Dmetalmod.renderScale / -Dmetalmod.upscaler, where a -D value seeds the session without
+    // freezing it against the in-game screen.
+    public volatile double renderScale = 1.0;
+    public volatile String upscaler = "spatial";
+    // Announces an upscaling change as an in-world toast, so a setting whose effect is otherwise
+    // invisible can be checked without opening F3.
+    public volatile boolean upscalingNotice = true;
+
+    // The MetalFX quality preset, frame generation, sharpness, HDR and target-refresh settings that
+    // used to live here drove the retired MoltenVK-interop frame pipeline (ROADMAP.md §4). Nothing
+    // read them once that pipeline went away, so they were removed rather than left as controls
+    // that do nothing.
 
     public void load() {
         if (!CONFIG_FILE.exists()) {
@@ -56,8 +68,26 @@ public class MetalConfig {
             this.enablePointLightProof = Boolean.parseBoolean(props.getProperty("enablePointLightProof", "false"));
             this.enableDynamicLights = Boolean.parseBoolean(props.getProperty("enableDynamicLights", "false"));
             this.enableClusteredLights = Boolean.parseBoolean(props.getProperty("enableClusteredLights", "false"));
+            this.renderScale = parseScale(props.getProperty("renderScale", "1.0"));
+            this.upscaler = props.getProperty("upscaler", "spatial");
+            this.upscalingNotice = Boolean.parseBoolean(props.getProperty("upscalingNotice", "true"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Parse a saved render scale, falling back to 1.0 rather than failing the whole config load.
+     *
+     * <p>A bad value here would otherwise take every other setting down with it, and the file is
+     * hand-editable.
+     */
+    private static double parseScale(String text) {
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException e) {
+            System.err.println("[MetalMod] ignoring renderScale=" + text + " in the config: not a number");
+            return 1.0;
         }
     }
 
@@ -75,6 +105,9 @@ public class MetalConfig {
                 props.setProperty("enablePointLightProof", Boolean.toString(this.enablePointLightProof));
                 props.setProperty("enableDynamicLights", Boolean.toString(this.enableDynamicLights));
                 props.setProperty("enableClusteredLights", Boolean.toString(this.enableClusteredLights));
+                props.setProperty("renderScale", Double.toString(this.renderScale));
+                props.setProperty("upscaler", this.upscaler);
+                props.setProperty("upscalingNotice", Boolean.toString(this.upscalingNotice));
                 props.store(writer, "MetalMod Apple Silicon Configuration");
             }
         } catch (Exception e) {

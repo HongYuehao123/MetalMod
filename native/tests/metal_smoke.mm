@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "metalmod/metalmod_metal.h"
+#include "metalmod/metalmod_metalfx.h"
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
 // on the Java side in one place.
@@ -118,7 +119,11 @@ static void test_surface(void) {
     void* queue = mmm_queue_create(device);
     void* drawable = NULL;
     void* drawableTexture = NULL;
-    int rc = mmm_layer_acquire(layer, &drawable, &drawableTexture);
+    double presentTime = 0.0;
+    double presentInterval = 0.0;
+    int rc = mmm_layer_acquire(layer, &drawable, &drawableTexture, &presentTime, &presentInterval);
+    check("acquire reports a presentation time (0 until the display has shown a frame)",
+          presentTime == 0.0 && presentInterval == 0.0, "");
     check("acquire drawable", rc == 0 && drawable != NULL && drawableTexture != NULL,
           rc != 0 ? "nextDrawable returned nil (expected without a display)" : "");
 
@@ -1087,6 +1092,194 @@ static void test_private_storage(void) {
     mmm_device_release(device);
 }
 
+// Phase 7A: MetalFX spatial upscaling over our own textures.
+//
+// The backend upscales its own low-resolution render target into the native-resolution one, so what
+// this proves is the whole contract that path depends on: the device reports support, a scaler is
+// created for the exact formats and sizes the backend uses, the usage bits it demands are readable
+// (so the render target can be built to satisfy it), and encoding a real upscale into a command
+// buffer on our own queue produces a correctly sized image with the input's colours in it.
+//
+// A flat colour is used deliberately: it is invariant under the scaler's filtering, so a pass here
+// cannot be a false pass from sampling the wrong texel of a gradient.
+static void test_metalfx_spatial(void) {
+    printf("\n== MetalFX spatial upscaling (Phase 7A) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("metalfx device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int64_t kRGBA8 = 70;      // MTLPixelFormatRGBA8Unorm - the backend's main target format
+    const int64_t kBGRA8 = 80;      // MTLPixelFormatBGRA8Unorm - the CAMetalLayer's format
+    const int IN_W = 32, IN_H = 24, OUT_W = 96, OUT_H = 72;
+
+    check("spatial scaling is supported for RGBA8 input and output",
+          mmm_fx_spatial_supported(device, kRGBA8, kRGBA8), mmm_fx_last_error());
+
+    void* scaler = mmm_fx_spatial_create(device, kRGBA8, kRGBA8, IN_W, IN_H, OUT_W, OUT_H, 0);
+    check("spatial scaler created", scaler != NULL, mmm_fx_last_error());
+    if (scaler == NULL) {
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+
+    // The usage bits are what the Java side sizes its render target from, so an unreadable or
+    // zeroed answer here is a texture the scaler would later reject.
+    uint32_t colorUsage = 0, outputUsage = 0;
+    bool haveUsage = mmm_fx_spatial_texture_usage(scaler, &colorUsage, &outputUsage);
+    check("scaler reports its texture usage requirements", haveUsage && colorUsage != 0,
+          "");
+    printf("     color usage 0x%X, output usage 0x%X\n", colorUsage, outputUsage);
+
+    // Exactly the configuration the backend uses: a shared render target as input (MetalMod reads
+    // its own targets back) and a second target as output.
+    uint32_t inputUsage = colorUsage | 4u | 1u;   // scaler bits | render target | shader read
+    void* input = mmm_texture_create_full(device, kRGBA8, IN_W, IN_H, 1, 1, 2, true, inputUsage);
+    void* output = mmm_texture_create_full(device, kRGBA8, OUT_W, OUT_H, 1, 1, 2, true,
+                                           outputUsage | 4u | 1u | 8u);  // + copy source
+    if (input == NULL || output == NULL) {
+        check("scaler textures allocated", false, "allocation failed");
+        mmm_texture_release(input);
+        mmm_texture_release(output);
+        mmm_fx_spatial_release(scaler);
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+
+    // A flat mid-teal input. Filtering cannot change it, so any deviation in the output is the
+    // scaler failing to read the input or failing to write the output.
+    unsigned char source[IN_W * IN_H * 4];
+    for (int i = 0; i < IN_W * IN_H; i++) {
+        source[i * 4 + 0] = 20;
+        source[i * 4 + 1] = 160;
+        source[i * 4 + 2] = 200;
+        source[i * 4 + 3] = 255;
+    }
+    check("input upload", mmm_texture_replace_region(input, 0, 0, 0, 0, IN_W, IN_H, source,
+                                                     IN_W * 4) == 0, "");
+
+    void* cb = mmm_command_buffer_create(queue);
+    check("encode spatial upscale",
+          mmm_fx_spatial_encode(scaler, cb, input, output, 0, 0) == 0, mmm_fx_last_error());
+    mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb);
+    mmm_command_buffer_release(cb);
+
+    static unsigned char upscaled[OUT_W * OUT_H * 4];
+    memset(upscaled, 0, sizeof(upscaled));
+    int rc = mmm_texture_read_region(output, 0, 0, 0, 0, OUT_W, OUT_H, upscaled, sizeof(upscaled),
+                                     OUT_W * 4);
+    check("upscaled output readback", rc == 0, "");
+    if (rc == 0) {
+        // Centre and all four corners: a scaler that wrote the wrong region, or flipped the image,
+        // still leaves a flat input flat - so what is checked is coverage, not orientation.
+        const int probes[5][2] = {
+            {OUT_W / 2, OUT_H / 2}, {1, 1}, {OUT_W - 2, 1}, {1, OUT_H - 2}, {OUT_W - 2, OUT_H - 2}};
+        bool allCovered = true;
+        for (int i = 0; i < 5; i++) {
+            const unsigned char* p = &upscaled[(probes[i][1] * OUT_W + probes[i][0]) * 4];
+            if (p[1] < 140 || p[1] > 180 || p[2] < 180 || p[2] > 220) {
+                allCovered = false;
+                printf("     probe (%d,%d) = R%d G%d B%d A%d\n", probes[i][0], probes[i][1],
+                       p[0], p[1], p[2], p[3]);
+            }
+        }
+        check("upscaled image covers the whole output with the input's colour", allCovered, "");
+    }
+
+    // Perceptual (sRGB-encoded) is the mode the backend uses by default, and it must be creatable
+    // too - a mode the OS rejects has to be discovered here rather than as a black screen.
+    void* perceptual = mmm_fx_spatial_create(device, kRGBA8, kRGBA8, IN_W, IN_H, OUT_W, OUT_H, 0);
+    check("perceptual colour mode is creatable", perceptual != NULL, mmm_fx_last_error());
+    mmm_fx_spatial_release(perceptual);
+
+    // The layer's real format. Minecraft's main target is RGBA8 and the drawable is BGRA8, so an
+    // RGBA8 -> BGRA8 scaler is what a present-path integration would need.
+    void* toBgra = mmm_fx_spatial_create(device, kRGBA8, kBGRA8, IN_W, IN_H, OUT_W, OUT_H, 0);
+    check("RGBA8 -> BGRA8 scaler created (present-path format)", toBgra != NULL,
+          mmm_fx_last_error());
+    mmm_fx_spatial_release(toBgra);
+
+    // A scaler asked for an impossible configuration must fail loudly rather than be created and
+    // then produce garbage.
+    void* bad = mmm_fx_spatial_create(device, kRGBA8, kRGBA8, 0, 0, OUT_W, OUT_H, 0);
+    check("invalid sizes are refused", bad == NULL, "");
+    check("release of NULL is safe", true, "");
+    mmm_fx_spatial_release(NULL);
+
+    mmm_fx_spatial_release(scaler);
+    mmm_texture_release(input);
+    mmm_texture_release(output);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
+// Phase 7B groundwork: a temporal scaler needs colour, depth and motion textures and keeps history
+// across frames. Creating one here proves the device and formats accept it, and that the depth
+// convention the backend reports (near 0, far 1) is the one the descriptor is configured with.
+static void test_metalfx_temporal(void) {
+    printf("\n== MetalFX temporal scaler (Phase 7B) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("metalfx temporal device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int64_t kRGBA8 = 70;
+    const int64_t kDepth32F = 252;   // MTLPixelFormatDepth32Float
+    const int64_t kRG16F = 115;      // MTLPixelFormatRG16Float - the motion format MetalFX expects
+    const int IN_W = 32, IN_H = 24, OUT_W = 96, OUT_H = 72;
+
+    bool temporalSupported = mmm_fx_temporal_supported(device, kRGBA8, kDepth32F, kRG16F, kRGBA8);
+    printf("     temporal scaling supported: %s\n", temporalSupported ? "yes" : "no");
+
+    void* scaler = mmm_fx_temporal_create(device, kRGBA8, kDepth32F, kRG16F, kRGBA8,
+                                          IN_W, IN_H, OUT_W, OUT_H,
+                                          /*depthReversed=*/false,
+                                          /*dynamicResolution=*/false, 1.0f, 1.0f,
+                                          /*reactiveMask=*/false, kRGBA8,
+                                          /*jitteredMotion=*/false);
+    check("temporal scaler created", scaler != NULL, mmm_fx_last_error());
+    // The capability query is an optimisation hint, not a promise: MetalFX answers it per device and
+    // per format pair, and creation is the authoritative test. What must hold is that neither can
+    // report success while the other cannot deliver - a query that says yes and a create that returns
+    // nil would leave the caller choosing a path it cannot run.
+    check("the capability query agrees with creation",
+          !temporalSupported || scaler != NULL, temporalSupported ? "query said yes" : "query said no");
+    if (scaler != NULL) {
+        bool depthReversed = true, dynamicResolution = true, reactiveMask = true;
+        bool jitteredMotion = true;
+        float minScale = 0.0f, maxScale = 0.0f;
+        check("descriptor is readable",
+              mmm_fx_temporal_describe(scaler, &depthReversed, &dynamicResolution,
+                                       &minScale, &maxScale, &reactiveMask, &jitteredMotion), "");
+        check("scaler kept Minecraft's depth convention (near 0, far 1)", !depthReversed, "");
+        check("NULL-safe encode refusal", mmm_fx_temporal_encode(NULL, NULL, NULL, NULL, NULL,
+                                                                 NULL, 0.0f, 0.0f, false) != 0, "");
+        mmm_fx_temporal_release(scaler);
+    }
+
+    // The dynamic-resolution form is what a render-scale setting would want, because it keeps the
+    // scaler's history valid across a resolution change instead of resetting it. Record what this
+    // machine does rather than assert it: the answer decides whether Phase 7B can change render
+    // scale without flushing history, and a hard assertion here would encode a guess.
+    void* adaptive = mmm_fx_temporal_create(device, kRGBA8, kDepth32F, kRG16F, kRGBA8,
+                                            IN_W, IN_H, OUT_W, OUT_H,
+                                            false, true, 0.5f, 1.0f, false, 0, false);
+    printf("     dynamic-resolution temporal scaler: %s\n",
+           adaptive != NULL ? "created" : mmm_fx_last_error());
+    if (adaptive != NULL) {
+        bool dynamic = false;
+        float minScale = 0.0f, maxScale = 0.0f;
+        mmm_fx_temporal_describe(adaptive, NULL, &dynamic, &minScale, &maxScale, NULL, NULL);
+        check("dynamic-resolution range round-trips", dynamic && minScale > 0.0f && maxScale > 0.0f,
+              "");
+    }
+    mmm_fx_temporal_release(adaptive);
+
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1108,6 +1301,8 @@ int main(void) {
         test_capture();
         test_utility_batching();
         test_private_storage();
+        test_metalfx_spatial();
+        test_metalfx_temporal();
     }
     printf("\n==================================================\n");
     if (g_failures == 0) printf("ALL CHECKS PASSED\n");

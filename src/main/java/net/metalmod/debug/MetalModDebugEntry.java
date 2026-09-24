@@ -57,12 +57,66 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         head.append(" | §b").append(resolution);
         if (metalActive) {
             head.append("§r | §b").append(oneDecimal(net.metalmod.backend.MetalDevice.lastFrameMs()))
-                    .append(" ms§r | wait §b")
+                    .append(" ms");
+            // The spread, because the mean is not what a player sees. A configuration that averages
+            // 13 ms while alternating 8 and 18 reads as stutter, and only the percentile shows it.
+            float p95 = net.metalmod.backend.MetalDevice.lastFrameP95Ms();
+            if (p95 > 0.0f) {
+                head.append("§r p95 §b").append(oneDecimal(p95)).append(" ms");
+            }
+            head.append("§r | wait §b")
                     .append(oneDecimal(net.metalmod.backend.MetalDevice.lastAcquireWaitMs()))
                     .append(" ms§r | §b").append(net.metalmod.backend.MetalDevice.lastFrameDraws())
                     .append("§r draws");
         }
         displayer.addLine(head.toString());
+        // Phase 7. The scaler only earns a line when it is doing something: at the default render
+        // scale the frame is the pre-Phase-7 frame and a "1.00x native" line would be width spent
+        // saying nothing happened. When it is on, the line has to answer the three questions that
+        // make a scaler diagnosable - what size the world is, what scaled it, and whether it ran.
+        if (metalActive && net.metalmod.metalfx.WorldRenderTarget.active()) {
+            StringBuilder scale = new StringBuilder("§6[MetalMod]§r upscale §b")
+                    .append(net.metalmod.metalfx.WorldRenderTarget.describe(
+                            minecraft != null && minecraft.getWindow() != null
+                                    ? minecraft.getWindow().getWidth() : 0,
+                            minecraft != null && minecraft.getWindow() != null
+                                    ? minecraft.getWindow().getHeight() : 0));
+            long scaled = net.metalmod.metalfx.WorldRenderTarget.scaledFrameCount();
+            long failed = net.metalmod.metalfx.WorldRenderTarget.failedFrameCount();
+            scale.append("§r | upscaled §b").append(scaled);
+            // A failure is named with its reason rather than counted: the count alone would leave
+            // "MetalFX is not running" unanswerable on the one screen a user can see.
+            if (failed > 0) {
+                scale.append("§r §cfail ").append(failed);
+                String why = net.metalmod.metalfx.WorldRenderTarget.lastUpscaleError();
+                if (!why.isEmpty()) {
+                    scale.append(" ").append(why);
+                }
+            }
+            displayer.addLine(scale.toString());
+        } else if (metalActive && net.metalmod.metalfx.RenderScaleSettings.active()
+                && !net.metalmod.metalfx.WorldRenderTarget.scalingAvailable()) {
+            // Configured but not running: the world is at native resolution and the frame is the
+            // pre-Phase-7 frame. Saying so is the difference between a feature that is off and one
+            // that is silently broken.
+            displayer.addLine("§6[MetalMod]§r upscale §cunavailable§r §7"
+                    + net.metalmod.metalfx.WorldRenderTarget.unavailableReason()
+                    + " - rendering at native resolution§r");
+        }
+        // Pacing (Phase 7C groundwork). The frame time on the first line is CPU wall time; this is the
+        // display's own report of when frames landed, which is the only place a missed refresh is
+        // stated rather than inferred. Shown only once the display has reported something, so the line
+        // does not claim a measurement it does not have.
+        if (metalActive) {
+            var pacing = net.metalmod.backend.MetalDevice.presentPacing();
+            if (pacing.frames() > 0) {
+                displayer.addLine("§6[MetalMod]§r pacing §b"
+                        + oneDecimal((float) pacing.lastIntervalMs()) + " ms§r p95 §b"
+                        + oneDecimal((float) pacing.p95Ms()) + " ms§r steady §b"
+                        + Math.round(pacing.steadyFraction() * 100) + "%§r drop §b"
+                        + pacing.dropped());
+            }
+        }
         // The light set is only extracted when the feature is on and the Metal backend is drawing, so
         // this line is the in-game answer to "is the extractor running, and what did it publish?".
         // The live device's switches, not the launch flags: a setting can now come from the settings

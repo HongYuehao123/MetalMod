@@ -286,6 +286,11 @@ public final class RenderCheck {
             // but chunk and entity meshes are indexed with IndexType.SHORT and each chunk of a
             // shared vertex buffer is drawn by offsetting into it.
             shortIndexCheck(device, pipeline);
+            // Phase 7A's effect, over the backend's own textures. The scaling check proves the frame
+            // shape; this proves the effect itself on a real draw - a low-resolution frame produced by
+            // a vanilla pipeline, upscaled, with the pixels read back.
+            metalFxCheck(device, pipeline);
+
             pointLightCheck(source, terrain);
             dynamicLightCheck(source, terrain);
             clusteredLightCheck(source, terrain);
@@ -298,6 +303,126 @@ public final class RenderCheck {
             device.close();
         }
         report();
+    }
+
+    /**
+     * Phase 7A: MetalFX spatial upscaling of a real low-resolution frame.
+     *
+     * <p>Two things are checked, and they fail differently. The first is that the scaler can be built
+     * and run at all for the format pair the backend actually uses - a render target in
+     * {@code RGBA8_UNORM} going to the same. The second is the pixels: a frame drawn at the low
+     * resolution must come out of the scaler at the high resolution with its colour intact, in the
+     * whole output rather than in a corner.
+     *
+     * <p>A flat colour is used on purpose. It is invariant under the scaler's reconstruction filter,
+     * so a pass here cannot be a false pass from sampling the wrong texel of a gradient - which is the
+     * failure a "did the upscale run at all" check would otherwise let through.
+     *
+     * <p>This also drives the encode-into-a-caller-owned-command-buffer path, which is the one an
+     * integration would use to keep the upscale inside a frame it already owns. The self-contained
+     * {@code run} path is what the game uses, and {@code tools/scaling_check} covers it end to end.
+     */
+    private static void metalFxCheck(MetalDevice device, RenderPipeline pipeline) {
+        final int IN = 40;
+        final int OUT = 96;
+        final int COLOUR = 200;
+
+        check("MetalFX reports support for RGBA8 input and output",
+                net.metalmod.metalfx.MetalFxScaler.isSupported(device.deviceHandle(),
+                        formatOf(GpuFormat.RGBA8_UNORM), formatOf(GpuFormat.RGBA8_UNORM)),
+                net.metalmod.metalfx.MetalFx.unavailableReason());
+
+        net.metalmod.metalfx.MetalFxScaler scaler = net.metalmod.metalfx.MetalFxScaler.create(
+                device.deviceHandle(), formatOf(GpuFormat.RGBA8_UNORM),
+                formatOf(GpuFormat.RGBA8_UNORM), IN, IN, OUT, OUT, 0);
+        check("the spatial scaler the backend would build is created", scaler != null,
+                net.metalmod.metalfx.MetalFx.unavailableReason());
+        if (scaler == null) {
+            return;
+        }
+        check("the scaler asks for shader-read input", (scaler.colorTextureUsage() & 1L) != 0,
+                "usage 0x" + Long.toHexString(scaler.colorTextureUsage()));
+
+        // The input is a real draw through a real vanilla pipeline, not an upload: the scaler has to
+        // read what the renderer wrote, which is the thing an integration can get wrong.
+        GpuTexture small = device.createTexture("metalfx input", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC | GpuTexture.USAGE_TEXTURE_BINDING, GpuFormat.RGBA8_UNORM,
+                IN, IN, 1, 1);
+        GpuTextureView smallView = device.createTextureView(small);
+        GpuTexture large = device.createTexture("metalfx output", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_COPY_SRC | GpuTexture.USAGE_TEXTURE_BINDING, GpuFormat.RGBA8_UNORM,
+                OUT, OUT, 1, 1);
+        GpuBuffer vertices = device.createBuffer(() -> "quad", GpuBuffer.USAGE_VERTEX
+                | GpuBuffer.USAGE_MAP_WRITE, vertexBytes());
+        GpuBuffer indices = device.createBuffer(() -> "indices", GpuBuffer.USAGE_INDEX
+                | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        GpuBuffer projection = device.createBuffer(() -> "Projection", GpuBuffer.USAGE_UNIFORM
+                | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        GpuBuffer transform = device.createBuffer(() -> "DynamicTransforms", GpuBuffer.USAGE_UNIFORM
+                | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{COLOUR / 255.0f, COLOUR / 255.0f, COLOUR / 255.0f, 1.0f}));
+        GpuBuffer readback = device.createBuffer(() -> "readback", GpuBuffer.USAGE_MAP_READ
+                | GpuBuffer.USAGE_COPY_DST, (long) OUT * OUT * 4);
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.create(() -> "metalfx input")
+                .withColorAttachment(smallView, Optional.of(new Vector4f(0.0f, 0.0f, 0.0f, 1.0f)))
+                .withRenderArea(new RenderPass.RenderArea(0, 0, IN, IN));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(descriptor);
+        pass.setPipeline(pipeline);
+        pass.setUniform("Projection", projection.slice());
+        pass.setUniform("DynamicTransforms", transform.slice());
+        pass.setVertexBuffer(0, vertices.slice());
+        pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6, 1, 0, 0, 0);
+        encoder.submitRenderPass();
+
+        // The scaler reads the render target's Metal texture, not its view: MetalFX takes textures.
+        // run() is the self-contained path - one native call that creates its own command buffer,
+        // encodes, commits and releases - so the copy below is already ordered behind it on the queue.
+        int upscaleStatus = scaler.run(device.queueHandle(), textureHandle(small),
+                textureHandle(large));
+        check("the upscale ran without error", upscaleStatus == 0,
+                "status " + upscaleStatus + " " + net.metalmod.backend.MetalNative.fxLastError());
+
+        encoder.copyTextureToBuffer(large, readback, 0L, null, 0, 0, 0, OUT, OUT);
+        ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
+        int centre = ((OUT / 2) * OUT + (OUT / 2)) * 4;
+        int r = pixels.get(centre) & 0xFF;
+        int g = pixels.get(centre + 1) & 0xFF;
+        int b = pixels.get(centre + 2) & 0xFF;
+        check("the upscaled frame carries the low-resolution colour (" + r + " " + g + " " + b + ")",
+                Math.abs(r - COLOUR) < 12 && Math.abs(g - COLOUR) < 12 && Math.abs(b - COLOUR) < 12,
+                "");
+        // The corners too: an effect that wrote only part of the output would pass the centre check.
+        int corner = (2 * OUT + 2) * 4;
+        int cr = pixels.get(corner) & 0xFF;
+        check("the upscale covers the whole output", Math.abs(cr - COLOUR) < 12, "corner R" + cr);
+
+        // The blit fallback has to produce the same frame when MetalFX is unavailable or switched off.
+        check("the backend can fall back to its own blit",
+                net.metalmod.backend.MetalNative.copyTextureToTexture(device.queueHandle(),
+                        textureHandle(large), 0, 0, 0, 0, textureHandle(small), 0, 0, 0, 0, IN, IN, 1) == 0,
+                "");
+
+        scaler.close();
+        readback.close();
+        transform.close();
+        projection.close();
+        indices.close();
+        vertices.close();
+        smallView.close();
+        small.close();
+        large.close();
+    }
+
+    private static long formatOf(GpuFormat format) {
+        return net.metalmod.backend.MetalFormat.mtlPixelFormat(format);
+    }
+
+    private static java.lang.foreign.MemorySegment textureHandle(GpuTexture texture) {
+        return texture instanceof MetalTexture metal ? metal.handle()
+                : java.lang.foreign.MemorySegment.NULL;
     }
 
     /** Draw one full-screen quad with the given ColorModulator and check the centre pixel. */

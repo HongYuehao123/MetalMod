@@ -28,6 +28,16 @@ public class PerformanceCaptureKeyMixin {
         } else if (event.key() == GLFW.GLFW_KEY_F7) {
             if (action == GLFW.GLFW_PRESS) CaptureRouteRecorder.toggle(minecraft);
             ci.cancel();
+        } else if (event.key() == GLFW.GLFW_KEY_F10) {
+            // F10 compares scaled against native in place - the only fair way to judge whether the
+            // upscaler costs frames. See ScaleHotkey.
+            if (action == GLFW.GLFW_PRESS) net.metalmod.metalfx.ScaleHotkey.toggle(minecraft);
+            ci.cancel();
+        } else if (event.key() == GLFW.GLFW_KEY_F9) {
+            // F9 measures what the GPU actually costs, so render scaling can be judged without a
+            // stopwatch. See GpuCostProbe for why a frame rate cannot answer that question.
+            if (action == GLFW.GLFW_PRESS) net.metalmod.debug.GpuCostProbe.run(minecraft);
+            ci.cancel();
         }
     }
 }

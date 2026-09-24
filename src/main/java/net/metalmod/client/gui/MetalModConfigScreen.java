@@ -47,11 +47,20 @@ public class MetalModConfigScreen extends Screen {
         }).bounds(centerX - buttonWidth / 2, startY + 24, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(metalBackendButton);
 
-        // 3. Lighting, on its own page: it is the part of the mod that keeps growing, and these are
-        // the settings that can change while the game is running (unlike the backend above).
+        // 3. MetalFX, first among the live settings and on its own page, because it is the one whose
+        // effect is visible in the frame itself: render resolution, the upscaler, and the live status
+        // that says which path actually ran. The two pages below it change what the world is lit by
+        // and how it is measured; this one changes how many pixels it is drawn with.
+        Button upscalingButton = Button.builder(
+                Component.literal("MetalFX Upscaling: " + upscalingSummary() + "..."), btn ->
+                        this.minecraft.setScreenAndShow(new MetalModUpscalingConfigScreen(this)))
+                .bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+        this.addRenderableWidget(upscalingButton);
+
+        // 4. Lighting, also live: the switches that decide what the world is lit by.
         Button lightingButton = Button.builder(Component.literal("Lighting..."), btn ->
                 this.minecraft.setScreenAndShow(new MetalModLightingConfigScreen(this)))
-                .bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+                .bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(lightingButton);
 
         // Capture closes the menu and allows five seconds to resume before recording.
@@ -62,14 +71,31 @@ public class MetalModConfigScreen extends Screen {
                 net.metalmod.debug.PerformanceCapture.toggle(this.minecraft);
                 if (this.minecraft.level != null) this.minecraft.setScreenAndShow(null);
             }
-        }).bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
+        }).bounds(centerX - buttonWidth / 2, startY + 96, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(captureButton);
 
         // Done.
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 104, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 128, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
+    }
+
+    /**
+     * One short caption, so the main screen says what the sub-page is set to without opening it.
+     *
+     * <p>It also says whether the scaler is live or fell back, because the caption is the only thing
+     * visible from here and "75% spatial" that never ran would otherwise read as working.
+     */
+    private static String upscalingSummary() {
+        if (!net.metalmod.metalfx.RenderScaleSettings.active()) {
+            return "off";
+        }
+        if (!net.metalmod.metalfx.WorldRenderTarget.scalerAvailable()) {
+            return "unavailable";
+        }
+        long fx = net.metalmod.metalfx.WorldRenderTarget.scaledFrameCount();
+        return net.metalmod.metalfx.RenderScaleSettings.percentLabel() + (fx > 0 ? " MetalFX" : " pending");
     }
 
     private Component getUmaText() {
