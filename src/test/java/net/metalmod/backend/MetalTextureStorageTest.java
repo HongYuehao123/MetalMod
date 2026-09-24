@@ -32,23 +32,28 @@ public final class MetalTextureStorageTest {
         int copySrc = GpuTexture.USAGE_COPY_SRC;
         int binding = GpuTexture.USAGE_TEXTURE_BINDING;
         int render = GpuTexture.USAGE_RENDER_ATTACHMENT;
+        // What RenderTarget actually passes, bytecode-verified: bipush 15 for both the depth and the
+        // colour texture. This is the case the rule exists for, so it is pinned to the literal the
+        // engine uses rather than rebuilt from the constants.
+        int renderTargetUsage = 15;
 
-        check("a writeToTexture target keeps CPU-visible storage",
-                MetalTexture.needsSharedStorage(copyDst), "");
-        check("a readback source keeps CPU-visible storage",
-                MetalTexture.needsSharedStorage(copySrc), "");
-        check("both copy flags together keep CPU-visible storage",
-                MetalTexture.needsSharedStorage(copyDst | copySrc), "");
-        check("a plain render attachment does not need CPU-writable storage",
-                !MetalTexture.needsSharedStorage(render), "");
-        check("a sampled render attachment does not need CPU-writable storage",
-                !MetalTexture.needsSharedStorage(render | binding), "");
-        check("a sampled-only texture does not need CPU-writable storage",
-                !MetalTexture.needsSharedStorage(binding), "");
-        check("the texel-buffer emulation counts as a copy destination",
-                MetalTexture.needsSharedStorage(binding | copyDst), "");
-        check("an uploaded copy source stays CPU-visible",
-                MetalTexture.needsSharedStorage(binding | copyDst | copySrc), "");
+        check("the flag set Minecraft gives a render target is 15",
+                renderTargetUsage == (copyDst | copySrc | binding | render), "");
+        check("a render target is eligible for private storage",
+                MetalTexture.privateEligible(renderTargetUsage), "");
+        check("a depth attachment is eligible for private storage",
+                MetalTexture.privateEligible(render), "");
+        check("a render target with no sampling is eligible",
+                MetalTexture.privateEligible(render), "");
+
+        // The textures the engine uploads into. All of these must stay shared or the upload is lost.
+        check("an uploaded atlas is not eligible", !MetalTexture.privateEligible(binding | copyDst), "");
+        check("a dynamic texture is not eligible",
+                !MetalTexture.privateEligible(binding | copyDst | copySrc), "");
+        check("the texel-buffer emulation is not eligible",
+                !MetalTexture.privateEligible(binding | copyDst), "");
+        check("a sampled-only texture is not eligible", !MetalTexture.privateEligible(binding), "");
+        check("a bare texture is not eligible", !MetalTexture.privateEligible(0), "");
 
         // The switch may only ever make storage more conservative. This must hold however the
         // process was launched, so it is asserted over every combination rather than one sample.
@@ -58,13 +63,13 @@ public final class MetalTextureStorageTest {
         for (int a : flags) {
             for (int b : flags) {
                 int usage = a | b;
-                if (MetalTexture.needsSharedStorage(usage) && !MetalTexture.usesSharedStorage(usage)) {
+                if (!MetalTexture.privateEligible(usage) && !MetalTexture.usesSharedStorage(usage)) {
                     safe = false;
                     offender = "usage=" + usage;
                 }
             }
         }
-        check("a usage that needs shared storage is never given private storage", safe, offender);
+        check("a texture that is not eligible for private storage always stays shared", safe, offender);
 
         // With the feature on, a render attachment is the resource the change is for.
         boolean enabled = MetalTexture.privateTexturesEnabled();

@@ -96,9 +96,9 @@ reaches it through Panama FFI (`java.lang.foreign`). A standalone native smoke t
 (`native/tests/metal_smoke.mm`) exercises device, clear, resources, pipelines and a triangle draw.
 
 Render targets and depth buffers are created with private storage (they are what the frame spends its
-bandwidth on); a texture the engine uploads into stays shared. Uploads and buffer copies share one
-command buffer per frame instead of committing one each, which is what the underground chunk-mesh
-path needed. Both are described under [TESTING.md](TESTING.md).
+bandwidth on); a texture the engine uploads into is not a render attachment and stays shared. Uploads
+and buffer copies share one command buffer per frame instead of committing one each, which is what
+the underground chunk-mesh path needed. Both are described under [TESTING.md](TESTING.md).
 
 ---
 

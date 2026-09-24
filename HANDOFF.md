@@ -140,12 +140,15 @@ they measured resolution scaling only, and the CPU floor they implied was optimi
 - **Batch utility submissions.** *Done.* `mmm_write_buffer_bytes`, `mmm_copy_buffer_to_buffer` and
   `mmm_copy_texture_to_texture` share one pending command buffer with a single blit encoder, and
   uploads go into a per-frame staging ring. It cut the underground upload path's cost by 95%.
-- **Storage-mode split.** *Textures done, buffers not.* `MetalTexture` creates private storage unless
-  the engine declares `USAGE_COPY_DST`/`USAGE_COPY_SRC`; depth buffers and color render targets are
-  what that claims, and the log names them. Readback from a private texture goes through a shared
-  staging texture. `mmm_buffer_create` still creates every buffer `MTLStorageModeShared` - the
-  engine's mapping and upload paths touch buffer bytes directly, so a private split there needs the
-  same staging treatment the texture path now has.
+- **Storage-mode split.** *Textures done, buffers not.* `MetalTexture` creates private storage for
+  anything with `USAGE_RENDER_ATTACHMENT`; depth buffers and colour targets are what that claims, and
+  the startup log names them. The rule keys on the render-attachment bit rather than the copy flags,
+  because `RenderTarget` declares the constant 15 (`COPY_DST|COPY_SRC|TEXTURE_BINDING|
+  RENDER_ATTACHMENT`) on both its depth and colour texture - classifying on the copy flags claimed
+  nothing at all. Readback from a private texture goes through a shared staging texture.
+  `mmm_buffer_create` still creates every buffer `MTLStorageModeShared` - the engine's mapping and
+  upload paths touch buffer bytes directly, so a private split there needs the same staging treatment
+  the texture path now has.
 - **Presentation copy.** The `CAMetalLayer` keeps its default BGRA8 format while the main target is
   RGBA8, so the present is a full-screen fragment shader; matching the formats would allow a
   copy-engine blit.
