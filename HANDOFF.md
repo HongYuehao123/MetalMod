@@ -50,7 +50,7 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 3 — pipelines and draw calls | done |
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
-| 6 — dynamic lighting | **in progress**; 6A/6B/6C implemented and verified offline, 6D partial |
+| 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
 | 7 — MetalFX | not started |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
@@ -62,10 +62,18 @@ Phase 5 is complete for the tested vanilla 26.2/M4 Pro scope. All fourteen visua
 confirmed in game; the routed Overworld comparison meets the comparable-performance criterion.
 The final review reran all five offline gates successfully.
 
-Phase 6 (dynamic lighting) is implemented; see [docs/phase6-plan.md](docs/phase6-plan.md) for the
-status, the remaining evidence gates and the limits, and
+Phase 6 (dynamic lighting) is **complete**; see [docs/phase6-plan.md](docs/phase6-plan.md) for the
+final verdict per gate, the carried-forward evidence items and the limits, and
 [docs/lighting-abi.md](docs/lighting-abi.md) for the published light-record contract that Phase 8
 builds on. `TESTING.md` §5.6 is the final-test checklist.
+
+What that means in a session, concretely: held and dropped items, entities, particles and moving
+blocks light the world; a source buried in or sealed by opaque blocks contributes nothing; a placed
+torch is never lit twice because vanilla's baked light stays the authority for it; spectator mode
+turns the feature off by itself while the player's own setting is left alone; and the switches are on
+**Options → MetalMod… → Lighting**, taking effect at the next frame boundary. Phase 6 does not shadow
+anything - light still passes through walls - and that is Phase 8B's, by design rather than by
+omission.
 
 | Switch | Effect |
 |---|---|
@@ -89,9 +97,11 @@ variant it applies, so a log alone says which path ran.
 
 The sources were lost before they were committed and were reconstructed from the compiled classes and
 the interrupted `git add`'s dangling blobs; the recovery found and fixed a wrong test offset and an
-upload that only refreshed on the first light-using draw. **No in-game run of the Phase 6 jar has been
-recorded**, so Mixin application, item lifecycle and in-world appearance are still unsigned, and the
-clustered path has no performance measurement at all.
+upload that only refreshed on the first light-using draw. That reconstruction is now covered by
+in-game running: Mixin application, source lifecycle and in-world appearance have all been exercised,
+and defects it hid - a moving block lit in the wrong frame, a cluster cell that packed three entries
+into a slot claiming four, a glow squid treated as a source - were found in game and fixed. The one
+thing still unmeasured is the clustered path's cost, which is why it is not the default.
 
 ## Retired architecture (deleted in Phase 5)
 

@@ -558,6 +558,14 @@ is only needed if something looks wrong and the per-waypoint table is not enough
 
 ## 5.6 Phase 6 final test
 
+**Run 2026-09-25, and Phase 6 is closed on the result.** Sections A and B were exercised across the
+testing sessions and C in part; the readings and the reasoning are in
+[docs/phase6-plan.md](docs/phase6-plan.md#final-verdict-against-those-gates-2026-09-25). What was
+**not** captured is named there too rather than left to be rediscovered: a photographed wall scene, a
+dimension change and a disconnect/reconnect, and the deterministic scaling and performance records.
+The checklist below is kept as written, because those three items are still what a future session
+should run - the last one belongs with Phase 8, which is where true GPU timing arrives.
+
 The implementation is complete; this pass produces the evidence the remaining Phase 6 gates ask for.
 Everything it needs is already on F3 and in the F8 capture - no code changes are expected, and a
 failure here is a finding rather than a missing step.
@@ -574,6 +582,11 @@ MetalMod block visible: every check below is read from it.
 - After 30 s the hook summary contains `+LevelExtractor.extract +LevelExtractor.setLevel
   +OptionsScreen.init`, and the resource line reads `failures=0 pipelineFailures=0 unboundBindings=0
   missingVertexAttributes=0`.
+- F3 shows **no** `hooks missing ...` line. If one appears it names only hooks whose code runs on any
+  session that draws a frame; the two screen hooks (`OptionsScreen.init`,
+  `MetalModLightingConfigScreen.init`) are not part of that set, because they report when their screen
+  is opened and a session that never opens the settings would otherwise carry a permanent red line
+  meaning "you have not opened a menu yet". Their proof is the `HOOK ACTIVE` line in the log.
 - **No** `point-light proof skipped for ...` line. If one appears, a shader pair did not match its
   recorded fingerprints and is running vanilla.
 

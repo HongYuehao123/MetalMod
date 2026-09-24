@@ -84,6 +84,18 @@ public final class DebugPageTextTest {
                 "a hook that reported is not listed as missing: " + missing);
         require(!missing.contains("+") && !missing.contains("-"),
                 "the list carries names, not the +/- checklist: " + missing);
+        // The two screen hooks report when their screen is opened, which a session may never do. They
+        // are therefore not part of what this reports on: naming them would put a permanent red
+        // "missing" on the page meaning "you have not opened the settings yet", which is how a real
+        // missing hook gets ignored.
+        require(!missing.contains("OptionsScreen.init"),
+                "a hook that waits for its screen is not reported missing: " + missing);
+        require(!missing.contains("MetalModLightingConfigScreen.init"),
+                "the Lighting page hook is not reported missing: " + missing);
+        // The line keeps its teeth: a hook that runs on any session that draws is still named, and
+        // naming one here is the whole reason the line exists.
+        require(missing.contains("GameRenderer.render"),
+                "a hook that should have run by now is still named: " + missing);
         for (String hook : missing.split(" ")) {
             require(hook.isEmpty() || hook.startsWith("GameRenderer") || hook.startsWith("Window")
                             || hook.startsWith("LevelExtractor") || hook.startsWith("OptionsScreen")

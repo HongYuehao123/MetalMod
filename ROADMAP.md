@@ -377,12 +377,18 @@ for the evidence and known limits; older investigation notes above describe the 
 
 ### Phase 6 — Dynamic lighting  · **M–L**
 
-**In progress.** 6A (one synthetic light), 6B (moving sources), 6C (bounded clustered scaling) and
-part of 6D (incremental static block-source index, environment record, versioned diagnostics) are
-implemented behind JVM opt-ins and verified by the offline gates. No in-game run of the Phase 6 jar
-and no performance measurement of the clustered path exist yet. Spot/area evaluation, shadows,
-explicit ownership modes and a shader consumer remain deferred — see
-[the Phase 6 plan](docs/phase6-plan.md) for the precise coverage, evidence and limits.
+**Complete (2026-09-25).** 6A (one synthetic light), 6B (moving sources), 6C (bounded clustered
+scaling) and 6D (incremental static block-source index, environment record, versioned diagnostics) are
+implemented and exercised in game: held and dropped items, entities, particles and moving blocks are
+lit, a buried or sealed source is dropped, spectator mode suppresses evaluation without touching the
+player's setting, and the switches live in the settings screen and apply at the next frame boundary.
+Vanilla stays the authority for placed light - an indexed torch is never added on top of its own baked
+contribution - and the two things this phase deliberately does not do, occlusion and linear
+composition, are handed to Phase 8B in writing. Two evidence items were not captured and are carried
+forward by name in [the Phase 6 plan](docs/phase6-plan.md#phase-6-closed-2026-09-25): a photographed
+wall scene, and the deterministic 0/1/16/64 scaling plus interleaved performance captures that the
+flat-versus-clustered default decision needs. Until that measurement exists, **flat stays the
+default**. Spot/area evaluation, explicit ownership modes and a shader consumer stay deferred.
 
 Vanilla lighting is baked: one block-light and one sky-light value per block, updated on the CPU.
 That gives a shader or a path tracer nothing to work with except a lightmap texture, and nothing that
@@ -530,10 +536,13 @@ must not delay Phases 8–9.
 
 ## 7. Immediate next step
 
-**Phase 6 — continue dynamic lighting.** Phase 5 is complete for the tested vanilla scope. The
-point-light proof and first moving-source slice now pass their offline GPU checks. Follow
-[docs/phase6-plan.md](docs/phase6-plan.md) for an in-game hook/behavior pass, then clustering and a
-consumer contract. Phase 6 is still open.
+**Phase 7 — MetalFX, natively; Phase 8 in parallel for the lighting gaps.** Phase 6 is complete: the
+dynamic-lighting model, its clustered path, its in-game switches and its published light-record ABI
+exist and are exercised in game. What it deliberately leaves behind is named in
+[the Phase 6 plan](docs/phase6-plan.md#phase-6-closed-2026-09-25) — occlusion and linear composition
+to 8B, consumer/ownership to 8, and two uncaptured evidence items (a wall scene and the scaling and
+performance records) that any future session can pick up. The scaling/performance record belongs with
+Phase 8, which is where true GPU timing arrives; until then flat remains the default path.
 
 ## 8. Verified facts and how to re-verify
 

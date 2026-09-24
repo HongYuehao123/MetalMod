@@ -1,10 +1,11 @@
 # Phase 6 — Dynamic lighting
 
-Status: **implementation complete; the evidence gates need a final in-game pass.** 6A, 6B, 6C and the
-implemented part of 6D are done, and the two things Phase 6 deliberately does not do - occlusion and
-linear composition - are handed to Phase 8B in writing. The lifecycle, scaling-record and performance
-gates in §5 are what remains, and all three need a game session rather than code; the capture now
-records the lighting figures they ask for. The published capacity is 64 lights. Updated 2026-09-24.
+Status: **complete (2026-09-25).** 6A, 6B, 6C and the implemented part of 6D are done and exercised
+in game; the two things Phase 6 deliberately does not do - occlusion and linear composition - are
+handed to Phase 8B in writing, and the consumer/ownership modes are handed to Phase 8. The published
+capacity is 64 lights. Two evidence items were never captured and are carried forward by name rather
+than left implied: the wall scene, and the deterministic scaling/performance record
+(see [Phase 6 closed](#phase-6-closed-2026-09-25)).
 Baseline reviewed: `bdcd5c0`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro.
 
 > **Recovery note.** The 6A/6B sources were lost before they were committed. They were reconstructed
@@ -190,17 +191,38 @@ values or save data.
 - **Consumer:** a diagnostic shader reads the published light records, ABI version and shadow flags;
   external ownership disables built-in evaluation. Actual shaderpack compatibility remains optional and does not block native RT.
 
-### Current verdict against those gates (2026-09-24)
+### Final verdict against those gates (2026-09-25)
 
 | Gate | Verdict |
 |---|---|
-| Baseline | **Met.** All five Phase 5 gates green. Feature-off compiles the vanilla pipelines and is asserted; extraction, the block index and every upload sit behind the switch, though "zero uploads while disabled" is argued from the call graph rather than measured. |
-| Image correctness | **Met offline, partly confirmed in game.** The render check covers falloff at centre/radius/outside, two coloured lights, large world and camera coordinates, fog order, cutout, translucency, entities, items and moving blocks, all with explicit composition assertions. Not covered: the offhand specifically, and a literal chunk-boundary crossing (the large-origin case exercises the same arithmetic). |
-| Lifecycle | **Not met.** Pickup, despawn, dimension switch, disconnect/reconnect and resize have no recorded evidence, in game or offline. Buffer churn is covered by the four-rotation fence test, and interpolation by the fractional-camera case, but that is not the gate. |
-| Scope honesty | **Met except the wall scene.** GUI, emissive and glint paths are excluded and asserted; placed torches are indexed but never added on top of their baked light. A wall scene demonstrating the remaining leakage has not been captured. |
-| Scaling | **Not met.** Deterministic scenes have not been run, and the implemented bounds are 64 active lights and 16 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
-| Performance | **Not met.** No measurement of any kind. The interleaved off/on/off/on route captures and the 10% budget are untouched. |
-| Consumer | **Re-scoped, not met.** A diagnostic *shader* consumer and ownership modes were aimed at shaderpacks, which the roadmap has since made an optional track. The first real consumer is now the native material and lighting work in Phase 8 and the ray tracing in Phase 9, so the layout, offsets, version and guarantees are written down in [the light-record ABI](lighting-abi.md) instead; ownership modes move to Phase 8 with them. |
+| Baseline | **Met, and now measured.** All five Phase 5 gates green. The render check asserts the off state compiles the vanilla pipelines *and* measures `uploads=0 clusterBuilds=0`, which the 2026-09-24 table could only argue from the call graph. |
+| Image correctness | **Met.** Offline pixel assertions for falloff at centre/radius/outside, two coloured lights, large world and camera coordinates, fog order, cutout alpha, translucency, entities and items and moving blocks, each with an explicit composition rule; in game, the held item, dropped items, entities, particles, moving blocks and sealed sources all read correctly. Not separately covered: the offhand as its own case, and a literal chunk-boundary crossing. |
+| Lifecycle | **Met by in-game testing, with two cases unrecorded.** Pickup, drop, source removal, live toggle and spectator suppression were exercised in game and behave; spectator produced a real defect, which was fixed and re-tested. No written record was made for a dimension change or a disconnect/reconnect - the code path for both is the one the toggle already drives (`clear()` on level change plus fence rotation), but "argued" is not "observed", so they are named in the carry-forward list rather than claimed here. |
+| Scope honesty | **Met except the wall scene, which is carried forward.** GUI, emissive and glint paths are excluded and asserted; placed torches are indexed but never added on top of their baked light, so vanilla stays the authority for placed light. The unshadowed leak through walls remains, is documented, and belongs to Phase 8B; it is not reported as a bug. |
+| Scaling | **Counters complete; the deterministic record was not captured.** Selected, dropped, occupancy, extraction (now split into entity query, block index and remainder), upload bytes and allocation rate are all on F3 and in the capture. In-game evidence exists at 0 lights (F3, earlier sessions) and 1 light (F3, `lights 1/64 drop 0 \| flat 0.028 ms \| 2 KiB`); 16 and 64 were not driven deliberately, so the 0/1/16/64 record is carried forward. |
+| Performance | **Not met.** No paired off/on capture of one route and no GPU timing, so nothing here is a result. Two consequences are recorded rather than papered over: the proposed 10% budget is still unmeasured, and **the clustered path stays non-default** - switching a default on the strength of a feeling is the exact move this plan exists to prevent. |
+| Consumer | **Re-scoped, not met.** A diagnostic shader consumer and ownership modes move to Phase 8, where the first real consumer is; the layout, offsets, version and guarantees are written down in [the light-record ABI](lighting-abi.md) so that work starts from a contract instead of a header file. |
+
+### Phase 6 closed (2026-09-25)
+
+Phase 6 is closed on the strength of the implementation being complete and exercised, not on every
+gate being measured. The distinction is kept because a phase that closes by redefining its gates
+teaches the next phase nothing. What is carried forward, and to whom:
+
+| Carried forward | Where it goes |
+|---|---|
+| A wall scene showing the unshadowed leak, photographed once | any session; documentation, not code |
+| Dimension change and disconnect/reconnect lifecycle readings | any session; the code path is already in place |
+| 0/1/16/64 deterministic scaling capture, plus three interleaved off/on performance captures and the flat-versus-clustered default decision | the Phase 8 performance pass, which has the true GPU timing this decision needs |
+| Consumer and ownership modes | Phase 8, against [the light-record ABI](lighting-abi.md) |
+| Occlusion and linear composition/exposure/tone mapping | Phase 8B, as specified in the handover above |
+
+Also closed in this pass: the F3 page read `flat 7.4 ms` in one session against a 17.5 ms frame, a
+fifth of the frame from a counter that had read under 0.05 ms before. The same counter read
+`0.028 ms` in the next session and the anomaly did not reproduce, which points at a one-frame index
+refill after a teleport rather than a steady per-frame cost - but one sample does not establish that,
+so extraction is now measured in three parts and F3 names the largest, which is what will attribute
+it if it returns (see the diagnostics bullet in §6).
 
 Closing the gaps, cheapest first: a wall scene and an in-game lifecycle pass cost a session each; the
 scaling and performance gates need the capture route and, for honest numbers, true GPU timing; the
@@ -411,6 +433,16 @@ Implemented:
   floor is deliberate - below it the split is measurement noise, and the page has no width to spare for
   it. `light_entity_query_ns` and `light_block_index_ns` join the capture columns, appended after the
   existing ones so earlier indices keep their meaning.
+- **The hooks line stopped crying wolf (added 2026-09-25).** A session that went straight into the
+  world showed `hooks missing OptionsScreen.init MetalModLightingConfigScreen.init` in red. Neither was
+  missing: those two report from the screen they belong to, and the settings had not been opened. The
+  line therefore fired in every session that skipped the menu, meaning "you have not opened a menu
+  yet" - permanent, unactionable, and the reliable way to teach a reader to ignore the one line that
+  matters. `Diagnostics.missing()` now reports only the hooks whose code runs on any session that
+  draws a frame; the two screen hooks keep their proof in the log's `HOOK ACTIVE` line, which is
+  printed the first time the button or the Lighting page runs and is unambiguous. The whole checklist
+  is still available through `Diagnostics.summary()`. A test pins the classification in both
+  directions: a hook that should have run is still named, and a hook that waits for its screen is not.
 
 ### In-game settings page (added 2026-09-24)
 
@@ -492,8 +524,36 @@ All five Phase 5 gates remain green against the Phase 6 build:
 | `scripts/build_mod.sh` | native library, mod sources, standalone tests and jar built |
 | `scripts/run_smoke.sh` | `ALL CHECKS PASSED` |
 | `tools/shader_inventory/run.sh` | static 87/87, post 9/9, no diagnostics — also with `-Dmetalmod.dynamicLights=true -Dmetalmod.clusteredLights=true` |
-| `tools/render_check/run.sh` | 165 PASS lines; `RENDER CHECK PASSED` |
+| `tools/render_check/run.sh` | 166 PASS lines; `RENDER CHECK PASSED` (165 at the 2026-09-24 review; the 166th is the measured "lighting off uploads nothing" assertion) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
+
+### Final in-game readings (2026-09-25)
+
+Overworld, daytime, render distance 32, one held light source, game mode survival. The whole MetalMod
+section, as it appeared:
+
+```
+[MetalMod] Metal | 5120x2664 | 16.7 ms | wait 10.9 ms | 6813 draws
+[MetalMod] lights 1/64 drop 0 | flat 0.028 ms | 2 KiB
+[MetalMod] blocks 203/510 | pend 0 | scan 510 evict 0
+[MetalMod] env overworld | day 0.38 | darken 0 | rain 0.00
+[MetalMod] health 0/0/0 ok
+[MetalMod] UMA 7.4 GB Normal
+```
+
+Read against what each number is supposed to be: one held source published, nothing dropped; the
+static index fully cached (510 sections, under the 512 cap, which is why `evict 0` is the consistent
+reading rather than a suspicious one) with nothing pending; the environment record agreeing with the
+bright scene; no pipeline, binding, attribute or CPU-access failures. `2 KiB` is the whole 2064-byte
+flat set, so the upload is the size the ABI says it is. Extraction is 0.028 ms and therefore below the
+0.1 ms floor, so the line correctly carries no breakdown. `UMA 7.4 GB` is process-resident memory under
+a 17.8 GB working-set cap at render distance 32, reported as `Normal` pressure - a scene cost, not a
+lighting one, and not something Phase 6 introduced.
+
+Between this session and the one before it, extraction went 0.003 ms → 7.4 ms → 0.028 ms on the same
+counter with the same feature set. The 7.4 ms spike did not reproduce, so it is recorded here as
+unexplained-but-transient rather than as either a fixed defect or a settled cost; the split added in
+this pass is what will name it if it comes back.
 
 What the render check now covers for lighting, beyond the 6A assertions listed in §6:
 

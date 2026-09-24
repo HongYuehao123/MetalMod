@@ -159,6 +159,8 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         // Surfaces problems without needing the game log: the F3 screen is the one place a user
         // reliably looks when something is wrong. Only the hooks that did *not* apply are named -
         // listing all seven every frame was the longest line on the page, spent on the good case.
+        // The two screen hooks are excluded inside Diagnostics rather than here, because "not yet
+        // opened the settings" is not something this line can distinguish from "the injection failed".
         String missing = net.metalmod.Diagnostics.missing();
         if (!missing.isEmpty()) {
             displayer.addLine("§6[MetalMod]§r §chooks missing§r " + missing);

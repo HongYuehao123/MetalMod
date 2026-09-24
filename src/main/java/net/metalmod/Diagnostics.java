@@ -47,6 +47,24 @@ public final class Diagnostics {
             "MetalModLightingConfigScreen.init"
     );
 
+    /**
+     * Of {@link #HOOKS}, the ones whose code runs on any session that draws a frame.
+     *
+     * <p>Absence here is a fault, and it is what {@link #missing()} reports. The two screen hooks are
+     * deliberately not members: they run when their screen is opened, so a session that never opens the
+     * settings would show a red "hooks missing OptionsScreen.init MetalModLightingConfigScreen.init" -
+     * an alarm reading "you have not opened a menu yet". Permanent, unactionable, and exactly the kind
+     * of line that trains the reader to ignore the one that matters. Their proof stays where it is
+     * unambiguous: the {@code HOOK ACTIVE} line in the log, printed the first time the button or the
+     * Lighting page runs.
+     */
+    private static final List<String> EXPECTED_EVERY_SESSION = List.of(
+            "GameRenderer.render",
+            "GameRenderer.resize",
+            "Window.onFramebufferResize",
+            "LevelExtractor.extract",
+            "LevelExtractor.setLevel");
+
     private static final Set<String> SEEN = ConcurrentHashMap.newKeySet();
 
     private Diagnostics() {
@@ -64,10 +82,16 @@ public final class Diagnostics {
         return SEEN.contains(name);
     }
 
-    /** The hooks that have not reported, space-separated; empty when every one applied. */
+    /**
+     * The hooks that should have reported by now and have not; empty when every one applied.
+     *
+     * <p>Only {@link #EXPECTED_EVERY_SESSION} is consulted. A hook that waits for a screen to open is
+     * not a fault until that screen has been opened, and this method cannot tell the two apart, so it
+     * does not guess. Use {@link #summary()} for the full checklist.
+     */
     public static String missing() {
         StringBuilder sb = new StringBuilder();
-        for (String hook : HOOKS) {
+        for (String hook : EXPECTED_EVERY_SESSION) {
             if (!SEEN.contains(hook)) {
                 if (sb.length() > 0) sb.append(' ');
                 sb.append(hook);
