@@ -1,7 +1,9 @@
 # Phase 6 — Dynamic lighting
 
-Status: **6A, 6B and 6C implemented and verified offline; 6D is partially implemented. No in-game
-run of the Phase 6 jar has been recorded yet.** Updated 2026-09-24.
+Status: **6A, 6B and 6C are implemented and verified; 6D is partly implemented. Phase 6 is NOT
+complete** - the lifecycle, scaling-measurement, performance and consumer gates in §5 are unmet, and
+the implemented cap is 32 lights rather than the proposed 256. The feature is usable and the wiring is
+confirmed in game. Updated 2026-09-24.
 Baseline reviewed: `bdcd5c0`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro.
 
 > **Recovery note.** The 6A/6B sources were lost before they were committed. They were reconstructed
@@ -185,6 +187,24 @@ values or save data.
   GPU-specific conclusions, or label wall-time evidence as such.
 - **Consumer:** a diagnostic shader reads the published light records, ABI version and shadow flags;
   external ownership disables built-in evaluation. Actual shaderpack compatibility remains Phase 7.
+
+### Current verdict against those gates (2026-09-24)
+
+| Gate | Verdict |
+|---|---|
+| Baseline | **Met.** All five Phase 5 gates green. Feature-off compiles the vanilla pipelines and is asserted; extraction, the block index and every upload sit behind the switch, though "zero uploads while disabled" is argued from the call graph rather than measured. |
+| Image correctness | **Met offline, partly confirmed in game.** The render check covers falloff at centre/radius/outside, two coloured lights, large world and camera coordinates, fog order, cutout, translucency, entities, items and moving blocks, all with explicit composition assertions. Not covered: the offhand specifically, and a literal chunk-boundary crossing (the large-origin case exercises the same arithmetic). |
+| Lifecycle | **Not met.** Pickup, despawn, dimension switch, disconnect/reconnect and resize have no recorded evidence, in game or offline. Buffer churn is covered by the four-rotation fence test, and interpolation by the fractional-camera case, but that is not the gate. |
+| Scope honesty | **Met except the wall scene.** GUI, emissive and glint paths are excluded and asserted; placed torches are indexed but never added on top of their baked light. A wall scene demonstrating the remaining leakage has not been captured. |
+| Scaling | **Not met.** Deterministic 0/1/16/64/256 scenes have not been run, and the cap is 32 lights with 4 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
+| Performance | **Not met.** No measurement of any kind. The interleaved off/on/off/on route captures and the 10% budget are untouched. |
+| Consumer | **Not met.** No diagnostic shader consumer and no ownership modes. The records, ABI version and cluster table are published and unit-tested, but nothing shipped reads them as a consumer. |
+
+Closing the gaps, cheapest first: a wall scene and an in-game lifecycle pass cost a session each; the
+scaling and performance gates need the capture route and, for honest numbers, true GPU timing; the
+consumer gate is a new slice. Raising the cap to the proposed 256 is a separate piece of work - it
+needs a buffer or texture-backed list rather than the current uniform array, and it should not be
+attempted before the performance gate, which is what would justify it.
 
 ## 6. Implementation update (2026-09-24)
 
