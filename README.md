@@ -6,8 +6,9 @@ drives `MTLDevice` / `CAMetalLayer` directly: real Metal textures, pipelines com
 Minecraft's own shaders, real render passes, and presentation of the engine's render target to the
 drawable.
 
-Apple's **MetalFX** upscaling / frame interpolation, shaderpack support and native ray tracing are
-later phases; **dynamic lighting** is Phase 6 and is in progress — see
+Apple's **MetalFX** upscaling / frame interpolation, native material/lighting foundations and hybrid
+ray tracing are the core later phases. **GLSL shaderpacks are optional future compatibility work**;
+**dynamic lighting** is Phase 6 and is in progress — see
 [docs/phase6-plan.md](docs/phase6-plan.md). Known defects are parked in [bug.md](bug.md).
 
 > ## Current status: the Metal backend renders; Phase 6 dynamic lighting is in progress

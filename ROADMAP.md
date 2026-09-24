@@ -8,16 +8,18 @@
 
 ## 1. The goal
 
-Three objectives, in increasing order of ambition:
+The core path is a native Metal renderer, MetalFX, and hybrid ray tracing on Apple Silicon:
 
-1. **Run shaderpacks** — existing GLSL packs, and whatever Vulkan-era format appears.
-2. **A native Metal renderer backend for Minecraft** — the VulkanMod analogue, and the reason the
+1. **A native Metal renderer backend for Minecraft** — the VulkanMod analogue, and the reason the
    project is called MetalMod.
-3. **Native ray tracing on Apple Silicon.**
+2. **MetalFX upscaling and frame interpolation** over backend-owned resources.
+3. **Native materials, lighting and ray tracing**, delivered incrementally while retaining a usable
+   raster fallback.
 
-All three require Metal code and MetalFX. All three are gated on the same prerequisite, which is
-goal 2: once MetalMod *is* the renderer, the other two become ordinary features of it rather than
-cross-API hacks.
+**Existing GLSL shaderpacks are an optional compatibility track.** They are not a prerequisite for
+native lighting or ray tracing, and Iris integration is not a core dependency. Native presets and a
+bounded post-processing interface can provide customisation without implementing the entire pack
+runtime. Preserve extension points without letting speculative pack requirements drive the renderer.
 
 ---
 
@@ -268,8 +270,8 @@ Phase 4 added:
 BUG-004.
 
 **Risk:** MC's `ShaderType` has only `VERTEX` and `FRAGMENT`. Any pack needing compute or geometry
-shaders — common in modern shaderpacks — requires extending the pipeline beyond what the vanilla
-abstraction models. Plan for that in Phase 8.
+shaders requires extending the pipeline beyond what the vanilla abstraction models. Native compute
+for ray tracing is Phase 8 work; additional pack stages belong to the optional compatibility track.
 
 ### Phase 5 — Vanilla render parity  · **L–XL**  ✅ **DONE**
 
@@ -295,7 +297,7 @@ remaining known gap (the Nether has a route but no paired run) are in
 **Compatibility risk (decision: not pursued).** Sodium replaces terrain rendering, and it was named
 here as Phase 5's main compatibility risk. The call is now to **not** port or test Sodium: it sits on
 Blaze3D's abstraction in modern versions, so it should follow without backend work, and it does not
-make Phase 8's shaderpack work easier. Iris is a separate Phase 8 dependency. If a Metal+Sodium
+make optional shaderpack work easier. Iris integration is an optional investigation. If a Metal+Sodium
 combination is ever attempted, the relevant backend gap is the indirect/multi-draw-indirect path,
 which is still a documented no-op (see §6).
 
@@ -336,8 +338,8 @@ The census also drove the opposite conclusion for blending. Vanilla uses ten dis
 functions, and the harness exercised exactly one of them, so all eight factors vanilla actually
 blends with rested on an SDK-header table and nothing else - the same kind of evidence that let
 BUG-006 hide. Every one of the ten is now rendered and compared against the blend equation evaluated
-on the CPU, along with the five factors BUG-006 corrected that vanilla never uses but Phase 8's
-shaderpacks will. The CPU model rounds its inputs to 8 bits first, so the expectation matches the
+on the CPU, along with the five factors BUG-006 corrected that vanilla never uses but future
+shaderpacks may use. The CPU model rounds its inputs to 8 bits first, so the expectation matches the
 attachment exactly rather than within a tolerance that could hide an off-by-one; breaking any single
 factor mapping now fails precisely the cases that use it.
 
@@ -384,8 +386,8 @@ explicit ownership modes and a shader consumer remain deferred — see
 
 Vanilla lighting is baked: one block-light and one sky-light value per block, updated on the CPU.
 That gives a shader or a path tracer nothing to work with except a lightmap texture, and nothing that
-moves. Both shaderpacks (Phase 8) and ray tracing (Phase 9) need a real light model, so it is its
-own phase rather than a detail of either.
+moves. Native lighting foundations (Phase 8) and ray tracing (Phase 9) need explicit light data, so
+the light-source model has its own phase. Existing packs will not automatically consume this data.
 
 - **A light-source model.** Point/spot/area lights with colour and intensity, emitted by blocks,
   entities, held items and the sky, collected per frame into a GPU-readable light buffer.
@@ -394,14 +396,16 @@ own phase rather than a detail of either.
   backend this can be a renderer-side additive light pass instead of CPU light propagation.
 - **Scalable evaluation.** Clustered-forward or deferred lighting so many lights stay affordable,
   with light culling and per-cluster lists.
-- **Expose it downstream.** Publish lights, intensities and shadow-casting flags to shaderpacks as
-  uniforms, and keep the data in a form a BLAS/TLAS path tracer can sample in Phase 9.
+- **Expose it downstream.** Publish a versioned GPU-readable light set, intensities and requested
+  shadow flags for native lighting and ray tracing. A diagnostic shader validates consumption;
+  optional pack integration would need an explicit extension or adapter.
 
-**Done when:** emissive and movable sources affect the scene consistently, and a shaderpack can read
-the light set instead of reconstructing lighting from the vanilla lightmap alone.
+**Done when:** emissive and movable sources affect the scene consistently, and a diagnostic shader
+reads the published light set. Complete the lifecycle, scaling, performance and consumer gates in
+[the Phase 6 plan](docs/phase6-plan.md); loading an actual shaderpack is not a gate.
 
 **Dependencies:** needs Phase 3 (draw calls) plus the lightmap and post-processing passes from
-Phase 5. It is a prerequisite for good shaderpack lighting (Phase 8) and for any ray-traced lighting
+Phase 5. Its light contract feeds native material/lighting work (Phase 8) and ray-traced lighting
 (Phase 9).
 
 **Risks:** many lights is a performance problem before it is a correctness problem — keep the light
@@ -412,7 +416,7 @@ feature stays user-toggleable so a pack that brings its own lighting is not doub
 
 MetalMod owns the device, textures and swapchain, so MetalFX can operate on our own resources
 without interop or presentation conflicts. Shaderpack support is not a prerequisite: validate the
-integration against the vanilla rendering path first, then extend it to packs in Phase 8.
+integration against the vanilla rendering path first, then reuse it for native lighting and RT.
 
 Deliver in three increments:
 
@@ -429,8 +433,8 @@ Deliver in three increments:
 
 **Integration contract:** define the scene-colour, depth and motion inputs, their resolution and
 coordinate conventions, and temporal-history ownership. Specify where upscaling/interpolation sits
-relative to post-processing and HUD composition so Phase 8 can integrate shaderpack output against
-this contract.
+relative to post-processing and HUD composition so Phases 8–9 can compose native lighting and RT
+against this contract. Optional pack integration must declare its own temporal-processing ownership.
 
 **Done when:** spatial and temporal modes render correctly through resizing and history resets,
 with measured quality and performance; frame generation passes its separate pacing and latency
@@ -438,33 +442,71 @@ checks on supported hardware. Unsupported modes fall back cleanly, and the featu
 native-resolution rendering.
 
 **Dependencies:** builds on Phase 5's rendering and presentation foundations. Complete Phase 6's
-existing gates before starting this phase; shaderpack compatibility follows in Phase 8.
+existing gates before starting this phase. Frame generation is independently validated and is not
+an algorithmic prerequisite for ray tracing.
 
 **Risks:** owning presentation removes the old interoperability obstacle, but motion correctness,
 temporal reconstruction and frame generation remain substantial work. Validate each increment
 independently rather than treating all three as a small scaler integration.
 
-### Phase 8 — Shaderpacks  · **L**
+### Phase 8 — Native material and lighting foundations  · **M–L**
 
-- A shaderpack-aware `ShaderSource` (packs ship GLSL, so the Phase 4 path applies).
-- Injecting pack-declared passes (shadow, deferred, composite) into the frame graph.
-- Extending beyond vertex/fragment for packs that use compute — likely a backend-specific extension to `RenderPipeline`.
-- Pack-provided uniforms, samplers, custom textures, and buffer formats.
-- Integrating pack output with Phase 7's MetalFX input and composition contract, with explicit
-  capability checks and fallback when a pack cannot supply the inputs a selected mode requires.
+Build only the foundations needed by the first ray-traced effect; a complete cinematic renderer is
+not a prerequisite. See [the ray-tracing plan](docs/raytracing-plan.md) for requirements and evidence.
 
-**Done when:** a representative set of popular packs loads without errors and produces correct
-output. Feature coverage, not a single pack, is the milestone. Supported MetalFX combinations are
-validated, and unsupported combinations fall back explicitly.
+- **8A — Surface and material contract.** Depth, normals, base colour, alpha/cutout rules and stable
+  material identity, with vanilla-texture defaults. Reserve roughness, metallic and emission fields;
+  detailed PBR resource-pack support follows when reflections need it.
+- **8B — Lighting composition.** Separate a native direct-light contribution from baked vanilla
+  light so a ray visibility result can shadow that contribution without darkening the entire final
+  image or applying lighting twice. Define linear-light composition, exposure and tone mapping.
+- **8C — Execution and scene contracts.** Add the native compute/resource-binding and synchronization
+  path required for RT and filtering. Define chunk-mesh publication, geometry/material lifetime and
+  current/previous-frame transforms. Expose the minimum surface buffers; add multiple colour targets
+  only where the chosen implementation needs them.
 
-### Phase 9 — Ray tracing  · **XL (research)**
+**Done when:** diagnostic views validate the surface inputs, a synthetic visibility mask correctly
+modulates the selected native light, and chunk updates publish versioned geometry safely. The
+feature-off raster path remains correct. These are contracts for Phase 9, not a requirement to build
+all materials, all lighting effects or shaderpack compatibility first.
 
-- Build BLAS/TLAS from chunk meshes; rebuild strategy for chunk edits.
-- Hybrid raster + RT: shadows, reflections, ambient occlusion first; full path tracing later.
-- Denoising and temporal accumulation on top of Phase 7's machinery.
+### Phase 9 — Hybrid ray tracing  · **XL (research, incremental)**
 
-Apple silicon M3 and later have hardware ray tracing; this is the objective that most justifies a
-native Metal backend, since MoltenVK cannot express it at all.
+- **9A — One-effect proof.** Native Metal acceleration structures for a bounded terrain region;
+  one hard directional shadow ray per selected surface sample, applied to Phase 8's direct light.
+  Start with opaque static terrain and make coverage limits visible in diagnostics.
+- **9B — Playable shadow coverage.** Chunk edits, loading/unloading, off-screen occluders, cutout
+  alpha tests and moving entities; bounded rebuild work, safe GPU lifetimes and raster fallback.
+  Glass/water transmission remains an explicit limitation until separately implemented.
+- **9C — Quality and stability.** Sampled soft shadows and effect-specific denoising using depth,
+  normals, motion and history rejection. Reuse Phase 7's temporal contracts; an upscaler alone is
+  not a complete RT denoiser. Measure GPU time, memory and chunk-update spikes.
+- **9D — Further effects.** Reflections, then indirect lighting, each with its own material,
+  sampling and validation gates. AO is optional and must not double-count existing occlusion.
+  Refraction and full path tracing are later research, not the first RT release requirement.
+
+**Done when (initial release):** the bounded hybrid-shadow mode is playable, visually verified and
+measured on the reference hardware through movement, edits and world transitions. Publish supported
+geometry/materials, ray distance, quality settings and measured costs. Later effects have separate
+acceptance gates; full path tracing and GLSL packs do not block the initial release.
+
+**Hardware policy:** query runtime Metal RT support and distinguish API availability from hardware
+acceleration. Start performance validation on the existing M4 Pro reference machine; retain raster
+rendering on unsupported or insufficiently performant configurations. See Apple's capability links
+and the test matrix in [the ray-tracing plan](docs/raytracing-plan.md).
+
+### Optional track — GLSL shaderpack compatibility  · **XL, not on the RT critical path**
+
+Investigate only with a bounded pack/feature target. Choose between adapting Iris components and a
+compatible native pack runtime after an end-to-end prototype; neither is assumed to be available.
+Work includes GLSL transformation, pack uniforms/attributes, multiple render targets, shadow and
+composite pass ordering, buffer flipping, and compute/storage resources for packs that require them.
+Geometry/tessellation stages need separate feasibility checks.
+
+**Acceptance:** a declared compatibility matrix with visually verified packs and settings, explicit
+unsupported-feature errors/fallbacks, and lighting/temporal ownership rules for MetalFX and native RT.
+Existing packs do not automatically gain native RT or consume MetalMod's light buffer. This track
+must not delay Phases 8–9.
 
 ---
 
@@ -480,9 +522,9 @@ native Metal backend, since MoltenVK cannot express it at all.
   and theirs does not. Budget ongoing maintenance.
 - **Feature gaps.** Apple GPUs differ from the Vulkan feature set MC targets; some assumptions will
   need `DeviceFeatures` negotiation rather than hardcoding.
-- **Ecosystem.** Iris must work for shaderpacks (Phase 8). Sodium compatibility is explicitly not
-  pursued: it sits on Blaze3D's abstraction, and porting it does not make shaderpack work easier. If
-  it is ever attempted, the indirect-draw path is the known gap.
+- **Ecosystem.** Shaderpacks and Iris integration are optional compatibility work. Sodium
+  compatibility remains outside the core scope; if attempted, the indirect-draw path is a known gap.
+  Native RT must stand on its own with vanilla resources and documented material defaults.
 
 ---
 
