@@ -624,11 +624,20 @@ Walk one dense scene and read F3, then the capture:
   cell wanted more than its 16 entries.
 - `light cost X ms extract | Y KiB up | Z cluster builds`.
 
+**Read the extraction cost with its breakdown.** Past 0.1 ms the same line adds the largest of the three
+parts, so `flat 7.4 ms (ent 7.3)` says the entity query owns the time, `(idx …)` the static block index,
+and `(oth …)` occlusion, sorting and publishing. The distinction matters because they have different
+fixes and different expected values: the entity query scales with what is loaded around the player and
+runs every frame, while the index is meant to be a bounded number of map lookups once its sections are
+cached. A large `(ent …)` on a scene with almost nothing in it is the interesting failure.
+
 Then run an F8 capture in scenes with roughly 0, 1, 16 and 64 nearby sources. The CSV now carries
 `light_published`, `light_dropped`, `light_buried`, `light_examined`, `light_allocated`,
 `light_extract_ns`, `light_cluster_builds`, `light_cluster_build_ns`, `light_uploads`,
-`light_upload_bytes`, `light_occupancy_max`, `light_overflowed`, `light_evicted` and
-`light_unreachable`, which is what the scaling gate asks to record.
+`light_upload_bytes`, `light_occupancy_max`, `light_overflowed`, `light_evicted`,
+`light_unreachable`, `light_entity_query_ns` and `light_block_index_ns`, which is what the scaling gate
+asks to record. `light_entity_query_ns + light_block_index_ns` subtracted from `light_extract_ns` is
+the remainder F3 names as `oth`.
 
 ### F. Performance, and one open decision
 

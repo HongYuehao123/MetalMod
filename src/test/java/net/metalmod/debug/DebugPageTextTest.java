@@ -19,12 +19,39 @@ public final class DebugPageTextTest {
         try {
             environmentSummaryStaysShort();
             missingHooksNameOnlyWhatIsMissing();
+            extractionBreakdownNamesTheLargestPart();
             System.out.println("PASS debug page text: environment summary and hook line stay short");
             return 0;
         } catch (AssertionError error) {
             error.printStackTrace();
             return 1;
         }
+    }
+
+    /**
+     * The extraction breakdown has to name the part that actually dominates, including the remainder.
+     *
+     * <p>Each case gives a different half the milliseconds, so a label hard-wired to one of them - which
+     * is the plausible mistake, and the one that would send the next investigation to the wrong
+     * subsystem - fails instead of reading sensibly.
+     */
+    private static void extractionBreakdownNamesTheLargestPart() {
+        // 7.4 ms of which almost all is the entity query: the observed slow case.
+        String entity = MetalModDebugEntry.extractBreakdown(7_400_000L, 7_300_000L, 40_000L);
+        require(entity.contains("ent 7.3"), "the entity query is named when it dominates: " + entity);
+        String index = MetalModDebugEntry.extractBreakdown(7_400_000L, 40_000L, 7_300_000L);
+        require(index.contains("idx 7.3"), "the block index is named when it dominates: " + index);
+        // Neither measured half dominates, so the remainder is named rather than the larger half
+        // absorbing it: occlusion, sorting and publishing are a different fix again.
+        String other = MetalModDebugEntry.extractBreakdown(7_400_000L, 40_000L, 30_000L);
+        require(other.contains("oth 7.3"), "the remainder is named when neither half dominates: " + other);
+        // Below a tenth of a millisecond there is nothing to split, and the page keeps its width.
+        require(MetalModDebugEntry.extractBreakdown(99_999L, 90_000L, 0L).isEmpty(),
+                "a sub-0.1 ms extraction is not split on the page");
+        // Extraction faster than its parts would be a measurement bug; it must not print a negative.
+        String over = MetalModDebugEntry.extractBreakdown(5_000_000L, 3_000_000L, 3_000_000L);
+        require(!over.contains("-"), "an over-counted split never prints a negative: " + over);
+        require(over.contains("ent 3.0"), "an over-counted split still names a measured part: " + over);
     }
 
     private static void environmentSummaryStaysShort() {

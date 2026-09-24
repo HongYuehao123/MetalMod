@@ -40,6 +40,10 @@ public final class LightCollector {
         HELD.clear();
         dropped = 0;
         occluded = 0;
+        // The split is cleared with the set it belongs to: a suppressed or detached frame must not
+        // report the previous frame's breakdown, which is the one reading that would look plausible.
+        entityQueryNanos = 0L;
+        blockIndexNanos = 0L;
     }
 
     /** Publish a complete extraction result. Used by the extractor and offscreen rendering checks. */
@@ -57,6 +61,8 @@ public final class LightCollector {
     private static int examined;
     private static int allocated;
     private static volatile long extractNanos;
+    private static volatile long entityQueryNanos;
+    private static volatile long blockIndexNanos;
     /** Source ids kept by the previous frame's selection, for hysteresis. */
     private static final java.util.Set<Long> HELD = new java.util.HashSet<>();
     /**
@@ -99,6 +105,19 @@ public final class LightCollector {
     public static long extractNanos() { return extractNanos; }
 
     /**
+     * Of {@link #extractNanos()}, the part spent in the per-frame entity query and in its source test.
+     *
+     * <p>Split out because the total alone cannot say whether a slow extraction is the entity query -
+     * which scales with how much is loaded around the player - or the static block index, which is
+     * meant to be a bounded number of map lookups once its sections are cached. The remainder,
+     * {@code extractNanos - entityQueryNanos - blockIndexNanos}, is occlusion, sorting and publishing.
+     */
+    public static long entityQueryNanos() { return entityQueryNanos; }
+
+    /** Of {@link #extractNanos()}, the part spent querying the static block index. */
+    public static long blockIndexNanos() { return blockIndexNanos; }
+
+    /**
      * Publish this frame's light set.
      *
      * <p>Collection reads the camera and the level and never the player's mode. The game-mode decision
@@ -124,6 +143,7 @@ public final class LightCollector {
         environment = EnvironmentRecord.capture(level, partialTick);
         List<Candidate> candidates = new ArrayList<>();
         // Query all entities whose source can reach the view, even when their own mesh is culled.
+        long entityStartedAt = System.nanoTime();
         for (Entity entity : level.getEntities((Entity) null, AABB.ofSize(view,
                 SEARCH_RADIUS * 2, SEARCH_RADIUS * 2, SEARCH_RADIUS * 2), e -> !e.isRemoved())) {
             if (entity instanceof ItemEntity dropped) {
@@ -140,14 +160,17 @@ public final class LightCollector {
                 // the player is holding, or one they dropped.
             }
         }
+        entityQueryNanos = System.nanoTime() - entityStartedAt;
         // Static emitting blocks come from the incremental section index, not from a per-frame scan,
         // and are marked as already baked into vanilla's lightmap so they are not added twice.
+        long blockStartedAt = System.nanoTime();
         for (BlockLightIndex.BlockEmitter emitter : BlockLightIndex.collect(level, view.x, view.y, view.z)) {
             if (emitter.baked()) {
                 continue;
             }
             addStatic(candidates, emitter, view);
         }
+        blockIndexNanos = System.nanoTime() - blockStartedAt;
         // A source buried in opaque material, or sealed into a cell with no opening, emits nothing:
         // vanilla's light has no first step to take, and an unshadowed evaluator would otherwise pour
         // it straight through the surrounding wall. See LightOcclusion for what this does not cover.

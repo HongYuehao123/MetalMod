@@ -85,7 +85,10 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                     .append("/").append(net.metalmod.lighting.LightSnapshot.CAPACITY)
                     .append("§r drop §b").append(net.metalmod.lighting.LightCollector.dropped())
                     .append("§r | ").append(cost.clustered() ? "clustered" : "flat")
-                    .append(" §b").append(extract).append(" ms§r | §b")
+                    .append(" §b").append(extract).append(" ms")
+                    .append(extractBreakdown(cost.extractNanos(), cost.entityQueryNanos(),
+                            cost.blockIndexNanos()))
+                    .append("§r | §b")
                     .append(cost.uploadBytes() / 1024).append(" KiB");
             // Buried sources are an anomaly, so they are named only when there are any: a permanent
             // "buried 0" is width spent on the normal case.
@@ -175,5 +178,23 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         // LOCALE.ROOT: under a German locale the default format prints "17,5", and the capture
         // summary is pinned the same way.
         return String.format(java.util.Locale.ROOT, "%.1f", value);
+    }
+
+    /**
+     * Name the largest part of the extraction time, or nothing when extraction is too fast to split.
+     *
+     * <p>"flat 7.4 ms" says the feature is costing a fifth of the frame but not where, and the two
+     * halves have opposite fixes: the entity query is loaded-world work that a section-relative query
+     * or a cheaper predicate would cut, while index time is the static scan budget. The remainder is
+     * named too, so the three cases - entities, index, other - are distinguishable rather than the
+     * breakdown quietly attributing other people's milliseconds to whichever half is larger.
+     */
+    static String extractBreakdown(long extractNanos, long entityNanos, long blockNanos) {
+        // Below a tenth of a millisecond the split is measurement noise and the width is better spent.
+        if (extractNanos < 100_000L) return "";
+        long otherNanos = Math.max(0L, extractNanos - entityNanos - blockNanos);
+        long largest = Math.max(entityNanos, Math.max(blockNanos, otherNanos));
+        String label = largest == entityNanos ? "ent" : largest == blockNanos ? "idx" : "oth";
+        return " (" + label + " " + oneDecimal(largest / 1_000_000f) + ")";
     }
 }

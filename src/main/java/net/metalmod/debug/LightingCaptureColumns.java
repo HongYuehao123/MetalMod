@@ -22,7 +22,7 @@ public final class LightingCaptureColumns {
             "light_examined", "light_allocated", "light_extract_ns", "light_cluster_builds",
             "light_cluster_build_ns", "light_uploads", "light_upload_bytes", "light_occupancy_max",
             "light_occupancy_mean_x100", "light_cells_touched", "light_overflowed", "light_evicted",
-            "light_unreachable");
+            "light_unreachable", "light_entity_query_ns", "light_block_index_ns");
 
     private LightingCaptureColumns() {}
 
@@ -47,6 +47,8 @@ public final class LightingCaptureColumns {
             case 15 -> stats.overflowed();
             case 16 -> stats.evicted();
             case 17 -> stats.unreachable();
+            case 18 -> stats.entityQueryNanos();
+            case 19 -> stats.blockIndexNanos();
             default -> -1;
         };
     }

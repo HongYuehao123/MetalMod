@@ -401,6 +401,16 @@ Implemented:
   not exist and produces no illumination. Its cost is small - sections are read on demand with a
   palette prefilter, a handful per frame at most - but `block sources 297 in 512 sections` is not
   evidence of anything lighting the world.
+- **Extraction cost is split (added 2026-09-25).** A session reported `flat 7.4 ms` on a page whose
+  earlier readings had been under 0.05 ms, against a 17.5 ms frame: a fifth of the frame, from a number
+  that says nothing about where. The total is now measured in three parts - the entity query, the static
+  block index, and the remainder (occlusion, sorting, publishing) - and past 0.1 ms F3 names the largest
+  as `(ent …)`, `(idx …)` or `(oth …)`. The split is on the page rather than only in the capture because
+  the two big halves have opposite fixes: the entity query is loaded-world work that runs every frame,
+  while the index is meant to be a bounded set of map lookups once its sections are cached. The 0.1 ms
+  floor is deliberate - below it the split is measurement noise, and the page has no width to spare for
+  it. `light_entity_query_ns` and `light_block_index_ns` join the capture columns, appended after the
+  existing ones so earlier indices keep their meaning.
 
 ### In-game settings page (added 2026-09-24)
 

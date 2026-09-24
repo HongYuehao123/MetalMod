@@ -16,13 +16,14 @@ public final class LightingCaptureColumnsTest {
             // Distinct per field, in declaration order, so a swapped pair shows up as a mismatch.
             MetalDevice.LightingStats stats = new MetalDevice.LightingStats(
                     true, true, 101, 102, 103, 104, 105, 106L, 107, 108L, 109, 110L,
-                    111, 112, 113, 114, 115, 116);
+                    111, 112, 113, 114, 115, 116, 117L, 118L);
             String[] expected = {
                     "light_enabled", "light_clustered", "light_published", "light_dropped",
                     "light_buried", "light_examined", "light_allocated", "light_extract_ns",
                     "light_cluster_builds", "light_cluster_build_ns", "light_uploads",
                     "light_upload_bytes", "light_occupancy_max", "light_occupancy_mean_x100",
-                    "light_cells_touched", "light_overflowed", "light_evicted", "light_unreachable"};
+                    "light_cells_touched", "light_overflowed", "light_evicted", "light_unreachable",
+                    "light_entity_query_ns", "light_block_index_ns"};
             require(LightingCaptureColumns.NAMES.size() == expected.length,
                     "the column list matches the mapped values: " + LightingCaptureColumns.NAMES.size()
                             + " names, " + expected.length + " mapped");
@@ -32,7 +33,7 @@ public final class LightingCaptureColumnsTest {
             }
             require(LightingCaptureColumns.value(stats, 0) == 1, "enabled reads as 1");
             require(LightingCaptureColumns.value(stats, 1) == 1, "clustered reads as 1");
-            // Fields are 101..116 from column 2 on, so column i must read 99 + i: a swapped pair
+            // Fields are 101..118 from column 2 on, so column i must read 99 + i: a swapped pair
             // would land on a neighbour's value and fail here.
             for (int i = 2; i < expected.length; i++) {
                 require(LightingCaptureColumns.value(stats, i) == 99 + i,
@@ -44,7 +45,7 @@ public final class LightingCaptureColumnsTest {
             // The flag columns are booleans, so the false case has to read as 0 rather than as "off by
             // omission" - a capture where disabled frames carried no value would be unreadable.
             MetalDevice.LightingStats off = new MetalDevice.LightingStats(
-                    false, false, 0, 0, 0, 0, 0, 0L, 0, 0L, 0, 0L, 0, 0, 0, 0, 0, 0);
+                    false, false, 0, 0, 0, 0, 0, 0L, 0, 0L, 0, 0L, 0, 0, 0, 0, 0, 0, 0L, 0L);
             require(LightingCaptureColumns.value(off, 0) == 0
                     && LightingCaptureColumns.value(off, 1) == 0, "disabled reads as 0, not by omission");
             System.out.println("PASS lighting capture columns: names, order and values agree");

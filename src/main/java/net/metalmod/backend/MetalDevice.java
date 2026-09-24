@@ -333,10 +333,11 @@ public final class MetalDevice implements GpuDeviceBackend {
                                 int buried, int examined, int allocated, long extractNanos,
                                 int clusterBuilds, long clusterBuildNanos, int uploads,
                                 long uploadBytes, int occupancyMax, int occupancyMean100,
-                                int cellsTouched, int overflowed, int evicted, int unreachable) {
+                                int cellsTouched, int overflowed, int evicted, int unreachable,
+                                long entityQueryNanos, long blockIndexNanos) {
 
         static final LightingStats EMPTY = new LightingStats(false, false, 0, 0, 0, 0, 0, 0L,
-                0, 0L, 0, 0L, 0, 0, 0, 0, 0, 0);
+                0, 0L, 0, 0L, 0, 0, 0, 0, 0, 0, 0L, 0L);
     }
 
     private static volatile LightingStats LAST_LIGHTING = LightingStats.EMPTY;
@@ -388,7 +389,8 @@ public final class MetalDevice implements GpuDeviceBackend {
                 this.clusteredLights ? cluster.cellsTouched() : 0,
                 this.clusteredLights ? cluster.cellsOverflowing() : 0,
                 this.clusteredLights ? cluster.evicted() : 0,
-                this.clusteredLights ? cluster.orphaned() : 0);
+                this.clusteredLights ? cluster.orphaned() : 0,
+                LightCollector.entityQueryNanos(), LightCollector.blockIndexNanos());
         this.frameClusterBuilds = 0;
         this.frameClusterNanos = 0L;
         this.frameUploads = 0;
