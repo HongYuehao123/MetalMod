@@ -214,7 +214,7 @@ Add `-Dmetalmod.dumpMsl=<substring>` to any tool or JVM launch command:
 ```
 
 ### Runtime Configuration & Toggles
-Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the in-game GUI: **Options → MetalMod… → MetalFX Upscaling** (Phase 7 render scale and upscaler - spatial, temporal or off - with a live status line) and **Options → MetalMod… → Lighting** (Phase 6).
+Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the in-game GUI: **Options → MetalMod… → MetalFX Upscaling** (Phase 7 render scale and upscaler - spatial, temporal or off - with a live status line; its edits are staged and applied when the page is left, not per click) and **Options → MetalMod… → Lighting** (Phase 6).
 *Precedence:* In-Game UI > JVM `-D` flag > `metalmod.properties`.
 
 | Flag / Property | Description | Default |

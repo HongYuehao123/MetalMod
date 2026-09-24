@@ -712,6 +712,15 @@ setting raises are about the frame, not about the setting:
 | **Show change notice** | An in-world toast naming the resolution the next frame will use. On by default: without it the only confirmation is F3, which does not say *when* a change landed |
 | **Live status** | What is actually happening, refreshed every frame, including which effect ran and - for temporal - the motion producer's own counters |
 
+**Edits are staged, and applied when you leave the page.** Stepping the scale or cycling the effect
+changes what the page says it *will* do; nothing about the running frame moves until you leave by
+**Done** or **Esc**, at which point the draft is applied, the target and scaler are rebuilt once, and
+the change is announced. The status line keeps two things apart on purpose: `Running now: …` describes
+the frame you are looking at, and `Pending: …` describes the one you will get on the way out. This is
+deliberate rather than incidental - applying per click rebuilt the frame on every step and reloaded
+resources twice while walking 85% to 50%, which made the page stutter while the user was still
+deciding.
+
 The live status is the part worth reading, because every number comes from the running frame rather
 than from a setting:
 

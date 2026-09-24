@@ -2,9 +2,7 @@ package net.metalmod.client.gui;
 
 import net.metalmod.backend.MetalBackend;
 import net.metalmod.backend.MetalDevice;
-import net.metalmod.backend.MetalNative;
 import net.metalmod.metalfx.MetalFx;
-import net.metalmod.metalfx.MetalFxScaler;
 import net.metalmod.metalfx.RenderScaleSettings;
 import net.metalmod.metalfx.SceneMotion;
 import net.metalmod.metalfx.UpscalingNotifier;
@@ -29,11 +27,19 @@ import net.minecraft.network.chat.Component;
  * effect's own report says which path ran, and a frame counter says whether it is still running -
  * instead of leaving them to be inferred from a config value.
  *
- * <h2>What applies when</h2>
+ * <h2>Edits are staged, and applied when the page is left</h2>
  *
- * <p>Both settings apply at the next frame boundary, without a restart. A render-scale change rebuilds
- * the level's render target, and the rebuild is deferred to the frame boundary rather than done here
- * because the pass that was rendering into the old target already exists by the time this screen runs.
+ * <p>Stepping the scale or cycling the effect changes what this page <em>shows it will do</em>, not
+ * what the renderer is doing. The draft is applied on the way out - by {@code Done} or by {@code Esc},
+ * both of which arrive at {@link #onClose()} - and not before.
+ *
+ * <p>That is a deliberate reversal of the earlier behaviour, which applied each click immediately.
+ * A render-scale change rebuilds the level's render target, replaces the scaler and asks the engine
+ * for a resource reload; doing that per click meant that walking the scale from 85% to 50% rebuilt
+ * the frame four times and reloaded resources twice, so the page stuttered while the user was still
+ * deciding, and the live status underneath was describing a configuration nobody had settled on. One
+ * apply per visit is also what the user asked for: the setting changes when they leave the page, not
+ * while they are still on it.
  *
  * <p>A scaler the machine refuses is not an error: the frame renders at native resolution instead and
  * this page says so, because "the switch is on but nothing happened" is otherwise unexplainable.
@@ -42,13 +48,25 @@ public class MetalModUpscalingConfigScreen extends Screen {
 
     private static final int ROW = 22;
     private static final int LABEL_WIDTH = 150;
-    private static final int BUTTON_WIDTH = 110;
 
     private final Screen parent;
+
+    /**
+     * What the page is proposing, until the page is left.
+     *
+     * <p>Initialised once, at construction, rather than in {@code init()}: the engine re-initialises a
+     * screen on every window resize, and re-reading the committed settings there would silently throw
+     * away a draft the user was still editing.
+     */
+    private double draftScale = RenderScaleSettings.renderScale();
+    private String draftUpscaler = RenderScaleSettings.upscaler();
+    private boolean draftNotice = RenderScaleSettings.showNotice();
+
     private Button scaleDownButton;
     private Button scaleUpButton;
     private Button upscalerCycleButton;
     private Button noticeButton;
+    private Button doneButton;
     private MultiLineTextWidget statusWidget;
 
     /** Rebuilt every frame from the live state; kept so the widget is only touched when it changes. */
@@ -92,18 +110,18 @@ public class MetalModUpscalingConfigScreen extends Screen {
         label(left, y, "Show change notice");
         this.noticeButton = addRenderableWidget(Button.builder(Component.literal(""),
                 b -> {
-                    RenderScaleSettings.chooseNotice(!RenderScaleSettings.showNotice());
+                    this.draftNotice = !this.draftNotice;
                     refresh();
                 }).bounds(buttonX, y, 142, 20).build());
         y += ROW + 6;
 
-        // 5. Live status: the answers, not the settings.
+        // 4. Live status: the answers, not the settings.
         this.statusWidget = this.addRenderableWidget(new MultiLineTextWidget(left, y,
-                Component.literal(""), this.font).setMaxWidth(360).setMaxRows(7));
-        y += 96;
+                Component.literal(""), this.font).setMaxWidth(360).setMaxRows(8));
+        y += 104;
 
-        this.addRenderableWidget(Button.builder(Component.literal("Done"), b -> onClose())
-                .bounds(centreX - 100, this.height - 30, 200, 20).build());
+        this.doneButton = addRenderableWidget(Button.builder(Component.literal("Done"),
+                b -> onClose()).bounds(centreX - 100, this.height - 30, 200, 20).build());
         refresh();
     }
 
@@ -113,7 +131,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Actions
+    // The draft
     // ---------------------------------------------------------------------------------------------
 
     /**
@@ -124,7 +142,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
      * of the page can describe.
      */
     private void stepScale(int direction) {
-        double current = RenderScaleSettings.renderScale();
+        double current = this.draftScale;
         double[] presets = RenderScaleSettings.PRESETS;
         double chosen = direction > 0 ? 1.0 : presets[presets.length - 1];
         for (int i = 0; i < presets.length; i++) {
@@ -144,33 +162,54 @@ public class MetalModUpscalingConfigScreen extends Screen {
     }
 
     private void setScale(double scale) {
-        RenderScaleSettings.chooseRenderScale(scale);
-        announce();
+        this.draftScale = scale;
         refresh();
     }
 
     /** Off, Spatial, Temporal, and around again. */
     private void cycleUpscaler() {
-        String current = RenderScaleSettings.upscaler();
-        String next;
-        if (MetalFx.OFF.equals(current)) {
-            next = MetalFx.SPATIAL;
-        } else if (MetalFx.SPATIAL.equals(current)) {
-            next = MetalFx.TEMPORAL;
-        } else {
-            next = MetalFx.OFF;
-        }
-        RenderScaleSettings.chooseUpscaler(next);
-        announce();
+        this.draftUpscaler = switch (this.draftUpscaler) {
+            case MetalFx.OFF -> MetalFx.SPATIAL;
+            case MetalFx.SPATIAL -> MetalFx.TEMPORAL;
+            default -> MetalFx.OFF;
+        };
         refresh();
     }
 
+    /** Whether the page is proposing a different frame than the one being rendered. */
+    private boolean renderDraftDiffers() {
+        return Math.abs(this.draftScale - RenderScaleSettings.renderScale()) > 1e-9
+                || !this.draftUpscaler.equals(RenderScaleSettings.upscaler());
+    }
+
+    /** Whether the page is proposing anything at all, including the notice. */
+    private boolean draftDiffers() {
+        return renderDraftDiffers() || this.draftNotice != RenderScaleSettings.showNotice();
+    }
+
     /**
-     * Say what the change will do. The frame hooks apply it at the next boundary; this screen only
-     * announces it, and the notice says "from the next frame" rather than claiming it already landed.
+     * Hand the draft to the settings, in the order the rest of the frame reads them.
+     *
+     * <p>The notice is applied first so that the announcement below honours the value the user just
+     * chose rather than the one being replaced - turning the notice off and leaving should not produce
+     * one last notice.
+     *
+     * @return whether the frame changed, which is what decides if the change is announced
      */
-    private void announce() {
-        UpscalingNotifier.announceCurrent();
+    private boolean applyDraft() {
+        boolean renderChanged = false;
+        if (this.draftNotice != RenderScaleSettings.showNotice()) {
+            RenderScaleSettings.chooseNotice(this.draftNotice);
+        }
+        if (Math.abs(this.draftScale - RenderScaleSettings.renderScale()) > 1e-9) {
+            RenderScaleSettings.chooseRenderScale(this.draftScale);
+            renderChanged = true;
+        }
+        if (!this.draftUpscaler.equals(RenderScaleSettings.upscaler())) {
+            RenderScaleSettings.chooseUpscaler(this.draftUpscaler);
+            renderChanged = true;
+        }
+        return renderChanged;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -180,15 +219,14 @@ public class MetalModUpscalingConfigScreen extends Screen {
     /** Refresh the captions and the live status. Called on every change and on every frame. */
     private void refresh() {
         if (this.scaleDownButton != null) {
-            this.scaleDownButton.active = RenderScaleSettings.renderScale()
+            this.scaleDownButton.active = this.draftScale
                     > RenderScaleSettings.PRESETS[RenderScaleSettings.PRESETS.length - 1] + 1e-6;
         }
         if (this.scaleUpButton != null) {
-            this.scaleUpButton.active = RenderScaleSettings.renderScale() < 1.0 - 1e-6;
+            this.scaleUpButton.active = this.draftScale < 1.0 - 1e-6;
         }
         if (this.upscalerCycleButton != null) {
-            String mode = RenderScaleSettings.upscaler();
-            this.upscalerCycleButton.setMessage(Component.literal(switch (mode) {
+            this.upscalerCycleButton.setMessage(Component.literal(switch (this.draftUpscaler) {
                 case MetalFx.TEMPORAL -> "MetalFX temporal";
                 case MetalFx.OFF -> "Off (native)";
                 default -> "MetalFX spatial";
@@ -198,8 +236,12 @@ public class MetalModUpscalingConfigScreen extends Screen {
             this.upscalerCycleButton.active = true;
         }
         if (this.noticeButton != null) {
-            this.noticeButton.setMessage(Component.literal(
-                    RenderScaleSettings.showNotice() ? "ON" : "OFF"));
+            this.noticeButton.setMessage(Component.literal(this.draftNotice ? "ON" : "OFF"));
+        }
+        if (this.doneButton != null) {
+            // Says what leaving does, because leaving is what applies.
+            this.doneButton.setMessage(Component.literal(
+                    draftDiffers() ? "Apply and go back" : "Done"));
         }
         if (this.statusWidget != null) {
             String status = status();
@@ -216,24 +258,35 @@ public class MetalModUpscalingConfigScreen extends Screen {
      * <p>Every number here comes from the running frame rather than from a setting: the sizes from the
      * target the renderer is using, the path and frame counts from the effect that ran. A page that
      * restated the settings would look identical whether the feature worked or not, which is exactly
-     * the failure this page exists to make impossible.
+     * the failure this page exists to make impossible - and now that the page holds a draft, the
+     * distinction is the point: this section describes the frame you are looking at, and the pending
+     * line underneath describes the one you will get when you leave.
      */
     private String status() {
         StringBuilder text = new StringBuilder();
         boolean metal = MetalDevice.active() != null;
-        String backend = metal ? "Metal" : "not Metal";
-        text.append("Renderer: ").append(backend);
+        text.append("Renderer: ").append(metal ? "Metal" : "not Metal");
+
+        boolean pending = renderDraftDiffers();
+        if (pending) {
+            text.append("   Pending: ").append(describeDraft())
+                    .append(" - applied when you leave this page, by Done or Esc.");
+        } else if (draftDiffers()) {
+            text.append("   Pending: the change notice - applied when you leave this page.");
+        }
 
         if (!RenderScaleSettings.active()) {
             text.append("   Scale: 100% - the world renders at native resolution and nothing is"
                     + " scaled.");
-            text.append("   Pick a scale below 100% to render the world smaller and upscale it;"
-                    + " the interface stays at native resolution either way.");
+            if (!pending) {
+                text.append("   Pick a scale below 100% to render the world smaller and upscale it;"
+                        + " the interface stays at native resolution either way.");
+            }
             return text.toString();
         }
 
         int[] size = RenderScaleSettings.effectiveSize();
-        text.append("   Scale: ").append(RenderScaleSettings.percentLabel());
+        text.append("   Running now: ").append(RenderScaleSettings.percentLabel());
         if (!WorldRenderTarget.scalingThisFrame()) {
             text.append("   The scaled target is being rebuilt for the current window size; this"
                     + " frame renders at native resolution and scaling resumes at the next frame.");
@@ -263,9 +316,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
             text.append("   (no frame has been upscaled yet)");
         }
 
-        // Temporal's own answers. The motion line is the one that says which half of the motion field
-        // is being published: camera reprojection covers a moving camera and static geometry, while
-        // anything that moves on its own is Phase 8C's and still reprojects as if it were static.
+        // Temporal's own answers, from the effect that is running rather than from the draft.
         if (WorldRenderTarget.temporalActive()) {
             text.append("   Temporal: ").append(SceneMotion.summary());
         } else if (WorldRenderTarget.temporalRequested()
@@ -289,6 +340,18 @@ public class MetalModUpscalingConfigScreen extends Screen {
         return text.toString();
     }
 
+    /** The draft in the same words the running status uses, so the two lines can be compared. */
+    private String describeDraft() {
+        String scale = this.draftScale >= 1.0 ? "100% (off)"
+                : Math.round(this.draftScale * 100) + "%";
+        String effect = switch (this.draftUpscaler) {
+            case MetalFx.TEMPORAL -> "MetalFX temporal";
+            case MetalFx.OFF -> "no upscaler";
+            default -> "MetalFX spatial";
+        };
+        return scale + ", " + effect;
+    }
+
     /**
      * Refresh the live status as the screen is extracted.
      *
@@ -304,11 +367,20 @@ public class MetalModUpscalingConfigScreen extends Screen {
         super.extractRenderState(graphics, mouseX, mouseY, partialTick);
     }
 
+    /**
+     * Leave the page, applying the draft.
+     *
+     * <p>Both ways out arrive here - the button and {@code Esc} - so "leaving the page" is one event
+     * rather than two paths that could disagree.
+     */
     @Override
     public void onClose() {
-        // Every change already saved itself; this is the way back, and the moment to confirm what the
-        // world is about to do.
-        UpscalingNotifier.announceCurrent();
+        boolean renderChanged = applyDraft();
+        if (renderChanged) {
+            // Announced here rather than on every click: a notice per click described a frame that was
+            // never rendered, and the honest moment to say "from the next frame" is now.
+            UpscalingNotifier.announceCurrent();
+        }
         if (this.minecraft != null) {
             this.minecraft.setScreenAndShow(this.parent);
         }
