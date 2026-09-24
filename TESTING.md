@@ -631,7 +631,9 @@ Then run an F8 capture in scenes with roughly 0, 1, 16 and 64 nearby sources. Th
 ### F. Performance, and one open decision
 
 Capture the same route **interleaved** — off, on, off, on — at least three paired repetitions, after a
-warm-up, and record settings, build and thermal state. Report median and p95 frame time; these are
+warm-up, and record settings, build and thermal state. A routed capture now stops at the route's end
+plus a three-second settled tail, so its length is the route's (Overworld 59 s, Nether 43 s) rather
+than a fixed minute; a capture with no route recorded for the dimension runs for 45 s. Report median and p95 frame time; these are
 wall-time figures and must be labelled as such, because there is still no true GPU timing.
 
 The decision this settles: **flat versus clustered as the default.** The flat path loops over all 64

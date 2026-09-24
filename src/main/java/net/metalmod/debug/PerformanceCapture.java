@@ -17,9 +17,27 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
-/** F8 -> five-second countdown -> 60 seconds -> background export. All capture state is client-thread owned. */
+/** F8 -> five-second countdown -> the route (or 45 s free) -> background export. Client-thread owned. */
 public final class PerformanceCapture {
-    private static final long DURATION = 60_000_000_000L;
+    /**
+     * How long a capture with no route recorded in this dimension runs for.
+     *
+     * <p>A route-bound capture does not use this: it runs for the route plus {@link #ROUTE_TAIL}, so a
+     * forty-second route is no longer recorded for a full minute and its last stage does not carry
+     * twenty seconds of stationary frames into the per-stage statistics.
+     */
+    private static final long FREE_DURATION = 45_000_000_000L;
+
+    /**
+     * Settled hold at the final waypoint after a route's last stage ends.
+     *
+     * <p>The tail is deliberate - a stationary stretch is the most comparable sample there is - but it
+     * is a tail, not half the capture. Three seconds is still well over a hundred frames.
+     */
+    private static final long ROUTE_TAIL = 3_000_000_000L;
+
+    /** The limit for the capture in progress: route length plus the tail, or the free duration. */
+    private static long durationNanos = FREE_DURATION;
     private static final long COUNTDOWN = 5_000_000_000L;
     private static PerformanceRecording recording;
     private static Arena arena;
@@ -36,7 +54,7 @@ public final class PerformanceCapture {
     private static boolean frameHookSeen;
     private static CaptureRoute route;
     private static CaptureRoutePlayer routePlayer;
-    private static volatile String status = "F8: record performance (60s)";
+    private static volatile String status = "F8: record performance";
 
     private PerformanceCapture() {}
 
@@ -99,9 +117,14 @@ public final class PerformanceCapture {
                             : route.describe())
                     + "\nWorld prep: " + (route == null ? "n/a" : prep ? "on" : "off")
                     + (route == null ? "" : "\nKnown routes: " + CaptureRouteStore.describeAvailable(minecraft))
-                    + "\nCapture limit: 60 seconds or 36000 frames"
+                    + "\nCapture limit: " + limitSeconds() + " seconds or 36000 frames"
                     + "\nBoundary: after GpuSurface.present(), on any backend. First partial interval discarded."
                     + "\nCensus diagnostics at start: " + (nativeEnabled && MetalDevice.censusEnabled());
+            // Bound the run by the route it is about to play. A fixed limit records dead time past the
+            // end of a short route, and that dead time is labelled with the final stage.
+            durationNanos = route == null
+                    ? FREE_DURATION
+                    : route.totalDwellMs() * 1_000_000L + ROUTE_TAIL;
             startedAt = lastFrame = 0;
             lastSeconds = -1;
             readyAt = System.nanoTime() + COUNTDOWN;
@@ -148,7 +171,7 @@ public final class PerformanceCapture {
                 // Start the first waypoint's dwell clock at the first measured frame. The teleport
                 // itself already happened during the countdown.
                 if (routePlayer != null) routePlayer.startAt(now);
-                updateStatus(minecraft, "Recording performance: ", 60);
+                updateStatus(minecraft, "Recording performance: ", limitSeconds());
                 return;
             }
             recording.put(PerformanceRecording.COL_ELAPSED_NS, now - startedAt);
@@ -193,12 +216,13 @@ public final class PerformanceCapture {
             rememberContext(minecraft);
             recording.commitFrame();
             lastFrame = now;
-            if (now - startedAt >= DURATION || recording.full()) {
-                finish(minecraft, recording.full() ? "36000-frame capacity reached" : "60 seconds elapsed", false);
+            if (now - startedAt >= durationNanos || recording.full()) {
+                finish(minecraft, recording.full() ? "36000-frame capacity reached"
+                        : limitSeconds() + " seconds elapsed", false);
             } else {
                 updateStatus(minecraft, routePlayer == null ? "Recording performance: "
                         : "Recording " + routePlayer.status() + ": ",
-                        (int) Math.ceil((DURATION - now + startedAt) / 1e9));
+                        (int) Math.ceil((durationNanos - now + startedAt) / 1e9));
             }
         } catch (RuntimeException error) {
             fail(minecraft, error);
@@ -221,6 +245,11 @@ public final class PerformanceCapture {
         for (int i = 0; i < LightingCaptureColumns.NAMES.size(); i++) {
             recording.put(base + i, LightingCaptureColumns.value(stats, i));
         }
+    }
+
+    /** The capture limit in whole seconds, for the labels. */
+    private static int limitSeconds() {
+        return (int) Math.round(durationNanos / 1e9);
     }
 
     private static long delta(long current, long previous) {
@@ -286,7 +315,7 @@ public final class PerformanceCapture {
     /**
      * Report a capture failure.
      *
-     * <p>Whatever was collected is still exported: a 60-second run is expensive to lose, and the
+     * <p>Whatever was collected is still exported: a full-length run is expensive to lose, and the
      * failure reason belongs in the summary next to the samples. The exception is never rethrown -
      * it would escape into the render loop.
      */
