@@ -533,6 +533,20 @@ the entry number a texel coordinate, the one kind of dynamic indexing GLSL does 
 packing that caused it. The capacity is now 16, and a full cell is asserted to publish all sixteen
 distinct records with its neighbour's count intact.
 
+### Spectator mode suppresses evaluation (added 2026-09-24)
+
+Spectator mode turns the dynamic set off, and the player's setting is left exactly as they made it.
+`LightingSettings.active()` is the user's switch AND not suppressed; `dynamicLights()` remains the
+setting, so the Lighting page keeps showing the player's own choice and nothing in the interface
+explains the difference. F3 follows `active()`, so a suppressed session reads as off rather than as an
+enabled feature that happens to publish nothing - showing the latter would be the one place the
+suppression announced itself.
+
+The check lives in the extraction hook, in one place, and `LightCollector` stays a pure function of the
+world: collection reads the camera and the level and never the player's mode, which is what keeps the
+offline checks able to drive it. The suppression is per-frame state, cleared with the session, so it
+cannot outlive a world change.
+
 ### Buried sources are dropped (added 2026-09-24)
 
 Reported in game: a glow squid sealed inside wool and dirt still lit the room, while a torch in the

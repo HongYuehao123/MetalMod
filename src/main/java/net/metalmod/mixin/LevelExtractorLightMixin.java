@@ -25,8 +25,18 @@ public class LevelExtractorLightMixin {
         // screen, and a property read here would mean the light set was never collected unless the
         // game had also been launched with -Dmetalmod.dynamicLights. That made the toggle look
         // half-working: the shader variant appeared, but there was nothing to light with.
-        if (LightingSettings.dynamicLights() && MetalBackend.isEnabled()) {
-            LightCollector.extract(Minecraft.getInstance().level, camera, partialTick);
+        Minecraft minecraft = Minecraft.getInstance();
+        boolean spectating = minecraft.player != null && minecraft.player.isSpectator();
+        // Spectator mode is the second half of an AND on the dynamic set. It suppresses evaluation
+        // without touching the setting, so the Lighting screen keeps showing the player's own choice,
+        // and nothing in the interface explains the difference - see LightingSettings.suppressed().
+        LightingSettings.setSuppressed(spectating);
+        if (LightingSettings.active() && MetalBackend.isEnabled()) {
+            LightCollector.extract(minecraft.level, camera, partialTick);
+        } else if (!LightCollector.current().lights().isEmpty()) {
+            // Drop what was published, once: a spectator's world carries no dynamic set, and an empty
+            // snapshot need not be republished every frame.
+            LightCollector.clear();
         }
     }
 

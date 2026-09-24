@@ -39,11 +39,42 @@ public final class LightingSettings {
     private static volatile Boolean sessionDynamicLights;
     private static volatile Boolean sessionClusteredLights;
 
+    /**
+     * Set by the extraction hook each frame when the local player is spectating.
+     *
+     * <p>This is the second half of an AND, and it is deliberately not a setting: spectator mode turns
+     * the dynamic set off, and the player's own choice is left exactly as they made it. Nothing in the
+     * interface says so - the toggle keeps showing what they chose - because the suppression is a
+     * property of the game mode, not a change they asked for and would then have to undo.
+     */
+    private static volatile boolean suppressed;
+
     private LightingSettings() {}
 
     /** Whether the user launched with a flag for this setting. Informational; it does not lock it. */
     public static boolean overridden(String property) {
         return System.getProperty(property) != null;
+    }
+
+    /**
+     * Whether dynamic lighting is being evaluated at all: the user's switch, and not suppressed.
+     *
+     * <p>This is what the renderer should ask. {@link #dynamicLights()} remains the setting, and is
+     * what the settings screen shows, so suppressing for a game mode cannot silently rewrite a choice
+     * the player made.
+     */
+    public static boolean active() {
+        return dynamicLights() && !suppressed;
+    }
+
+    /** Turn evaluation off without touching any setting. Set by the extraction hook each frame. */
+    public static void setSuppressed(boolean value) {
+        suppressed = value;
+    }
+
+    /** Whether evaluation is currently suppressed by the game rather than by the player. */
+    public static boolean suppressed() {
+        return suppressed;
     }
 
     /** Whether the artificial single-light proof is active. Diagnostic only. */
@@ -109,6 +140,7 @@ public final class LightingSettings {
         sessionPointLightProof = null;
         sessionDynamicLights = null;
         sessionClusteredLights = null;
+        suppressed = false;
     }
 
     private static boolean resolve(Boolean sessionChoice, String property, boolean configured) {
@@ -119,7 +151,7 @@ public final class LightingSettings {
         return override != null ? Boolean.parseBoolean(override) : configured;
     }
 
-    /** One-line summary for the log and the F3 section. */
+    /** One-line summary for the log and the F3 section. The setting, not the suppressed state. */
     public static String summary() {
         return "pointLightProof=" + pointLightProof() + " dynamicLights=" + dynamicLights()
                 + " clusteredLights=" + clusteredLights();

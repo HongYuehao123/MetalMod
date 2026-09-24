@@ -601,6 +601,8 @@ Then: walk into fog (illumination must be applied *before* fog), and stand in wa
 | `F3+T` (resource reload) | lit variants come back, not silently vanilla |
 | Resize the window | no crash, no leak, counters unchanged |
 | Toggle lighting off and on in the Lighting page | world goes vanilla and returns, no stale glow |
+| Enter spectator mode (`/gamemode spectator`) | lighting goes off; leaving it comes back |
+| In spectator, open the Lighting page | the toggle still shows what you set, not that it was suppressed |
 
 ### D. Scope honesty
 

@@ -68,8 +68,10 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         // The live device's switches, not the launch flags: a setting can now come from the settings
         // screen, and F3 has to report what the running frame is actually doing.
         net.metalmod.backend.MetalDevice live = net.metalmod.backend.MetalDevice.active();
-        boolean dynamicLights = live != null
-                ? live.dynamicLightsEnabled() : net.metalmod.lighting.LightingSettings.dynamicLights();
+        // active(), not the setting: while the game suppresses evaluation the page has to read as off,
+        // because showing an on feature with nothing published would be the one place the suppression
+        // announced itself.
+        boolean dynamicLights = net.metalmod.lighting.LightingSettings.active();
         if (metalActive && dynamicLights) {
             var cost = net.metalmod.backend.MetalDevice.lightingStats();
             // Sub-millisecond extraction is the normal case at low light counts, and one decimal

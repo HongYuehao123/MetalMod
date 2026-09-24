@@ -101,12 +101,11 @@ public final class LightCollector {
     /**
      * Publish this frame's light set.
      *
-     * <p>Collection is deliberately game-mode agnostic: it reads the camera and the level, never the
-     * player's mode. A spectator therefore keeps dynamic lighting - dropped items, other entities and
-     * held and dropped items still light the world, and the local player's own held item still counts, because a
-     * spectator keeps their inventory and lighting a demo or a screenshot from a flying camera is the
-     * point. Nothing here may start gating on {@code isSpectator()} or a game-mode check without
-     * saying so explicitly.
+     * <p>Collection reads the camera and the level and never the player's mode. The game-mode decision
+     * belongs to the caller and lives in exactly one place: the extraction hook suppresses the whole
+     * set while the local player is spectating, without touching the player's setting. Keeping that
+     * check out of here is what leaves collection a pure function of the world, which is what the
+     * offline checks drive.
      */
     public static void extract(ClientLevel level, Camera camera, float partialTick) {
         long startedAt = System.nanoTime();

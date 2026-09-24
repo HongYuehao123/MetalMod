@@ -24,9 +24,10 @@ public final class LightingSettingsTest {
             clusteredNeedsDynamic();
             launchFlagsWin();
             gameChoiceBeatsLaunchFlag();
+            suppressionLeavesTheSettingAlone();
             summaryIsReadable();
             onlyOnePlaceResolvesTheSwitches();
-            System.out.println("PASS lighting settings: launch-flag precedence and cluster coherence");
+            System.out.println("PASS lighting settings: launch-flag precedence, cluster coherence and suppression");
             return 0;
         } catch (AssertionError error) {
             error.printStackTrace();
@@ -128,6 +129,41 @@ public final class LightingSettingsTest {
         // Clearing the session choices hands control back to the flag.
         LightingSettings.clearSessionChoices();
         require(LightingSettings.dynamicLights(), "clearing the choice returns to the flag");
+    }
+
+    /**
+     * Spectator mode is an AND on the evaluated state, and the setting is not the evaluated state.
+     *
+     * <p>The requirement is precise: the game turns the light off, and nothing in the interface reveals
+     * that it did. Both halves are checked here - evaluation stops, and {@code dynamicLights()} still
+     * reports what the player chose, which is what the settings screen reads.
+     */
+    private static void suppressionLeavesTheSettingAlone() {
+        clear();
+        MetalConfig.INSTANCE.enableDynamicLights = true;
+        require(LightingSettings.dynamicLights(), "the setting is on");
+        require(LightingSettings.active(), "and it is being evaluated");
+
+        LightingSettings.setSuppressed(true);
+        require(!LightingSettings.active(), "suppression stops evaluation");
+        require(LightingSettings.dynamicLights(),
+                "while the setting still reports the player's own choice, so nothing in the interface changes");
+        require(LightingSettings.suppressed(), "and the suppression is reportable for the record");
+
+        LightingSettings.setSuppressed(false);
+        require(LightingSettings.active(), "clearing it resumes evaluation");
+
+        // Clustering is downstream of the set, so it goes quiet with it even when it is switched on.
+        MetalConfig.INSTANCE.enableClusteredLights = true;
+        require(LightingSettings.clusteredLights(), "clustering is on with the set on");
+        LightingSettings.setSuppressed(true);
+        require(LightingSettings.clusteredLights(),
+                "the clustered setting is unchanged too - only evaluation stops");
+        require(!LightingSettings.active(), "and nothing is evaluated");
+
+        // A suppression left behind would outlive a world change, so clearing the session clears it.
+        LightingSettings.clearSessionChoices();
+        require(!LightingSettings.suppressed(), "clearing session choices clears the suppression");
     }
 
     private static void summaryIsReadable() {
