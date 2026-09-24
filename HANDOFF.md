@@ -83,7 +83,7 @@ builds on. `TESTING.md` §5.6 is the final-test checklist.
 
 Phase 7 (MetalFX) is **7A done, 7B implemented, 7C not started**; see
 [docs/phase7-plan.md](docs/phase7-plan.md) for the per-increment record, the integration contract,
-the seven defects the work found, and the six in-game observations that close 7A. What that means in
+the nine defects the work found, and the six in-game observations that close 7A. What that means in
 a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale and cycles the
 upscaler through **off / MetalFX spatial / MetalFX temporal**, shows the live sizes and which effect
 actually ran, and raises a toast in world when a change lands. The world renders at that fraction

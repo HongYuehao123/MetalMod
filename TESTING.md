@@ -38,7 +38,7 @@ Run all five; they are the cheap, deterministic checks.
 | `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
 | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 assertions) |
-| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (89 assertions) |
+| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (91 assertions) |
 | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
@@ -51,7 +51,7 @@ The last two were added in Phase 7 and are worth knowing about:
 - **`scaling_check`** drives Phase 7's real machinery offscreen: the engine's own `MainTarget` and
   `FrameGraphBuilder`, the redirect's two states, the MetalFX upscale over a real draw, the resize
   path, the release when the scale returns to 1.0, and the jitter sequence's centring. It is the only
-  offline gate that would catch a break in the *shape* of the scaling frame. Twenty-four of its assertions
+  offline gate that would catch a break in the *shape* of the scaling frame. Twenty-six of its assertions
   are Phase 7B: the scene contract, the motion field's exact values and conventions (a still camera
   must produce zero motion; different jitter phases with a still camera must still produce zero; a
   moved camera must produce uniform motion with MetalFX's sign), the per-object stamps (an entity's

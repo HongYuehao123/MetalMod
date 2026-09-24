@@ -503,6 +503,11 @@ public final class ScalingCheck {
         check("the rest of the frame keeps the depth-derived answer",
                 withEntity != null && Math.abs(withEntity[0]) < 1e-3f
                         && Math.abs(withEntity[1]) < 1e-3f, "");
+        // A purely horizontal move must not carry a vertical vector. The box's stored centre is what
+        // this catches: storing its minimum instead put every entity half a box below where it was.
+        check("a horizontal move carries no vertical component",
+                withEntity != null && worstY(withEntity) < 0.5f,
+                "worst |motion.y| = " + (withEntity == null ? "unreadable" : worstY(withEntity)));
 
         // The depth test: the same entity against a surface it is not the front of. A mob behind a
         // wall must not take the wall's pixels with it.
@@ -528,6 +533,27 @@ public final class ScalingCheck {
         System.out.println(String.format(java.util.Locale.ROOT,
                 "       entity motion %.2f px, particle motion %.2f px", entityMotion,
                 particleMotion));
+
+        // Two entities moving in opposite directions, at different depths. Each is stamped with its
+        // own previous position, so the field must contain both signs - a bug that gave every stamp
+        // the first object's motion would pass the single-entity check above and fail this one, which
+        // is the whole reason it exists.
+        SceneMotion.clearHistory();
+        ProjectionJitter.consumeReset();
+        pairFrame(device, world, main, camera, projection, 0.0, 0.0, 0.99);
+        pairFrame(device, world, main, camera, projection, 1.0, -1.0, 0.99);
+        float[] withPair = motionField(device, width, height);
+        float lowest = Float.MAX_VALUE;
+        float highest = -Float.MAX_VALUE;
+        if (withPair != null) {
+            for (int i = 0; i + 1 < withPair.length; i += 2) {
+                lowest = Math.min(lowest, withPair[i]);
+                highest = Math.max(highest, withPair[i]);
+            }
+        }
+        check("two entities moving apart get their own motions",
+                withPair != null && lowest < -2.0f && highest > 2.0f,
+                "motion.x range " + lowest + " .. " + highest);
 
         // A pushed block: a full cube whose block position is fixed while the piston's interpolated
         // offset carries it, which is the same capture shape as an entity with a different identity.
@@ -604,6 +630,11 @@ public final class ScalingCheck {
     private static void temporalCapture(com.mojang.blaze3d.pipeline.RenderTarget world,
                                         CameraRenderState camera, Matrix4f projection,
                                         double x, double y, double z) {
+        // The frame boundary, exactly as the extract hook opens it: the captures are cleared here, so
+        // a frame's objects are the ones it recorded and not every object the run has ever seen. The
+        // game does this in GameRendererFrameMixin; without it the harness accumulated samples and the
+        // motion field was built from stale positions.
+        SceneMotion.beginFrame();
         // The phase advances at the frame boundary, exactly as the extract hook does it, and the
         // projection the engine hands the device carries the offset the camera mixin added.
         ProjectionJitter.beginFrame();
@@ -637,6 +668,23 @@ public final class ScalingCheck {
         // Height 1.8, width 0.6: a player-shaped box, so the stamp's depth range and screen box are
         // both non-trivial.
         SceneMotion.recordEntity(1, entityX, entityY, entityZ, 0.6f, 1.8f, false);
+        objectFrameTail(device, world, main, depthClear);
+    }
+
+    /**
+     * One still-camera frame with two entities at different depths, moving in opposite directions.
+     *
+     * <p>The first entity moves right and the second left, so a field that carries both motions has
+     * both signs in it.
+     */
+    private static void pairFrame(MetalDevice device,
+                                  com.mojang.blaze3d.pipeline.RenderTarget world,
+                                  MainTarget main, CameraRenderState camera, Matrix4f projection,
+                                  double firstX, double secondX, double depthClear) {
+        temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
+        // The same depth for both, so the depth test accepts both and the only variable is direction.
+        SceneMotion.recordEntity(11, firstX, 0.0, -5.0, 0.6f, 1.8f, false);
+        SceneMotion.recordEntity(12, secondX, 0.0, -5.0, 0.6f, 1.8f, false);
         objectFrameTail(device, world, main, depthClear);
     }
 
@@ -716,6 +764,15 @@ public final class ScalingCheck {
 
     private static boolean nearZero(float[] field) {
         return field != null && worstOf(field) < 1e-4f;
+    }
+
+    /** The largest vertical component in a motion field, which should be ~0 for a horizontal move. */
+    private static float worstY(float[] field) {
+        float worst = 0.0f;
+        for (int i = 1; i < field.length; i += 2) {
+            worst = Math.max(worst, Math.abs(field[i]));
+        }
+        return worst;
     }
 
     private static float worstOf(float[] field) {

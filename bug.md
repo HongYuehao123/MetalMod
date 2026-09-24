@@ -8,6 +8,43 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-034 — Every entity carried half a bounding box of spurious vertical motion
+
+**Status:** **FIXED**, offline.
+**Severity:** conspicuous on the one thing the object overlay exists for. It would have put a vertical
+smear on every mob, which is precisely the artefact the overlay was added to remove.
+
+### Symptom
+
+None in a frame - found by a test, before any session could see it. A player-sized entity five blocks
+in front of a still camera, moved half a block sideways, produced a motion vector of
+`(-7.14, 12.85)` where it had to be `(-7.14, 0)`. That 12.85 is exactly half the box's height in
+pixels, which is the tell.
+
+### Cause
+
+Two places disagreed about what the captured box stores. `recordBox` wrote the box's **minimum** y
+into the per-object history, because that is what the sample row holds and what the eight corners are
+built from. `buildStamps` projected the current box's **centre** - `y + height / 2` - against that
+stored value, so the previous centre sat half a box below the current one and the difference was
+motion. Every entity's stamp was therefore offset downward by half its own height: a player by 12.85
+pixels, a small mob by less, an ender dragon by hundreds.
+
+### Why the existing checks missed it
+
+They only ever asserted the x component, and x is unaffected by a constant y error. The check that
+found it moves **two** entities in opposite directions and asserts both signs appear, which is also
+what would catch an instance-indexing bug where every stamp took the first object's motion.
+
+### Fix
+
+The history stores the centre, which is what the stamp builder projects; the sample row keeps the
+minimum, which is what the corners need. The scaling check now asserts that a purely horizontal move
+carries no vertical component at all - `worst |motion.y| = 6.2e-6` after the fix against `12.85`
+before it, so the assertion fails loudly if the two representations drift apart again.
+
+---
+
 ## BUG-033 — Releasing the temporal scaler while its work is in flight aborts the process at exit
 
 **Status:** **FIXED**, verified over repeated runs.

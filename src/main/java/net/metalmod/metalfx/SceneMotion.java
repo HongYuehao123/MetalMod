@@ -439,8 +439,12 @@ public final class SceneMotion {
             stored = new float[3];
             next.put(key, stored);
         }
+        // The centre, not the minimum: the stamp builder projects the box's centre on both frames,
+        // and storing the minimum here put the previous centre half a box below the current one - a
+        // constant downward vector on every entity. The samples keep the minimum, because that is
+        // what the box corners are built from.
         stored[0] = (float) x;
-        stored[1] = (float) y;
+        stored[1] = (float) (y + height * 0.5);
         stored[2] = (float) z;
         entityCount++;
     }

@@ -201,7 +201,7 @@ scene depth and asserts that the frame is untouched.
 | Gate | Command | Result |
 |---|---|---|
 | Native motion kernel and overlay | `./scripts/run_smoke.sh` | `ALL CHECKS PASSED`, including twenty motion assertions: an exact convention check (a one-NDC-unit shift is exactly half the texture in pixels, with y down), an unmoved camera producing zero motion on a perspective projection, uniform motion on a flat depth plane scaling as one over view depth with the documented sign, zero motion at the far plane, a mismatched depth size being refused, a stamp replacing the depth-derived motion exactly inside its box, a stamp the depth test rejects changing nothing, and the stamp table being clamped and counted rather than overrun. |
-| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (89 assertions), of which twenty-four are temporal or its cost: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, an entity with no previous position contributing nothing, an entity's own movement being stamped while the rest of the frame keeps the depth-derived answer, **a stamp the depth buffer contradicts being rejected**, particles and pushed blocks being stamped, a first frame and a camera cut each requesting a reset while a continuous camera does not, and a resize keeping the path running. |
+| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (91 assertions), of which twenty-six are temporal or its cost: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, an entity with no previous position contributing nothing, an entity's own movement being stamped while the rest of the frame keeps the depth-derived answer, **a stamp the depth buffer contradicts being rejected**, particles and pushed blocks being stamped, **two entities moving apart keeping their own motions** and a horizontal move carrying no vertical component, a first frame and a camera cut each requesting a reset while a continuous camera does not, and a resize keeping the path running. |
 | Mixin injection points | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks), including `GameRendererProjectionMixin`, `EntityMotionMixin`, `ParticleMotionMixin` and `PistonMotionMixin` with their exact targets and descriptors. |
 | Build, shaders, render check, standalone suite | `./scripts/build_mod.sh`, `./tools/shader_inventory/run.sh`, `./tools/render_check/run.sh`, `StandaloneTestRunner` | all green. |
 
@@ -317,7 +317,8 @@ composition, so Phases 8–9 can compose against it. This is that contract, as i
 
 ## 6. Defects found and fixed during this phase
 
-All three are recorded in [bug.md](../bug.md) with their symptoms and causes.
+All eight are recorded in [bug.md](../bug.md) with their symptoms and causes. BUG-029, the sky-colour
+shift at a render scale below 100%, is a ninth and is still open.
 
 | # | Defect | Why it mattered |
 |---|---|---|
@@ -327,6 +328,8 @@ All three are recorded in [bug.md](../bug.md) with their symptoms and causes.
 | [BUG-030](../bug.md) | The projection jitter was converted against the *window* size while the level renders at a fraction of it | The scaler would have been told an offset in input pixels that the frame was not jittered by. Found while building the motion matrices; the conversion now uses the same function that sizes the level target |
 | [BUG-031](../bug.md) | `upscale` did not consult the frame's "am I scaling" decision, so it could write the stale level target over a frame that had rendered natively | Found by reading the class's own once-per-frame invariant against the code. The redirect and the upscale now agree about which frame they are |
 | [BUG-032](../bug.md) | MetalFX documents its output texture as private-storage; this backend hands it a shared one | **Open.** The pixels are verified correct offscreen and the requirement is not enforced in release builds, but the contract is not met. Recorded rather than ignored |
+| [BUG-033](../bug.md) | Releasing the MetalFX temporal scaler while its own encoded work was in flight aborted the JVM at exit | It happened after every check had passed, and a pipe had been hiding the exit code, so the gate looked green. Found by checking the scaling check's own exit status rather than a `tail` of its output |
+| [BUG-034](../bug.md) | The object history stored a box's minimum y while the stamp builder projected its centre | Every entity carried a spurious downward vector of half its own height - 12.85 px for a player at five blocks. Found by the check that moves two entities in opposite directions; the single-object checks only ever looked at x |
 
 ---
 
