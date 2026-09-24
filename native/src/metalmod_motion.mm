@@ -183,6 +183,9 @@ struct MMMMotion {
 
 static char g_MotionError[512] = {0};
 
+/// The last motion step's GPU span, in milliseconds, written from its completion handler.
+static volatile double g_MotionLastGpuMs = 0.0;
+
 static void mmm_motion_set_error(NSString* message) {
     const char* utf8 = message != nil ? message.UTF8String : "unknown motion failure";
     if (utf8 == NULL) utf8 = "unknown motion failure";
@@ -402,6 +405,12 @@ void mmm_motion_stamp_stats(void* motion, int32_t* outStored, int32_t* outDroppe
 // The run
 // ---------------------------------------------------------------------------------------------
 
+/// One frame's encoding into a caller-owned command buffer; defined below the run entry point.
+static MTLSize mmm_motion_encode_into(MMMMotion* handle, id<MTLCommandBuffer> commandBuffer,
+                                      id<MTLTexture> depth,
+                                      const MMMMotionUniforms& uniforms,
+                                      const MMMMotionOverlayUniforms& overlayUniforms);
+
 int mmm_motion_run(void* motion, void* queue, void* depthTexture,
                    const float* currentInverseViewProjection,
                    const float* previousViewProjection) {
@@ -423,8 +432,6 @@ int mmm_motion_run(void* motion, void* queue, void* depthTexture,
     }
 
     if (g_MotionPipeline == NULL) return -6;
-    id<MTLComputePipelineState> pipeline =
-            (__bridge id<MTLComputePipelineState>)g_MotionPipeline;
 
     MMMMotionUniforms uniforms;
     memcpy(uniforms.currentInverseViewProjection, currentInverseViewProjection,
@@ -445,46 +452,14 @@ int mmm_motion_run(void* motion, void* queue, void* depthTexture,
     @autoreleasepool {
         id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
         commandBuffer.label = @"MetalMod motion vectors";
-        id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-        encoder.label = @"MetalMod motion reprojection";
-        [encoder setComputePipelineState:pipeline];
-        [encoder setTexture:depth atIndex:0];
-        [encoder setTexture:handle->texture atIndex:1];
-        [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-
-        // A 16x16 threadgroup is the usual sweet spot for a full-screen dispatch; the grid is
-        // dispatched exactly, so the kernel's own bounds check is a second guard rather than the only
-        // one, and a size that is not a multiple of the group needs no padding pass.
-        NSUInteger wide = 16, high = 16;
-        MTLSize threadsPerGroup = MTLSizeMake(wide, high, 1);
-        MTLSize groups = MTLSizeMake(((NSUInteger)handle->width + wide - 1) / wide,
-                                     ((NSUInteger)handle->height + high - 1) / high, 1);
-        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threadsPerGroup];
-        [encoder endEncoding];
-
-        // The overlay, in the same command buffer and therefore ordered after the dispatch: what the
-        // depth could not describe is drawn over what it could. Load rather than clear, or the
-        // dispatch's whole result would be discarded.
-        if (handle->stampCount > 0 && g_MotionOverlayPipeline != NULL) {
-            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-            pass.colorAttachments[0].texture = handle->texture;
-            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-            id<MTLRenderCommandEncoder> overlay =
-                    [commandBuffer renderCommandEncoderWithDescriptor:pass];
-            overlay.label = @"MetalMod motion overlay";
-            [overlay setRenderPipelineState:
-                    (__bridge id<MTLRenderPipelineState>)g_MotionOverlayPipeline];
-            [overlay setVertexBuffer:handle->stampBuffer offset:0 atIndex:0];
-            [overlay setVertexBytes:&overlayUniforms length:sizeof(overlayUniforms) atIndex:1];
-            [overlay setFragmentTexture:depth atIndex:0];
-            // The box is given as two corners, so a four-vertex triangle strip covers it.
-            [overlay drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                        vertexStart:0
-                        vertexCount:4
-                      instanceCount:(NSUInteger)handle->stampCount];
-            [overlay endEncoding];
-        }
+        MTLSize groups = mmm_motion_encode_into(handle, commandBuffer, depth, uniforms, overlayUniforms);
+        // The frame's own cost, read from the buffer after it runs. Free: the timestamps are there
+        // whether or not anyone looks, and a number measured in the running frame is the only kind that
+        // can be compared against the frame it is part of.
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            double seconds = completed.GPUEndTime - completed.GPUStartTime;
+            if (seconds > 0.0) g_MotionLastGpuMs = seconds * 1000.0;
+        }];
         [commandBuffer commit];
 
         snprintf(handle->summary, sizeof(handle->summary),
@@ -495,4 +470,107 @@ int mmm_motion_run(void* motion, void* queue, void* depthTexture,
                  handle->stampsDropped > 0 ? " (some dropped)" : "");
     }
     return 0;
+}
+
+/// One frame's motion encoding, into a command buffer the caller owns and commits.
+///
+/// Shared by the render path and the timing entry point, so a cost measurement cannot drift from what
+/// the frame actually encodes.
+static MTLSize mmm_motion_encode_into(MMMMotion* handle, id<MTLCommandBuffer> commandBuffer,
+                                      id<MTLTexture> depth,
+                                      const MMMMotionUniforms& uniforms,
+                                      const MMMMotionOverlayUniforms& overlayUniforms) {
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    encoder.label = @"MetalMod motion reprojection";
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)g_MotionPipeline];
+    [encoder setTexture:depth atIndex:0];
+    [encoder setTexture:handle->texture atIndex:1];
+    [encoder setBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+
+    // A 16x16 threadgroup is the usual sweet spot for a full-screen dispatch; the grid is dispatched
+    // exactly, so the kernel's own bounds check is a second guard rather than the only one, and a size
+    // that is not a multiple of the group needs no padding pass.
+    NSUInteger wide = 16, high = 16;
+    MTLSize threadsPerGroup = MTLSizeMake(wide, high, 1);
+    MTLSize groups = MTLSizeMake(((NSUInteger)handle->width + wide - 1) / wide,
+                                 ((NSUInteger)handle->height + high - 1) / high, 1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threadsPerGroup];
+    [encoder endEncoding];
+
+    // The overlay, in the same command buffer and therefore ordered after the dispatch: what the depth
+    // could not describe is drawn over what it could. Load rather than clear, or the dispatch's whole
+    // result would be discarded.
+    if (handle->stampCount > 0 && g_MotionOverlayPipeline != NULL) {
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = handle->texture;
+        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> overlay =
+                [commandBuffer renderCommandEncoderWithDescriptor:pass];
+        overlay.label = @"MetalMod motion overlay";
+        [overlay setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)g_MotionOverlayPipeline];
+        [overlay setVertexBuffer:handle->stampBuffer offset:0 atIndex:0];
+        [overlay setVertexBytes:&overlayUniforms length:sizeof(overlayUniforms) atIndex:1];
+        [overlay setFragmentTexture:depth atIndex:0];
+        // The box is given as two corners, so a four-vertex triangle strip covers it.
+        [overlay drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                    vertexStart:0
+                    vertexCount:4
+                  instanceCount:(NSUInteger)handle->stampCount];
+        [overlay endEncoding];
+    }
+    return groups;
+}
+
+double mmm_motion_last_gpu_ms(void) {
+    return g_MotionLastGpuMs;
+}
+
+double mmm_motion_gpu_time(void* motion, void* queue, void* depthTexture,
+                           const float* currentInverseViewProjection,
+                           const float* previousViewProjection, int32_t passes) {
+    MMMMotion* handle = (MMMMotion*)motion;
+    id<MTLCommandQueue> metalQueue = (__bridge id<MTLCommandQueue>)queue;
+    id<MTLTexture> depth = (__bridge id<MTLTexture>)depthTexture;
+    if (handle == NULL || handle->texture == nil) return -1.0;
+    if (metalQueue == nil || depth == nil) return -1.0;
+    if (currentInverseViewProjection == NULL || previousViewProjection == NULL) return -1.0;
+    if (g_MotionPipeline == NULL) return -1.0;
+    if (passes <= 0) passes = 1;
+
+    MMMMotionUniforms uniforms;
+    memcpy(uniforms.currentInverseViewProjection, currentInverseViewProjection,
+           sizeof(uniforms.currentInverseViewProjection));
+    memcpy(uniforms.previousViewProjection, previousViewProjection,
+           sizeof(uniforms.previousViewProjection));
+    uniforms.inputSize[0] = (float)handle->width;
+    uniforms.inputSize[1] = (float)handle->height;
+    uniforms.pad[0] = 0.0f;
+    uniforms.pad[1] = 0.0f;
+    MMMMotionOverlayUniforms overlayUniforms;
+    overlayUniforms.targetSize[0] = (float)handle->width;
+    overlayUniforms.targetSize[1] = (float)handle->height;
+    overlayUniforms.pad[0] = 0.0f;
+    overlayUniforms.pad[1] = 0.0f;
+
+    // One command buffer per pass, each waited on, and the buffer's own GPU timestamps rather than the
+    // CPU's clock: one buffer holding every pass would make the passes race each other over the motion
+    // texture, and this way the number is execution time with the submission cost left out.
+    double totalSeconds = 0.0;
+    int counted = 0;
+    @autoreleasepool {
+        for (int i = 0; i < passes; i++) {
+            id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+            commandBuffer.label = @"MetalMod gpu time (motion)";
+            mmm_motion_encode_into(handle, commandBuffer, depth, uniforms, overlayUniforms);
+            [commandBuffer commit];
+            [commandBuffer waitUntilCompleted];
+            double seconds = commandBuffer.GPUEndTime - commandBuffer.GPUStartTime;
+            if (seconds > 0.0) {
+                totalSeconds += seconds;
+                counted++;
+            }
+        }
+    }
+    return counted > 0 ? (totalSeconds * 1000.0) / counted : -2.0;
 }

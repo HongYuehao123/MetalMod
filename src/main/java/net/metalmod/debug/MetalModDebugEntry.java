@@ -103,6 +103,14 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                         + net.metalmod.metalfx.SceneMotion.summary()
                         + "§r | temporal frames §b"
                         + net.metalmod.metalfx.WorldRenderTarget.temporalFrameCount()
+                        // What the two passes of the temporal path actually cost on the GPU, read from
+                        // their own command buffers. Without this the frame time can only say that
+                        // temporal is slower, not which half of it is.
+                        + "§r gpu §bmotion " + oneDecimal(
+                                (float) net.metalmod.backend.MetalNative.motionLastGpuMs())
+                        + " ms§r + scaler " + oneDecimal(
+                                (float) net.metalmod.backend.MetalNative.temporalLastGpuMs())
+                        + " ms"
                         + "§r reset §b"
                         + net.metalmod.metalfx.SceneMotion.resetCount()
                         + (net.metalmod.metalfx.SceneMotion.resetCount() > 0

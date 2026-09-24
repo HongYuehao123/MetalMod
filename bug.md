@@ -8,6 +8,59 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-035 — Temporal upscaling costs far more in the game than its parts measure
+
+**Status:** **OPEN.** Attribution instrumented; the next in-game reading settles it.
+**Severity:** high for the mode. It is the difference between temporal being a trade and being a
+regression.
+
+### Symptom
+
+At 5120x2664 native, a light scene - digging straight down - ran **231 fps (4.2 ms)**. The same scene
+at 50% render scale with temporal ran **73 fps (13.1 ms)**, and F3 reported `0 entities, 0 particles,
+0 stamps`, so the per-object overlay was contributing nothing.
+
+### What is ruled out
+
+Every part measured offscreen, at the same 2560x1332 -> 5120x2664, through each pass's own GPU
+timestamps, with noise and a depth gradient uploaded rather than a flat clear so MetalFX's
+data-dependent history clamping has something to do:
+
+| Part | Cost |
+|---|---:|
+| MetalFX spatial scaler | 3.2-3.4 ms |
+| MetalFX temporal scaler | 3.1-3.3 ms |
+| motion pass (dispatch + overlay) | **0.11-0.16 ms** |
+
+So the effect is *not* meaningfully more expensive than spatial, and the motion pass is a tenth of a
+millisecond. Neither can account for a 9 ms gap.
+
+### What is left
+
+The live frame differs from the harness in at least three ways that the harness cannot reproduce: the
+depth buffer has been written by hundreds of draws rather than cleared, the two passes' command buffers
+sit inside a real frame with the engine's own submission, and the frame is paced by a display. The most
+likely candidate is the first - reading a just-rendered depth buffer can require a resolve or
+decompression that a cleared one does not - but that is a hypothesis, not a finding.
+
+### Instrumentation added
+
+`mmm_motion_last_gpu_ms()` and `mmm_fx_temporal_last_gpu_ms()` expose the two command buffers' own GPU
+spans, recorded from their completion handlers and printed on F3 as `gpu motion X ms + scaler Y ms`.
+This costs nothing on the frame and splits the temporal path in the running game, which is the
+measurement that was missing.
+
+### Next step
+
+Read those two numbers in the same scene as the 231-versus-73 comparison. Whichever is large names the
+suspect: a large `motion` means the depth read is the cost and the pass needs a different form; a large
+`scaler` means MetalFX's temporal filter is genuinely this expensive at 5K here, and the honest answer
+is that the mode is a trade rather than a win - or that its output texture must be private
+([BUG-032](#bug-032--metalfx-is-handed-a-shared-storage-output-texture-which-it-documents-as-private))
+before it runs at full speed.
+
+---
+
 ## BUG-034 — Every entity carried half a bounding box of spurious vertical motion
 
 **Status:** **FIXED**, offline.

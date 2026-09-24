@@ -34,6 +34,9 @@ static MTLFXSpatialScalerColorProcessingMode mmm_fx_color_mode(int32_t raw) {
 // which is the only thread that creates or encodes a scaler.
 static char g_LastFxError[512] = {0};
 
+/// The last temporal scaler step's GPU span, in milliseconds, written from its completion handler.
+static volatile double g_TemporalLastGpuMs = 0.0;
+
 static void mmm_fx_set_error(NSString* message) {
     const char* utf8 = message != nil ? message.UTF8String : "unknown MetalFX failure";
     if (utf8 == NULL) utf8 = "unknown MetalFX failure";
@@ -322,6 +325,43 @@ double mmm_gpu_time_fill(void* queue, void* texture, int32_t passes) {
     }
 }
 
+double mmm_fx_temporal_gpu_time(void* scaler, void* queue,
+                                  void* colorTexture, void* depthTexture, void* motionTexture,
+                                  void* outputTexture,
+                                  float jitterX, float jitterY, int32_t passes) {
+    MMMTemporalScaler* handle = (MMMTemporalScaler*)scaler;
+    id<MTLCommandQueue> metalQueue = (__bridge id<MTLCommandQueue>)queue;
+    if (handle == NULL || handle->scaler == nil) return -1.0;
+    if (metalQueue == nil) return -1.0;
+    if (colorTexture == NULL || depthTexture == NULL || motionTexture == NULL
+            || outputTexture == NULL) {
+        return -1.0;
+    }
+    if (passes <= 0) passes = 1;
+
+    // One command buffer per pass, each waited on, reading the buffer's own GPU timestamps. A temporal
+    // scaler carries history across calls, so encoding several passes into one buffer would have them
+    // racing over that history; separate buffers give a number that means what it says.
+    double totalSeconds = 0.0;
+    int counted = 0;
+    @autoreleasepool {
+        for (int i = 0; i < passes; i++) {
+            id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+            commandBuffer.label = @"MetalMod gpu time (temporal)";
+            mmm_fx_temporal_encode(scaler, (__bridge void*)commandBuffer, colorTexture, depthTexture,
+                                   motionTexture, outputTexture, jitterX, jitterY, false);
+            [commandBuffer commit];
+            [commandBuffer waitUntilCompleted];
+            double seconds = commandBuffer.GPUEndTime - commandBuffer.GPUStartTime;
+            if (seconds > 0.0) {
+                totalSeconds += seconds;
+                counted++;
+            }
+        }
+    }
+    return counted > 0 ? (totalSeconds * 1000.0) / counted : -2.0;
+}
+
 double mmm_gpu_time_upscale(void* scaler, void* queue,
                             void* sourceTexture, void* targetTexture, int32_t passes) {
     MMMSpatialScaler* handle = (MMMSpatialScaler*)scaler;
@@ -495,6 +535,18 @@ int mmm_fx_temporal_encode(void* scaler, void* commandBuffer,
         effect.jitterOffsetY = jitterY;
         effect.reset = reset ? YES : NO;
         [effect encodeToCommandBuffer:buffer];
+        // Only the frame's own path is timed here: the harness calls this with its own buffer and its
+        // own timing, and a stale value from that would be worse than no value at all.
+        if (buffer.label == nil || ![buffer.label hasPrefix:@"MetalMod gpu time"]) {
+            [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+                double seconds = completed.GPUEndTime - completed.GPUStartTime;
+                if (seconds > 0.0) g_TemporalLastGpuMs = seconds * 1000.0;
+            }];
+        }
     }
     return 0;
+}
+
+double mmm_fx_temporal_last_gpu_ms(void) {
+    return g_TemporalLastGpuMs;
 }

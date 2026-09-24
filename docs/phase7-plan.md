@@ -225,16 +225,30 @@ scene depth and asserts that the frame is untouched.
    upscale step with the queue drained after each iteration, at 1280x666 -> 2560x1332, and times the
    spatial path at the same sizes in the same run:
 
-   | Path | Mean |
-   |---|---:|
-   | MetalFX spatial | 0.919 ms |
-   | MetalFX temporal | 2.240 ms |
-   | motion dispatch + overlay + temporal reconstruction | 1.321 ms |
+   | Path | 1280x666 -> 2560x1332 | 2560x1332 -> 5120x2664 |
+   |---|---:|---:|
+   | MetalFX spatial | 0.919 ms | 3.236 ms |
+   | MetalFX temporal | 2.240 ms | 3.282 ms |
+   | motion pass (dispatch + overlay) | included | **0.110 ms** |
 
-   Against the measured 13.5 ms scaled frame at 50%, that is about a tenth of the frame for the
-   temporal path - real, and well inside it. What offscreen cannot say is how the cost behaves in a
-   scene with hundreds of moving objects and a rain shower, which is what `TESTING.md` §6.D step 10
-   is for. The number is the effect's floor, not a scene's.
+   The second column is a real 50%-on-5K configuration and it is the number that matters: the temporal
+   *effect* costs about the same as the spatial one, and the motion pass is a tenth of a millisecond.
+   The isolated parts were timed through `mmm_motion_gpu_time` and `mmm_fx_temporal_gpu_time`, each pass
+   in its own command buffer read through its own GPU timestamps, with noise and a depth gradient
+   uploaded rather than a flat clear so the filter's data-dependent clamping has something to do.
+
+   **An in-game report contradicts the comfortable reading of that table.** At native 5K a light scene
+   ran 231 fps (4.2 ms) while temporal at 50% ran 73 fps (13.1 ms), with F3 reporting `0 entities,
+   0 particles, 0 stamps` - so the overlay is not the cost, and roughly 9 ms of the frame is not
+   explained by anything this harness measures. The two passes of the temporal path are therefore now
+   timed **in the frame they run in**: their command buffers' own GPU spans are exposed as
+   `mmm_motion_last_gpu_ms` / `mmm_fx_temporal_last_gpu_ms` and printed on F3 as `gpu motion X ms +
+   scaler Y ms`. It costs nothing - the timestamps exist whether or not anyone reads them - and it is
+   the only way to attribute a live frame.
+
+   The open question is whether the motion pass is as cheap in the game as it is here, or whether
+   reading a depth buffer that hundreds of draws have just written costs something a cleared one does
+   not. That is what the next session reads off F3 first.
 
 ### 3.5 Anti-aliasing — optional separate work after Temporal
 

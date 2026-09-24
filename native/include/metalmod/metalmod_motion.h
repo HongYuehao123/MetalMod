@@ -116,6 +116,23 @@ MMM_MOTION_API int32_t mmm_motion_stamp_capacity(void* motion);
 /// How many stamps the last run drew, and how many were dropped for want of room. For diagnostics.
 MMM_MOTION_API void mmm_motion_stamp_stats(void* motion, int32_t* outStored, int32_t* outDropped);
 
+/// Measure one motion step's GPU execution time in milliseconds, averaged over `passes` runs.
+///
+/// Returns a negative value on failure. Each pass is its own command buffer, waited on, and the number
+/// is the buffer's own GPU timestamps rather than the CPU's clock - the same reason the MetalFX timing
+/// entry points exist: a frame rate paced by the display cannot say what a pass costs, and a CPU timer
+/// around a commit measures submission rather than execution.
+///
+/// The matrices are the same pair mmm_motion_run() takes, and the stamps in force are the ones already
+/// set, so the measurement is of exactly what a frame encodes.
+/// The last mmm_motion_run()'s GPU span in milliseconds, or 0 when none has completed. Free to read:
+/// the command buffer's own timestamps, reported so a frame's cost can be attributed in the frame.
+MMM_MOTION_API double mmm_motion_last_gpu_ms(void);
+
+MMM_MOTION_API double mmm_motion_gpu_time(void* motion, void* queue, void* depthTexture,
+                                          const float* currentInverseViewProjection,
+                                          const float* previousViewProjection, int32_t passes);
+
 /// Whether the depth texture this run was handed was a depth format the kernel can read.
 ///
 /// Kept as a query because a mistaken format is a bind-time validation failure, and the backend

@@ -62,13 +62,14 @@ public final class MetalNative {
             mhFxSpatialEncode, mhFxSpatialRun, mhFxSpatialTextureUsage, mhFxLastError,
             mhFxTemporalSupported, mhFxTemporalCreate, mhFxTemporalRelease, mhFxTemporalEncode,
             mhFxTemporalDescribe, mhPresentTime, mhPresentReadReset,
-            mhGpuTimeFill, mhGpuTimeUpscale;
+            mhGpuTimeFill, mhGpuTimeUpscale, mhTemporalGpuTime, mhTemporalLastGpuMs;
 
     // Phase 7B motion vectors. Also optional, for the same reason: a dylib without them leaves the
     // backend able to render and to run Spatial, it just cannot run Temporal.
     private static MethodHandle mhMotionCreate, mhMotionRelease, mhMotionTexture, mhMotionWidth,
             mhMotionHeight, mhMotionLastError, mhMotionRun, mhMotionFormatSupported, mhMotionDescribe,
-            mhMotionSetStamps, mhMotionStampCapacity, mhMotionStampStats;
+            mhMotionSetStamps, mhMotionStampCapacity, mhMotionStampStats, mhMotionGpuTime,
+            mhMotionLastGpuMs;
 
     static {
         try {
@@ -221,6 +222,10 @@ public final class MetalNative {
         mhPresentReadReset = optional(lookup, linker, "mmm_present_read_reset", FunctionDescriptor.of(I, A, I));
         mhGpuTimeFill = optional(lookup, linker, "mmm_gpu_time_fill", FunctionDescriptor.of(D, A, A, I));
         mhGpuTimeUpscale = optional(lookup, linker, "mmm_gpu_time_upscale", FunctionDescriptor.of(D, A, A, A, A, I));
+        mhTemporalGpuTime = optional(lookup, linker, "mmm_fx_temporal_gpu_time",
+                FunctionDescriptor.of(D, A, A, A, A, A, A, F, F, I));
+        mhTemporalLastGpuMs = optional(lookup, linker, "mmm_fx_temporal_last_gpu_ms",
+                FunctionDescriptor.of(D));
 
         // Motion vectors (Phase 7B). Optional like the rest of the Phase 7 surface.
         mhMotionCreate = optional(lookup, linker, "mmm_motion_create", FunctionDescriptor.of(A, A, I, I));
@@ -240,6 +245,10 @@ public final class MetalNative {
                 FunctionDescriptor.of(I, A));
         mhMotionStampStats = optional(lookup, linker, "mmm_motion_stamp_stats",
                 FunctionDescriptor.ofVoid(A, A, A));
+        mhMotionGpuTime = optional(lookup, linker, "mmm_motion_gpu_time",
+                FunctionDescriptor.of(D, A, A, A, A, A, I));
+        mhMotionLastGpuMs = optional(lookup, linker, "mmm_motion_last_gpu_ms",
+                FunctionDescriptor.of(D));
     }
 
     private static MethodHandle optional(SymbolLookup lookup, Linker linker, String name,
@@ -1134,6 +1143,56 @@ public final class MetalNative {
             return (int) mhMotionStampCapacity.invokeExact(motion);
         } catch (Throwable t) {
             return 0;
+        }
+    }
+
+    /**
+     * One motion step's GPU execution time in milliseconds, averaged over `passes`, or negative when it
+     * could not be measured. The scaler's own time is available separately, so a cost can be attributed
+     * to the pass or to the effect rather than to "temporal".
+     */
+    public static double motionGpuTime(MemorySegment motion, MemorySegment queue, MemorySegment depth,
+            MemorySegment currentInverseViewProjection, MemorySegment previousViewProjection,
+            int passes) {
+        if (mhMotionGpuTime == null || isNull(motion)) return -1.0;
+        try {
+            return (double) mhMotionGpuTime.invokeExact(motion, queue, depth,
+                    currentInverseViewProjection, previousViewProjection, passes);
+        } catch (Throwable t) {
+            return -1.0;
+        }
+    }
+
+    /** The last motion step's GPU span in the running frame, in milliseconds, or 0 if unknown. */
+    public static double motionLastGpuMs() {
+        if (mhMotionLastGpuMs == null) return 0.0;
+        try {
+            return (double) mhMotionLastGpuMs.invokeExact();
+        } catch (Throwable t) {
+            return 0.0;
+        }
+    }
+
+    /** The last temporal scaler step's GPU span in the running frame, in milliseconds, or 0. */
+    public static double temporalLastGpuMs() {
+        if (mhTemporalLastGpuMs == null) return 0.0;
+        try {
+            return (double) mhTemporalLastGpuMs.invokeExact();
+        } catch (Throwable t) {
+            return 0.0;
+        }
+    }
+
+    /** One temporal scaler step's GPU execution time in milliseconds, or negative on failure. */
+    public static double temporalGpuTime(MemorySegment scaler, MemorySegment queue,
+            MemorySegment color, MemorySegment depth, MemorySegment motion, MemorySegment output,
+            float jitterX, float jitterY, int passes) {
+        if (mhTemporalGpuTime == null || isNull(scaler)) return -1.0;
+        try {
+            return (double) mhTemporalGpuTime.invokeExact(scaler, queue, color, depth, motion, output,
+                    jitterX, jitterY, passes);
+        } catch (Throwable t) {
+            return -1.0;
         }
     }
 

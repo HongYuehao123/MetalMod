@@ -186,6 +186,17 @@ MMM_FX_API double mmm_gpu_time_fill(void* queue, void* texture, int32_t passes);
 MMM_FX_API double mmm_gpu_time_upscale(void* scaler, void* queue,
                                        void* sourceTexture, void* targetTexture, int32_t passes);
 
+/// The last temporal encode's GPU span in milliseconds, or 0 when none has completed.
+MMM_FX_API double mmm_fx_temporal_last_gpu_ms(void);
+
+/// The same, for one MetalFX temporal step: the scaler alone, with the history it carries, so the
+/// effect's cost can be separated from the motion pass that feeds it. Returns per-pass milliseconds,
+/// or a negative value on failure.
+MMM_FX_API double mmm_fx_temporal_gpu_time(void* scaler, void* queue,
+                                           void* colorTexture, void* depthTexture,
+                                           void* motionTexture, void* outputTexture,
+                                           float jitterX, float jitterY, int32_t passes);
+
 #ifdef __cplusplus
 }
 #endif

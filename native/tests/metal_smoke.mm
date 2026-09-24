@@ -1601,6 +1601,108 @@ static void test_motion_vectors(void) {
     mmm_device_release(device);
 }
 
+// Phase 7B performance: what the temporal path actually costs, split into its parts.
+//
+// The in-game comparison that prompted this showed native at 231 fps against temporal at 73 fps at the
+// same output size, with no moving objects in the scene - so the cost is the pass and the effect, not
+// the object overlay. This separates them: the scaler's own step, and the motion pass that feeds it,
+// each measured on the GPU with its own timestamps.
+//
+// The sizes are a real configuration rather than a toy one: 2560x1332 rendered and 5120x2664 presented,
+// which is 50% render scale on a 5K display.
+static void test_temporal_cost(void) {
+    printf("\n== temporal path cost (Phase 7B, offscreen) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("cost device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int64_t kRGBA8 = 70;
+    const int64_t kDepth32F = 252;
+    const int64_t kRG16F = 65;
+    const int IN_W = 2560, IN_H = 1332;
+    const int OUT_W = 5120, OUT_H = 2664;
+    const int PASSES = 12;
+
+    void* color = mmm_texture_create_full(device, kRGBA8, IN_W, IN_H, 1, 1, 2, true, 1u | 4u);
+    void* depth = mmm_texture_create_full(device, kDepth32F, IN_W, IN_H, 1, 1, 2, true, 1u | 4u);
+    void* output = mmm_texture_create_full(device, kRGBA8, OUT_W, OUT_H, 1, 1, 2, true, 1u | 4u);
+    if (color == NULL || depth == NULL || output == NULL) {
+        check("cost textures allocated", false, "allocation failed");
+        mmm_texture_release(color);
+        mmm_texture_release(depth);
+        mmm_texture_release(output);
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+    mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 0.5);
+
+    // Real content, not a cleared target. MetalFX's temporal filter clamps the history against the
+    // current frame's neighbourhood, which is data-dependent work a flat image cannot provoke - so a
+    // cost measured over a cleared texture is a floor, and the interesting question is how far above
+    // it a picture sits.
+    {
+        static unsigned char noise[IN_W * IN_H * 4];
+        static float depths[IN_W * IN_H];
+        unsigned int seed = 12345u;
+        for (int i = 0; i < IN_W * IN_H; i++) {
+            seed = seed * 1664525u + 1013904223u;
+            noise[i * 4 + 0] = (unsigned char)(seed >> 24);
+            noise[i * 4 + 1] = (unsigned char)(seed >> 16);
+            noise[i * 4 + 2] = (unsigned char)(seed >> 8);
+            noise[i * 4 + 3] = 255;
+            // A gradient rather than a constant, so depth reprojection has something to vary over.
+            depths[i] = 0.2f + 0.6f * ((float)(i % IN_W) / (float)IN_W);
+        }
+        check("content upload",
+              mmm_texture_replace_region(color, 0, 0, 0, 0, IN_W, IN_H, noise, IN_W * 4) == 0
+                      && mmm_texture_replace_region(depth, 0, 0, 0, 0, IN_W, IN_H, depths,
+                                                    IN_W * 4) == 0,
+              "");
+    }
+    void* spatial = mmm_fx_spatial_create(device, kRGBA8, kRGBA8, IN_W, IN_H, OUT_W, OUT_H, 0);
+    if (spatial != NULL) {
+        double ms = mmm_gpu_time_upscale(spatial, queue, color, output, PASSES);
+        printf("     spatial scaler  : %8.3f ms\n", ms);
+        check("the spatial scaler was timed", ms > 0.0, "");
+        mmm_fx_spatial_release(spatial);
+    }
+
+    // The motion pass on its own.
+    void* motion = mmm_motion_create(device, IN_W, IN_H);
+    float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    double motionMs = -1.0;
+    if (motion != NULL) {
+        motionMs = mmm_motion_gpu_time(motion, queue, depth, identity, identity, PASSES);
+        printf("     motion pass     : %8.3f ms\n", motionMs);
+        check("the motion pass was timed", motionMs > 0.0, "");
+    }
+
+    // The temporal scaler on its own, given a motion texture to read.
+    void* temporal = mmm_fx_temporal_create(device, kRGBA8, kDepth32F, kRG16F, kRGBA8,
+                                            IN_W, IN_H, OUT_W, OUT_H,
+                                            false, false, 1.0f, 1.0f, false, 0, false);
+    if (temporal != NULL && motion != NULL) {
+        double ms = mmm_fx_temporal_gpu_time(temporal, queue, color, depth,
+                                             mmm_motion_texture(motion), output, 0.0f, 0.0f, PASSES);
+        printf("     temporal scaler : %8.3f ms\n", ms);
+        check("the temporal scaler was timed", ms > 0.0, "");
+        if (motionMs > 0.0 && ms > 0.0) {
+            printf("     motion + scaler : %8.3f ms\n", motionMs + ms);
+        }
+    } else {
+        printf("     temporal scaler : unavailable (%s)\n", mmm_fx_last_error());
+    }
+    mmm_fx_temporal_release(temporal);
+
+    mmm_texture_release(color);
+    mmm_texture_release(depth);
+    mmm_texture_release(output);
+    mmm_motion_release(motion);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1623,6 +1725,7 @@ int main(void) {
         test_utility_batching();
         test_private_storage();
         test_motion_vectors();
+        test_temporal_cost();
         test_metalfx_spatial();
         test_metalfx_temporal();
     }
