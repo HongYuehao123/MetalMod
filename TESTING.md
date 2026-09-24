@@ -327,7 +327,144 @@ put Vulkan 26% ahead; this one puts Metal ahead in every Y band and by 2-2.7x in
 deep phase. Settle it with an interleaved A/B/A/B capture of one route rather than two runs minutes
 apart: same world, same coordinates, let meshes settle, then compare the settled interval.
 
-## 5. Troubleshooting
+**§5 is that procedure written down**, including the route recording that makes "the same coordinates"
+literally true instead of approximately true, and the visual pass that confirms the fixes still marked
+unconfirmed in [bug.md](bug.md).
+
+## 5. Phase 5 sign-off procedure
+
+Phase 5's exit criterion is *"a normal session is visually indistinguishable from Vulkan/MoltenVK, at
+comparable frame rate"*. That is two measurements, and neither has been taken cleanly: the frame-rate
+pairs so far contradicted each other, and fourteen fixes are marked "pending in-game confirmation" in
+[bug.md](bug.md). This is the sitting that closes both.
+
+Budget about an hour. Do it in one session: drift is what spoiled the previous comparisons, and the
+closer together two captures are, the less of it there is.
+
+### 5.1 Freeze the settings
+
+Every one of these has to be identical across the captures or the numbers are not comparable. Two of
+them already differ between the existing captures, which is part of why they disagree.
+
+- Window size, maximised or fullscreen the same way each run. **Write it down.** An earlier pair ran
+  at 1708x960 and an earlier one at 5120x2664.
+- Render distance. The captures so far were taken at 32.
+- Vsync **off**, FPS limit **260**.
+- The same world, and the same mods. No performance mods on either backend.
+- Do not touch the window, the mouse or the keyboard during a capture. Interacting changes the scene
+  and the capture will label those frames as such.
+
+### 5.2 Record the routes (once each)
+
+Two waypoints is enough per dimension, and the shape that matters is one settled spot above ground and
+one settled spot below it **at the same X and Z** - moving straight down keeps the teleport inside
+loaded chunks, so the measurement is the scene and not the chunk load.
+
+1. Overworld: stand in the open, press **F7**, stand still for ~20 s, then descend in one step to a depth
+   you care about (say Y 70 to Y -20, same X and Z) and stand still for 25 s, then press **F7**. Descend
+   in one jump if you can - fly down fast, or `/tp` yourself if the world has cheats - because the
+   recorder turns slow travel into **one waypoint per sample**, and each of those replays as a teleport
+   every half second.
+2. Nether: same idea. This is the heaviest vanilla scene and it puts the lightmap at its extremes -
+   block light only, no sky light.
+3. End (optional): the dragon and the wither are deliberately not killed by prep, so that scene is not
+   reproducible and its captures will not be comparable run to run. Record it only if you want to look
+   at the rendering, not to compare frames.
+
+Confirm each recording: the log says `Route saved: ...` and
+`debug/metalmod/routes/minecraft.overworld.json` (the dimension id with `:` as `.`) has the waypoints
+you expect. Two long waypoints - one above ground, one below - is the shape to aim for. A few short
+ones in between are the descent; a dozen or more means the recorder saw continuous movement, which
+still replays faithfully but measures less of what you wanted.
+
+### 5.3 Take three captures, back to back
+
+Reload the world before each one, let it settle 30 s, then **F8** and wait for it to finish.
+
+| run | backend | extra JVM argument |
+|---|---|---|
+| 1 | Metal | *(none)* |
+| 2 | Metal | `-Dmetalmod.privateTextures=false` |
+| 3 | Vulkan | *(none)* |
+
+Put the argument in the launcher's JVM arguments, not the game directory. Run 2 exists to answer one
+question: does private storage for render targets actually help? If run 2 is *faster* than run 1, the
+answer is no and `-Dmetalmod.privateTextures=false` should become the default.
+
+### 5.4 Read the result
+
+Each `summary.txt` now has a per-waypoint table. Compare them waypoint by waypoint, never the overall
+average: two captures of the same route have the same waypoints in the same order, so waypoint 1 of
+run 1 and waypoint 1 of run 3 are the same place doing the same thing.
+
+| waypoint | run 1 mean | run 2 mean | run 3 mean |
+|---|---|---|---|
+| 0 (above ground) | | | |
+| 1 (underground) | | | |
+
+Then check the three things that make the numbers trustworthy before believing any of them:
+
+- **`privateCpuAccess` is 0** in the resource summary, and `refused` does not appear in the log. A
+  non-zero value means a texture the CPU uploads into was given private storage.
+- **`Frames saved` is close to `Gameplay frames`.** A large gap means teleports raised the loading
+  screen, and those frames were dropped from the statistics as menu frames.
+- **Each waypoint's mean position matches its coordinates** in the same table. A stage whose mean
+  position is somewhere else means the teleport failed - most likely a coordinate outside the world or
+  a dimension id that does not resolve - and that stage measured the wrong place.
+
+Conclusions to write down: whether run 2 differs from run 1 at all (private storage), and how far run 3
+is from run 1 (parity). If run 3 is within roughly 10% the criterion is met; if it is not, the
+per-waypoint split says *where* it is not, which is the useful part.
+
+### 5.5 Visual confirmation pass
+
+One play session, no captures needed. These are the fourteen fixes whose code is done and whose
+appearance has not been looked at. Each line is what to look at and what "correct" looks like.
+
+**Menus, no world needed**
+
+- **BUG-001** - Singleplayer, Select World. Each list entry has its background panel behind the
+  thumbnail and text, and the name line is one normal line. The bug was a missing panel plus a
+  compressed, garbled strip of the name above the real one.
+- **BUG-025 / BUG-024** - open the survival inventory. The player model in the top-left is **upright**,
+  the item icons are **present in their slots** and the right way up. All three of those have been wrong
+  at different points, so check all three.
+
+**On entering a world**
+
+- **BUG-020** - the world loads at all. This one aborted loading outright when texel buffers were one
+  row wide.
+- **BUG-013** - vanilla clouds are visible overhead and drift normally.
+- **BUG-015** - look at the horizon and straight up: the sky is a full dome, not a disc truncated at an
+  edge.
+- **BUG-022** - light levels read correctly: walk from a torch-lit cave into daylight and back. The bug
+  was the lightmap stored mirrored, so dark and bright were swapped.
+- **BUG-003** - terrain and entities are shaded, not flat black. Water is the quickest check (squids
+  and fish were the reported case).
+- **BUG-002 / BUG-014** - look at a block: the selection outline is a thin box hugging its edges, not a
+  huge wireframe box. Press **F3+G** for chunk borders, which are also `LINES` geometry, and confirm
+  they are clean lines.
+- **BUG-004** - fly around a chunk-dense area: no section renders with the wrong offset, and terrain does
+  not snap between positions as you move.
+- **BUG-016 / BUG-017** - no z-fighting on coplanar surfaces, and geometry does not vanish depending on
+  what was drawn before it. The offline cases are covered by `render_check`; in game, water edges, item
+  frames and the hotbar are the quickest places to notice.
+- **BUG-005** - press **F3** and confirm the health line reads
+  `unbound/missingAttr/failed: 0/0/0`, and that the log has no `[MetalMod] unbound` lines. This one is a
+  diagnostic, not a symptom: silence is the pass.
+
+**In the Nether** (with the route recorded in 5.2)
+
+- Nether fog is red-orange and transitions as you move, rather than the Overworld's colour.
+- Both portal types render their animated surface.
+- The lightmap reddens/saturates as expected, with no sky-light contribution.
+
+### 5.6 What to hand back
+
+The three `summary.txt` files and the two route JSON files are enough to do the analysis; `frames.csv`
+is only needed if something looks wrong and the per-waypoint table is not enough to explain it.
+
+## 6. Troubleshooting
 
 - **`libmetalmod.dylib` fails to load.** The Java bindings resolve native symbols by name and throw
   if one is missing, so a stale dylib is reported explicitly. Rebuild with `./scripts/build_mod.sh`
