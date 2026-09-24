@@ -418,6 +418,28 @@ Phase 5. Its light contract feeds native material/lighting work (Phase 8) and ra
 buffer bounded and cull aggressively. Vanilla's own lighting must keep working unchanged, and the
 feature stays user-toggleable so a pack that brings its own lighting is not double-lit.
 
+**Close-out decision — closed with known carryovers; proceed to Phase 7A.** The original gates
+above are not all satisfied. The fresh audit passed the build, native smoke, shader inventories
+(87/87 pipelines and 9/9 post chains in both default and clustered modes), all 166 render-check
+assertions and the standalone suite. Ordinary in-game use has not exposed a problem to the user;
+the audit itself added no new in-game validation. The remaining gaps do not currently block spatial
+upscaling. This decision supersedes Phase 7's blanket requirement to finish every Phase 6 gate first.
+
+Carry forward the following, in order of relevance to current gameplay:
+
+| Priority / current impact | Remaining work | Follow-up |
+|---|---|---|
+| Medium under heavy load; risk is unmeasured | Deterministic light-count/overflow scenes and three paired off/on performance runs are missing; dense scenes may expose frame-time spikes or capacity limits. | Phase 8 performance pass. Keep **flat lighting as the default** until clustered performance is measured. |
+| Low–medium, scene-dependent | Unshadowed light can leak through walls; sealed-source suppression is not a shadow solution. The wall-scene record is also missing. | Record the scene when convenient; occlusion and linear composition remain Phase 8B work. |
+| Low, unverified edge cases | Explicit evidence is missing for offhand use, literal chunk-boundary crossings, dimension changes and disconnect/reconnect. Missing coverage is not a confirmed rendering defect. | Validate in a future in-game session, including regression checks during Phase 7. |
+| Low today; important before downstream consumption | The static block index is not invalidated on block edits, so its records can miss added emitters or retain removed ones. Vanilla placed-block illumination is unaffected because baked sources are excluded from dynamic evaluation. | Fix in Phase 8 before a consumer relies on the index. |
+| Low today; bookkeeping/data coverage | Exhausting the static index's scan budget stops traversal, skips later cached entries and can report zero pending work while sections remain unread. Unavailable chunks can repeatedly consume the budget. | Correct traversal and pending accounting in Phase 8 before downstream use. |
+| No direct effect on current built-in lighting | Diagnostic shader consumption, explicit external ownership and the shadow-request flag are unfinished. | Complete the consumer contract in Phase 8; retain the original gates above as the record of deferred scope. |
+
+**Before Phase 7A changes rendering resolution:** capture a short native-resolution baseline with
+dynamic lighting off and on, using the same scene and settings. This is a comparison baseline for
+upscaling regressions, not a substitute for the deferred scaling/performance acceptance runs.
+
 ### Phase 7 — MetalFX, natively  · **M–L**
 
 MetalMod owns the device, textures and swapchain, so MetalFX can operate on our own resources
