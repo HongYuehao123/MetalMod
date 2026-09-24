@@ -70,6 +70,8 @@ public class MetalModClient implements ClientModInitializer {
                         System.out.println("[MetalMod] hook summary after 30s: "
                                 + net.metalmod.Diagnostics.summary());
                         System.out.println(net.metalmod.backend.MetalDevice.resourceSummary());
+                        // The frame-cost counters F3 no longer carries, so the log still has them.
+                        System.out.println(net.metalmod.backend.MetalDevice.frameSummary());
                         System.out.println("[MetalMod] F3 section built "
                                 + net.metalmod.debug.DebugScreenRegistration.displayCallCount()
                                 + " time(s). 0 means F3 was never opened, or the entry is still hidden.");

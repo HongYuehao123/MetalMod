@@ -64,6 +64,18 @@ public final class Diagnostics {
         return SEEN.contains(name);
     }
 
+    /** The hooks that have not reported, space-separated; empty when every one applied. */
+    public static String missing() {
+        StringBuilder sb = new StringBuilder();
+        for (String hook : HOOKS) {
+            if (!SEEN.contains(hook)) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(hook);
+            }
+        }
+        return sb.toString();
+    }
+
     /** A +/- checklist of every hook this mod installs. */
     public static String summary() {
         StringBuilder sb = new StringBuilder();

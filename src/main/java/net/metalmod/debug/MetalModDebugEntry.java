@@ -44,31 +44,25 @@ public class MetalModDebugEntry implements DebugScreenEntry {
             backend = device.getDeviceInfo().backendName();
         }
         boolean metalActive = "Metal".equals(backend);
-        displayer.addLine("§6[MetalMod]§r Backend: " + (metalActive
-                ? "§aMetal§r (active)"
-                : "§7" + backend + "§r (Metal not in use)"));
-
-        // The framebuffer the backend is actually working with, straight from the engine's window.
+        // One line for "is it drawing, at what size, and how fast". The frame counter breakdown -
+        // buffers, native calls, copies, fences - moved to the 30-second log line: it is the same
+        // information, and on F3 it cost more width than every other line put together.
         String resolution = "?";
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft != null && minecraft.getWindow() != null) {
             resolution = minecraft.getWindow().getWidth() + "x" + minecraft.getWindow().getHeight();
         }
-        displayer.addLine("§6[MetalMod]§r Resolution: §b" + resolution);
-
-        // Drawable acquisition is just one wait site. F8 also measures fences, queue backpressure
-        // and uploads; a low drawable wait does not establish that the frame is CPU-bound.
-        float frameMs = net.metalmod.backend.MetalDevice.lastFrameMs();
-        float waitMs = net.metalmod.backend.MetalDevice.lastAcquireWaitMs();
+        StringBuilder head = new StringBuilder("§6[MetalMod]§r ");
+        head.append(metalActive ? "§aMetal§r" : "§7" + backend + "§r");
+        head.append(" | §b").append(resolution);
         if (metalActive) {
-            displayer.addLine("§6[MetalMod]§r Frame §b" + oneDecimal(frameMs) + " ms avg§r | Drawable wait §b"
-                + oneDecimal(waitMs) + " ms avg§r | §b" + net.metalmod.backend.MetalDevice.lastFrameDraws()
-                + "§r draws §7(" + net.metalmod.backend.MetalDevice.lastCommandBuffers()
-                + " render/present buffers, " + net.metalmod.backend.MetalDevice.lastFfiCalls() + " native calls, "
-                + net.metalmod.backend.MetalDevice.lastCopies() + " copies, "
-                + net.metalmod.backend.MetalDevice.lastFences() + " fences)§r");
+            head.append("§r | §b").append(oneDecimal(net.metalmod.backend.MetalDevice.lastFrameMs()))
+                    .append(" ms§r | wait §b")
+                    .append(oneDecimal(net.metalmod.backend.MetalDevice.lastAcquireWaitMs()))
+                    .append(" ms§r | §b").append(net.metalmod.backend.MetalDevice.lastFrameDraws())
+                    .append("§r draws");
         }
-        displayer.addLine("§6[MetalMod]§r " + PerformanceCapture.status());
+        displayer.addLine(head.toString());
         // The light set is only extracted when the feature is on and the Metal backend is drawing, so
         // this line is the in-game answer to "is the extractor running, and what did it publish?".
         // The live device's switches, not the launch flags: a setting can now come from the settings
@@ -77,48 +71,46 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         boolean dynamicLights = live != null
                 ? live.dynamicLightsEnabled() : net.metalmod.lighting.LightingSettings.dynamicLights();
         if (metalActive && dynamicLights) {
-            displayer.addLine("§6[MetalMod]§r dynamic lights §b"
-                    + net.metalmod.lighting.LightCollector.current().lights().size() + "/"
-                    + net.metalmod.lighting.LightSnapshot.CAPACITY
-                    + "§r dropped §b" + net.metalmod.lighting.LightCollector.dropped()
-                    + "§r buried §b" + net.metalmod.lighting.LightCollector.occluded()
-                    + "§r §7(snapshot/cap; unshadowed)§r");
-            // The two live numbers the scaling pass reads while flying a scene: what extraction costs
-            // and what it uploads. The rest lives in the F8 capture, where it is recorded per frame.
             var cost = net.metalmod.backend.MetalDevice.lightingStats();
             // Sub-millisecond extraction is the normal case at low light counts, and one decimal
             // rounds it to "0.0 ms" - uninformative in exactly the scaling pass this line exists for.
-            // The capture keeps nanoseconds; this is the live glance.
             double extractMs = cost.extractNanos() / 1_000_000.0;
             String extract = extractMs < 1.0
-                    ? String.format(java.util.Locale.ROOT, "%.3f", extractMs) + " ms"
-                    : oneDecimal((float) extractMs) + " ms";
-            // The clustered flag belongs on this line: cluster builds can only be non-zero when
-            // clustering is on, and reading the two from different places is how a page ends up
-            // appearing to contradict itself.
-            displayer.addLine("§6[MetalMod]§r light cost §b" + extract + "§r extract | §b"
-                    + (cost.uploadBytes() / 1024) + "§r KiB up | §b"
-                    + cost.clusterBuilds() + "§r cluster builds §7(clustered "
-                    + (cost.clustered() ? "on" : "off") + ")§r");
-            // Cluster occupancy is how the scaling gate is read off: how full the lists got, and how
-            // many sources could not be represented in the cell they reached.
-            if (live != null ? live.clusteredLightsEnabled()
-                    : net.metalmod.lighting.LightingSettings.clusteredLights()) {
-                var cluster = net.metalmod.backend.MetalDevice.lastClusterStats();
-                displayer.addLine("§6[MetalMod]§r clusters §b" + cluster.cellsTouched()
-                        + "§r cells, occupancy §b" + cluster.occupancyMax() + "§r max/§b"
-                        + (cluster.occupancyMeanTimes100() / 100.0) + "§r mean, overflowed §b"
-                        + cluster.cellsOverflowing() + "§r, evicted §b" + cluster.evicted()
-                        + "§r, unreachable §b" + cluster.orphaned() + "§r");
+                    ? String.format(java.util.Locale.ROOT, "%.3f", extractMs)
+                    : oneDecimal((float) extractMs);
+            StringBuilder lights = new StringBuilder("§6[MetalMod]§r lights §b")
+                    .append(net.metalmod.lighting.LightCollector.current().lights().size())
+                    .append("/").append(net.metalmod.lighting.LightSnapshot.CAPACITY)
+                    .append("§r drop §b").append(net.metalmod.lighting.LightCollector.dropped())
+                    .append("§r | ").append(cost.clustered() ? "clustered" : "flat")
+                    .append(" §b").append(extract).append(" ms§r | §b")
+                    .append(cost.uploadBytes() / 1024).append(" KiB");
+            // Buried sources are an anomaly, so they are named only when there are any: a permanent
+            // "buried 0" is width spent on the normal case.
+            int buried = net.metalmod.lighting.LightCollector.occluded();
+            if (buried > 0) {
+                lights.append("§r | buried §b").append(buried);
             }
-            // The static index is what says whether "no per-frame world scan" is actually holding.
+            // Cluster occupancy is how the scaling gate is read off, and it only exists when the
+            // clustered variant published. overflow and evict are the two that mean a cell was full.
+            if (cost.clustered()) {
+                var cluster = net.metalmod.backend.MetalDevice.lastClusterStats();
+                lights.append("§r | cells §b").append(cluster.cellsTouched())
+                        .append("§r occ §b").append(cluster.occupancyMax())
+                        .append("/").append(cluster.occupancyMeanTimes100() / 100.0)
+                        .append("§r full §b").append(cluster.cellsOverflowing())
+                        .append("§r evict §b").append(cluster.evicted());
+            }
+            displayer.addLine(lights.toString());
+            // The static index says whether "no per-frame world scan" is holding. Pending is the only
+            // number that changes while standing still, so scans and evictions ride along with it.
             var blocks = net.metalmod.lighting.BlockLightIndex.stats();
-            displayer.addLine("§6[MetalMod]§r block sources §b" + blocks.emitters() + "§r in §b"
-                    + blocks.sections() + "§r sections, §b" + blocks.pendingSections()
-                    + "§r pending §7(scans " + blocks.scans() + ", evictions " + blocks.evictions() + ")§r");
+            displayer.addLine("§6[MetalMod]§r blocks §b" + blocks.emitters() + "/"
+                    + blocks.sections() + "§r | pend §b" + blocks.pendingSections()
+                    + "§r | scan §b" + blocks.scans() + "§r evict §b" + blocks.evictions());
             var environment = net.metalmod.lighting.LightCollector.environment();
             if (environment.known()) {
-                displayer.addLine("§6[MetalMod]§r environment " + environment.summary());
+                displayer.addLine("§6[MetalMod]§r env " + environment.summary());
             }
         }
         if (net.metalmod.debug.CaptureRouteRecorder.isActive()) {
@@ -133,20 +125,20 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         int unbound = net.metalmod.backend.MetalDevice.unboundBindingCount();
         int unmapped = net.metalmod.backend.MetalDevice.missingVertexAttributeCount();
         int failed = net.metalmod.backend.MetalDevice.pipelineFailureCount();
-        String health = "§a0§r";
-        if (unbound != 0 || unmapped != 0 || failed != 0) {
-            health = "§c" + unbound + "/" + unmapped + "/" + failed + "§r";
-        }
-        displayer.addLine("§6[MetalMod]§r unbound/missingAttr/failed: " + health
-                + "§7 (0/0/0 = bindings, missing vertex attributes, pipeline builds)§r");
+        // The label that explains the three numbers is only worth its width when one of them is not
+        // zero: in the normal case the caller knows what the line is, and in the bad case they need
+        // telling.
+        boolean healthy = unbound == 0 && unmapped == 0 && failed == 0;
+        displayer.addLine("§6[MetalMod]§r health §b" + unbound + "/" + unmapped + "/" + failed
+                + (healthy ? "§a ok" : "§r §7(unbound, missing attributes, pipeline builds)§r"));
 
         // Private storage is opted into by policy, not by proof, so the refusal counter is what says
         // whether the policy was right: it must stay at zero. The first number is how many textures
         // the rule actually claimed, which is zero only when the feature is switched off.
         int privateCpu = net.metalmod.backend.MetalDevice.privateCpuAccessCount();
         if (privateCpu != 0) {
-            displayer.addLine("§6[MetalMod]§r §cprivate CPU access: " + privateCpu
-                    + "§r §7(refused; a texture needs COPY_SRC/COPY_DST - see the log)§r");
+            displayer.addLine("§6[MetalMod]§r §cprivate CPU access " + privateCpu
+                    + "§r §7(a texture needs COPY_SRC/COPY_DST - see the log)§r");
         } else if (net.metalmod.backend.MetalDevice.privateTextureCount() > 0) {
             displayer.addLine("§6[MetalMod]§r private textures §b"
                     + net.metalmod.backend.MetalDevice.privateTextureCount() + "§r");
@@ -154,16 +146,17 @@ public class MetalModDebugEntry implements DebugScreenEntry {
 
         if (MetalConfig.INSTANCE.enableUnifiedMemoryPool && MetalBridge.isAvailable()) {
             UnifiedMemoryManager mem = UnifiedMemoryManager.getInstance();
-            displayer.addLine("§6[MetalMod]§r UMA pool §aon§r | footprint §b"
+            displayer.addLine("§6[MetalMod]§r UMA §b"
                     + UnifiedMemoryManager.formatBytes(mem.getProcessResident())
-                    + "§r | pressure " + mem.getPressureString());
+                    + "§r " + mem.getPressureString());
         }
 
         // Surfaces problems without needing the game log: the F3 screen is the one place a user
-        // reliably looks when something is wrong.
-        String hooks = net.metalmod.Diagnostics.summary();
-        if (hooks.indexOf('-') >= 0) {
-            displayer.addLine("§6[MetalMod]§r hooks: " + hooks);
+        // reliably looks when something is wrong. Only the hooks that did *not* apply are named -
+        // listing all seven every frame was the longest line on the page, spent on the good case.
+        String missing = net.metalmod.Diagnostics.missing();
+        if (!missing.isEmpty()) {
+            displayer.addLine("§6[MetalMod]§r §chooks missing§r " + missing);
         }
     }
 

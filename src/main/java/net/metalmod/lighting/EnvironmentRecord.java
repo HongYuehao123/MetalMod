@@ -56,11 +56,23 @@ public record EnvironmentRecord(int version, String dimension, int minY, int max
                 level.getRainLevel(partialTick), level.getThunderLevel(partialTick));
     }
 
-    /** One-line form for the F3 section and the log. */
+    /**
+     * One-line form for F3.
+     *
+     * <p>Deliberately short: it is printed verbatim into a debug page that has no room to spare. The
+     * version and the dimension's namespace prefix are dropped - the version is in the published
+     * record for a consumer to check, and the prefix is the same on every line - and the flags that
+     * are normally true are named only when they are not.
+     */
     public String summary() {
-        return this.dimension + " t=" + this.gameTime + " day=" + String.format(java.util.Locale.ROOT, "%.2f",
-                this.dayFraction) + " darken=" + this.skyDarken + " rain="
-                + String.format(java.util.Locale.ROOT, "%.2f", this.rainLevel) + " sky="
-                + (this.hasSkyLight ? "yes" : "no") + " v" + this.version;
+        String name = this.dimension.startsWith("minecraft:")
+                ? this.dimension.substring("minecraft:".length()) : this.dimension;
+        return name + " | day " + twoDecimals(this.dayFraction) + " | darken " + this.skyDarken
+                + " | rain " + twoDecimals(this.rainLevel)
+                + (this.hasSkyLight ? "" : " | no sky");
+    }
+
+    private static String twoDecimals(float value) {
+        return String.format(java.util.Locale.ROOT, "%.2f", value);
     }
 }

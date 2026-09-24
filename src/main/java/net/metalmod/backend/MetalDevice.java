@@ -480,6 +480,23 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " | " + SHADER_COMPILER_SUMMARY.get();
     }
 
+    /**
+     * One line of frame-cost counters for the 30-second log.
+     *
+     * <p>These used to be a parenthetical on F3 and were the longest line on the page. They moved
+     * here rather than being deleted: a support log still needs the draw count, the command-buffer
+     * and native-call counts and the batching counters, and nobody reads a debug overlay for them.
+     */
+    public static String frameSummary() {
+        return "[MetalMod] last frame: " + String.format(java.util.Locale.ROOT, "%.1f", lastFrameMs())
+                + " ms, drawable wait " + String.format(java.util.Locale.ROOT, "%.1f", lastAcquireWaitMs())
+                + " ms, draws=" + lastFrameDraws()
+                + " commandBuffers=" + lastCommandBuffers()
+                + " nativeCalls=" + lastFfiCalls()
+                + " copies=" + lastCopies()
+                + " fences=" + lastFences();
+    }
+
     // Textures created with private storage, i.e. the ones the CPU is refused access to. Counted and
     // listed a bounded number of times: the list says which resources the storage-mode rule actually
     // claimed, which is the evidence for whether it is doing anything on a given scene.
