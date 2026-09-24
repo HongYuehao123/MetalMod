@@ -246,6 +246,13 @@ scene depth and asserts that the frame is untouched.
    scaler Y ms`. It costs nothing - the timestamps exist whether or not anyone reads them - and it is
    the only way to attribute a live frame.
 
+   Two fixes came out of chasing it: the temporal encode never set `inputContentWidth` /
+   `inputContentHeight`, which both MetalFX headers list as a per-frame step and which defaults to zero;
+   and the scaler is now created with `requiresSynchronousInitialization = YES`, so a cost is never
+   measured while MetalFX is still running its interim upscaler. Neither moved the offscreen number
+   much, so neither is the whole story - which is itself the finding: the parts are cheap and the live
+   frame disagrees.
+
    The open question is whether the motion pass is as cheap in the game as it is here, or whether
    reading a depth buffer that hundreds of draws have just written costs something a cleared one does
    not. That is what the next session reads off F3 first.

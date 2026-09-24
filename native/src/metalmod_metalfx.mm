@@ -439,6 +439,13 @@ void* mmm_fx_temporal_create(void* device,
             descriptor.inputHeight = (NSUInteger)inputHeight;
             descriptor.outputWidth = (NSUInteger)outputWidth;
             descriptor.outputHeight = (NSUInteger)outputHeight;
+            // Build the final upscaler before returning rather than handing back an interim one and
+            // compiling in the background. A temporal scaler created with the default (NO) starts on a
+            // slower interim upscaler, and a frame cost measured during that window is not the cost of
+            // the effect - which is exactly the kind of number that makes a mode look broken. The one
+            // price is that creation blocks for the compile, and creation happens on a scale or size
+            // change rather than per frame.
+            descriptor.requiresSynchronousInitialization = YES;
             if (dynamicResolution) {
                 descriptor.inputContentPropertiesEnabled = YES;
                 descriptor.inputContentMinScale = minScale;
@@ -528,6 +535,14 @@ int mmm_fx_temporal_encode(void* scaler, void* commandBuffer,
         effect.depthTexture = depth;
         effect.motionTexture = motion;
         effect.outputTexture = output;
+        // The content region, which both MetalFX headers list as step 2 of every frame and which was
+        // simply never set here: it defaults to zero, so the scaler was being told its input was 0x0.
+        // The spatial path has always set it; this one did not, and the two are otherwise symmetrical.
+        // We always scale the whole input, so the region is the colour texture's own size - and it is
+        // read from the texture rather than from the descriptor so a resized target cannot disagree
+        // with what is actually bound.
+        effect.inputContentWidth = color.width;
+        effect.inputContentHeight = color.height;
         // Motion and depth are already in input-texture pixels, so no extra scaling is applied.
         effect.motionVectorScaleX = 1.0f;
         effect.motionVectorScaleY = 1.0f;

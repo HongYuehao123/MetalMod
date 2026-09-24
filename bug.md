@@ -43,6 +43,19 @@ sit inside a real frame with the engine's own submission, and the frame is paced
 likely candidate is the first - reading a just-rendered depth buffer can require a resolve or
 decompression that a cleared one does not - but that is a hypothesis, not a finding.
 
+### Two fixes made while investigating
+
+- **The content region was never set.** Both MetalFX headers list "set `inputContentWidth` and
+  `inputContentHeight`" as step 2 of every frame, and the temporal encode skipped it - it defaults to
+  zero, so the scaler was being told its input was 0x0. The spatial path has always set it and the two
+  are otherwise symmetrical, which is why the omission survived: the code read as complete. It is now
+  set from the colour texture, so a resized target cannot disagree with what is bound. Offscreen the
+  scaler moved from 3.28 ms to 3.15 ms, so this was not the whole story, but it was wrong.
+- **The scaler is now built synchronously.** `requiresSynchronousInitialization` defaults to NO, which
+  hands back an interim upscaler and compiles the real one in the background; a frame cost measured in
+  that window is not the cost of the effect. It is YES now, paid once at creation - a scale or size
+  change - rather than risk reporting a mode's speed from its slowest path.
+
 ### Instrumentation added
 
 `mmm_motion_last_gpu_ms()` and `mmm_fx_temporal_last_gpu_ms()` expose the two command buffers' own GPU
