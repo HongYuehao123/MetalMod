@@ -144,6 +144,33 @@ Every counter must stay at zero. There must be no `@Mixin target ... was not fou
   at the top-left is the right way up (BUG-024, BUG-025).
 - Open the config screen from Mod Menu: it shows the Metal backend and UMA toggles.
 
+### Texture storage modes
+
+MetalMod creates a texture with `MTLStorageModePrivate` unless the engine declares
+`USAGE_COPY_DST` or `USAGE_COPY_SRC` on it, in which case it stays `MTLStorageModeShared`. Shared
+storage is CPU-coherent memory that the GPU reads and writes through the same path; private storage
+lets the GPU keep a render target in tile memory and compress it. Depth buffers and color targets are
+what this is for, and the startup log names the first twelve textures it claimed:
+
+```
+[MetalMod] private storage: 'terrain depth' D32_FLOAT 5120x2664x1
+```
+
+The rule is a claim about engine behaviour, so it is checked rather than trusted:
+
+- An upload (`writeToTexture`, `copyBufferToTexture`) aimed at a private texture **cannot work** -
+  the bytes are in GPU-private memory - so it is refused and counted. `privateCpuAccess` in the
+  resource summary and the F3 `private CPU access` line must stay at zero. Any non-zero value means a
+  texture needs a copy flag it does not declare, and the log names it.
+- Readback does not have to be refused: `copyTextureToBuffer` blits the region into a shared staging
+  texture first, so reading a private render target works whether or not `USAGE_COPY_SRC` was
+  declared. That is why `render_check` can read back a private depth target.
+
+`-Dmetalmod.privateTextures=false` forces every texture back to shared storage, to A/B the change.
+The rule keeps a texture shared on either copy flag, not just `COPY_DST`: a texture that is uploaded
+*and* copied from - an atlas filling its mip chain - declares only `COPY_SRC` on the source side, and
+the flags cannot tell it apart from a render target.
+
 ## 4. Comparing performance
 
 The roadmap's exit criterion is a comparable frame rate to Vulkan/MoltenVK. Measure **in normal

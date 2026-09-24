@@ -1032,6 +1032,61 @@ static void test_utility_batching(void) {
     mmm_device_release(device);
 }
 
+// Private storage is the resource half of the GPU-bound work: a render target the CPU never touches
+// can live in GPU-private memory instead of CPU-coherent memory. The risk is that "never touches" is
+// wrong, so this checks both halves - that a private target still renders, and that the CPU paths
+// refuse it loudly instead of handing back uninitialised bytes.
+static void test_private_storage(void) {
+    printf("\n== private storage render targets ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("private device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int W = 16, H = 16;
+    const uint32_t usage = 1u | 4u;   // shader read | render target
+    void* priv = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, false, usage);
+    void* shared = mmm_texture_create_full(device, 70, W, H, 1, 1, 2, true, usage);
+    if (queue == NULL || priv == NULL || shared == NULL) {
+        check("private resources", false, "allocation failed");
+        mmm_texture_release(priv);
+        mmm_texture_release(shared);
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+
+    unsigned char pixels[W * H * 4];
+    memset(pixels, 7, sizeof(pixels));
+    check("readback of a private texture is refused",
+          mmm_texture_read_region(priv, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4) == -2, "");
+    check("upload into a private texture is refused",
+          mmm_texture_replace_region(priv, 0, 0, 0, 0, W, H, pixels, W * 4) == -2, "");
+
+    // The point of the change: a private target must still take a render pass and a blit.
+    check("clear into a private render target",
+          mmm_clear_textures(queue, priv, true, 0, 0, 255, 1, NULL, false, 0.0) == 0, "");
+    void* fence = mmm_fence_create(queue);
+    mmm_fence_wait(fence, 5000000000LL);
+    mmm_fence_release(fence);
+
+    check("blit from a private target to a shared one",
+          mmm_copy_texture_to_texture(queue, priv, 0, 0, 0, 0, shared, 0, 0, 0, 0, W, H, 1) == 0, "");
+    fence = mmm_fence_create(queue);
+    mmm_fence_wait(fence, 5000000000LL);
+    mmm_fence_release(fence);
+
+    memset(pixels, 0, sizeof(pixels));
+    int rc = mmm_texture_read_region(shared, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
+    check("private target contents survive the blit", rc == 0 && pixels[0] < 40 && pixels[2] > 200,
+          "");
+    if (rc == 0) printf("     through blit: R%d G%d B%d\n", pixels[0], pixels[1], pixels[2]);
+
+    mmm_texture_release(priv);
+    mmm_texture_release(shared);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1052,6 +1107,7 @@ int main(void) {
         test_surface();
         test_capture();
         test_utility_batching();
+        test_private_storage();
     }
     printf("\n==================================================\n");
     if (g_failures == 0) printf("ALL CHECKS PASSED\n");

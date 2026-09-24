@@ -565,8 +565,9 @@ void* mmm_buffer_create(void* device, int64_t length) {
 
     @autoreleasepool {
         // Shared keeps the buffer CPU-visible, which is what the engine's mapping and upload paths
-        // need. Apple silicon has unified memory, so the cost is lower than on discrete GPUs; a
-        // private/staging split is a Phase 3 performance task.
+        // need. Apple silicon has unified memory, so the cost is lower than on discrete GPUs.
+        // Textures have a private/shared split (see MetalTexture); buffers would need the same
+        // staging treatment before they could follow, because the engine maps their bytes directly.
         id<MTLBuffer> buffer = [dev newBufferWithLength:(NSUInteger)length
                                                 options:MTLResourceStorageModeShared];
         return (__bridge_retained void*)buffer;

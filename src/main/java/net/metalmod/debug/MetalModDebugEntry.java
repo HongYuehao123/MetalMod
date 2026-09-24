@@ -83,6 +83,18 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         displayer.addLine("§6[MetalMod]§r unbound/missingAttr/failed: " + health
                 + "§7 (0/0/0 = bindings, missing vertex attributes, pipeline builds)§r");
 
+        // Private storage is opted into by policy, not by proof, so the refusal counter is what says
+        // whether the policy was right: it must stay at zero. The first number is how many textures
+        // the rule actually claimed, which is zero only when the feature is switched off.
+        int privateCpu = net.metalmod.backend.MetalDevice.privateCpuAccessCount();
+        if (privateCpu != 0) {
+            displayer.addLine("§6[MetalMod]§r §cprivate CPU access: " + privateCpu
+                    + "§r §7(refused; a texture needs COPY_SRC/COPY_DST - see the log)§r");
+        } else if (net.metalmod.backend.MetalDevice.privateTextureCount() > 0) {
+            displayer.addLine("§6[MetalMod]§r private textures §b"
+                    + net.metalmod.backend.MetalDevice.privateTextureCount() + "§r");
+        }
+
         if (MetalConfig.INSTANCE.enableUnifiedMemoryPool && MetalBridge.isAvailable()) {
             UnifiedMemoryManager mem = UnifiedMemoryManager.getInstance();
             displayer.addLine("§6[MetalMod]§r UMA pool §aon§r | footprint §b"

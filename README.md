@@ -95,6 +95,11 @@ working-set cap, plus the macOS kernel memory-pressure level, shown on the F3 ov
 reaches it through Panama FFI (`java.lang.foreign`). A standalone native smoke test
 (`native/tests/metal_smoke.mm`) exercises device, clear, resources, pipelines and a triangle draw.
 
+Render targets and depth buffers are created with private storage (they are what the frame spends its
+bandwidth on); a texture the engine uploads into stays shared. Uploads and buffer copies share one
+command buffer per frame instead of committing one each, which is what the underground chunk-mesh
+path needed. Both are described under [TESTING.md](TESTING.md).
+
 ---
 
 ## Known limitations

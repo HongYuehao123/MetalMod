@@ -77,6 +77,8 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " views=" + TEXTURE_VIEW_COUNT.get()
                 + " buffers=" + BUFFER_COUNT.get()
                 + " samplers=" + SAMPLER_COUNT.get()
+                + " privateTextures=" + privateTextureCount
+                + " privateCpuAccess=" + privateCpuAccessCount
                 + " failures=" + resourceFailureCount
                 + " pipelineFailures=" + pipelineFailureCount
                 + " unboundBindings=" + unboundBindingCount()
@@ -87,6 +89,46 @@ public final class MetalDevice implements GpuDeviceBackend {
                 + " | " + SHADER_COMPILER_SUMMARY.get();
     }
 
+    // Textures created with private storage, i.e. the ones the CPU is refused access to. Counted and
+    // listed a bounded number of times: the list says which resources the storage-mode rule actually
+    // claimed, which is the evidence for whether it is doing anything on a given scene.
+    private static int privateTextureCount;
+    private static int privateTextureLogCount;
+
+    static synchronized void notePrivateTexture(String label, Object format, int width, int height,
+                                                int depthOrLayers) {
+        privateTextureCount++;
+        if (privateTextureLogCount < 12) {
+            privateTextureLogCount++;
+            System.err.println("[MetalMod] private storage: '" + label + "' " + format + " "
+                    + width + "x" + height + "x" + depthOrLayers);
+        }
+    }
+
+    public static synchronized int privateTextureCount() {
+        return privateTextureCount;
+    }
+
+    // A CPU upload or readback aimed at a private texture. It cannot work - the bytes live in
+    // GPU-private memory - so it is counted loudly rather than silently dropping the upload. Any
+    // non-zero value means the storage-mode rule misclassified a texture and this is the bug report.
+    private static int privateCpuAccessCount;
+    private static int privateCpuAccessLogCount;
+
+    static synchronized void reportPrivateCpuAccess(String operation, String label) {
+        privateCpuAccessCount++;
+        if (privateCpuAccessLogCount < 20) {
+            privateCpuAccessLogCount++;
+            System.err.println("[MetalMod] " + operation + " on private texture '" + label
+                    + "' refused - this texture needs USAGE_COPY_SRC/USAGE_COPY_DST"
+                    + " (further attempts counted silently)");
+        }
+    }
+
+    public static synchronized int privateCpuAccessCount() {
+        return privateCpuAccessCount;
+    }
+
     // Set by MetalDevice so the telemetry summary can report shader cache effectiveness.
     static final java.util.concurrent.atomic.AtomicReference<String> SHADER_COMPILER_SUMMARY =
             new java.util.concurrent.atomic.AtomicReference<>("shader pairs: n/a");
@@ -95,7 +137,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         resourceFailureCount++;
         if (resourceFailureLogCount < 20) {
             resourceFailureLogCount++;
-            System.err.println("[MetalMod] Metal resource creation failed: " + what
+            System.err.println("[MetalMod] Metal resource operation failed: " + what
                     + " (further failures counted silently)");
         }
     }
@@ -539,6 +581,32 @@ public final class MetalDevice implements GpuDeviceBackend {
     // texture itself is reused.
     private final Map<Long, MetalTexture> texelTextures = new HashMap<>();
 
+    // Shared textures used to bring a private render target's contents back to the CPU. Small and
+    // few (screenshots and diagnostics ask for one region size), so they are cached rather than
+    // allocated per readback.
+    private final Map<Long, MetalTexture> readbackStagingTextures = new HashMap<>();
+
+    /**
+     * A shared, CPU-readable texture of exactly this format and size, for reading a private texture
+     * back through a blit. Null if it could not be created.
+     */
+    synchronized MetalTexture readbackStaging(GpuFormat format, int width, int height) {
+        long key = ((long) format.ordinal() * 1_000_003L + width) * 1_000_003L + height;
+        MetalTexture texture = this.readbackStagingTextures.get(key);
+        if (texture == null) {
+            // COPY_DST keeps it out of the private path: this is the one texture that must stay
+            // CPU-visible, and it is declared as such rather than special-cased.
+            texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_COPY_SRC,
+                    "readback staging", format, width, height, 1, 1);
+            if (!texture.isValid()) {
+                return null;
+            }
+            this.readbackStagingTextures.put(key, texture);
+        }
+        return texture;
+    }
+
     /**
      * Present a texel-buffer uniform's bytes as a 2D texture the shader can read.
      *
@@ -567,7 +635,10 @@ public final class MetalDevice implements GpuDeviceBackend {
         long key = buffer.handle().address() * 1_000_003L + texels * 31L + format.ordinal();
         MetalTexture texture = this.texelTextures.get(key);
         if (texture == null) {
-            texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING,
+            // USAGE_COPY_DST is what this really is: the rows below are uploaded from the CPU, so the
+            // texture must keep shared storage. Declaring only USAGE_TEXTURE_BINDING would let the
+            // storage-mode rule make it private and silently drop every upload.
+            texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
                     "texel buffer", format, width, height, 1, 1);
             if (!texture.isValid()) {
                 return null;
@@ -823,6 +894,10 @@ public final class MetalDevice implements GpuDeviceBackend {
             texture.close();
         }
         this.texelTextures.clear();
+        for (MetalTexture texture : this.readbackStagingTextures.values()) {
+            texture.close();
+        }
+        this.readbackStagingTextures.clear();
         this.shaderCompiler.close();
         this.transientMemory.close();
         if (this.device != null && this.device.address() != 0) {

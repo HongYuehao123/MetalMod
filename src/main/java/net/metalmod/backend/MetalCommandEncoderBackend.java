@@ -410,6 +410,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (metal == null || data == null) {
             return;
         }
+        if (!metal.isSharedStorage()) {
+            MetalDevice.reportPrivateCpuAccess("writeToTexture", texture.getLabel());
+            return;
+        }
         // The interface order is (mipLevel, depthOrLayers, x, y, width, height); reading it as
         // (mip, x, y, width, height, layers) makes the region and its bytes-per-row garbage.
         int layers = Math.max(1, texture.getDepthOrLayers());
@@ -432,6 +436,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         MetalBuffer src = bufferOf(source);
         MetalTexture dst = textureOf(target);
         if (src == null || dst == null || !src.isMapped()) {
+            return;
+        }
+        if (!dst.isSharedStorage()) {
+            MetalDevice.reportPrivateCpuAccess("copyBufferToTexture", target.getLabel());
             return;
         }
         int bytesPerPixel = dst.bytesPerPixel();
@@ -479,13 +487,41 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                                     Runnable onComplete, int sourceMipLevel,
                                     int x, int y, int width, int height) {
         MetalTexture metal = textureOf(source);
+        int readMip = sourceMipLevel;
+        int readX = x;
+        int readY = y;
+        if (metal != null && !metal.isSharedStorage()) {
+            // A private texture has no CPU-visible bytes, so copy the region into a shared staging
+            // texture first and read that. Readback is rare - a screenshot, a diagnostic - so the
+            // blit costs nothing per frame, and it means readback no longer depends on the engine
+            // having declared USAGE_COPY_SRC on the source. That matters because a render target is
+            // exactly the kind of texture something wants to read back.
+            MetalTexture staging = this.device.readbackStaging(metal.getFormat(), width, height);
+            if (staging == null) {
+                MetalDevice.reportResourceFailure("readback staging for '" + source.getLabel()
+                        + "' size=" + width + "x" + height);
+                metal = null;
+            } else {
+                MetalNative.copyTextureToTexture(this.device.queueHandle(), metal.handle(), 0,
+                        sourceMipLevel, x, y, staging.handle(), 0, 0, 0, 0, width, height, 1);
+                metal = staging;
+                readMip = 0;
+                readX = 0;
+                readY = 0;
+            }
+        }
         if (metal != null && target instanceof MetalBuffer buffer && buffer.isMapped()) {
             MetalNative.queueSynchronize(this.device.queueHandle());
             long rowBytes = (long) width * metal.bytesPerPixel();
             long needed = rowBytes * height;
             if (targetOffset >= 0 && targetOffset + needed <= buffer.data().byteSize()) {
-                MetalNative.textureReadRegion(metal.handle(), sourceMipLevel, 0, x, y, width, height,
-                        buffer.dataSlice(targetOffset, needed), needed, rowBytes);
+                int read = MetalNative.textureReadRegion(metal.handle(), readMip, 0, readX, readY,
+                        width, height, buffer.dataSlice(targetOffset, needed), needed, rowBytes);
+                if (read != 0) {
+                    MetalDevice.reportResourceFailure("texture readback '" + source.getLabel()
+                            + "' rc=" + read + " size=" + width + "x" + height
+                            + " needed=" + needed + " capacity=" + buffer.data().byteSize());
+                }
             }
         }
         if (onComplete != null) {

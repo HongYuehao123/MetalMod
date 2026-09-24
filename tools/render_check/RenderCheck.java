@@ -979,7 +979,8 @@ public final class RenderCheck {
             }
         }
         GpuTexture source = device.createTexture("copy source", GpuTexture.USAGE_TEXTURE_BINDING
-                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
+                | GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
         GpuTexture target = device.createTexture("copy target", GpuTexture.USAGE_TEXTURE_BINDING
                 | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
         upload(source, pattern, SIZE);
@@ -1482,7 +1483,7 @@ public final class RenderCheck {
     private static void lightmapCheck(MetalDevice device, RenderPipeline pipeline) {
         final int SIZE = 16;
         GpuTexture target = device.createTexture("lightmap", GpuTexture.USAGE_RENDER_ATTACHMENT
-                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, SIZE, SIZE, 1, 1);
         GpuTextureView targetView = device.createTextureView(target);
         GpuBuffer info = device.createBuffer(() -> "LightmapInfo",
                 GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, lightmapInfo());
@@ -1603,7 +1604,7 @@ public final class RenderCheck {
     /** Draw a non-indexed topology into a fresh target over black and return the pixels. */
     private static ByteBuffer renderTopology(MetalDevice device, RenderPipeline pipeline,
                                              ByteBuffer vertexData, int vertexCount) {
-        GpuTexture target = device.createTexture("topology", GpuBuffer.USAGE_COPY_SRC
+        GpuTexture target = device.createTexture("topology", GpuTexture.USAGE_COPY_SRC
                 | GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
         GpuTextureView view = device.createTextureView(target);
         GpuBuffer vertices = device.createBuffer(() -> "topology vertices",
@@ -1991,7 +1992,7 @@ public final class RenderCheck {
     private static boolean depthCase(MetalDevice device, RenderPipeline writer, RenderPipeline tester,
                                      float stored, float incoming) {
         GpuTexture color = device.createTexture("depth compare", GpuTexture.USAGE_RENDER_ATTACHMENT
-                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
         GpuTextureView colorView = device.createTextureView(color);
         GpuTexture depth = device.createTexture("depth compare depth",
                 GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
@@ -2077,7 +2078,7 @@ public final class RenderCheck {
     private static ByteBuffer renderPoints(MetalDevice device, RenderPipeline pipeline,
                                            ByteBuffer vertexData) {
         GpuTexture target = device.createTexture("points", GpuTexture.USAGE_RENDER_ATTACHMENT
-                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
         GpuTextureView view = device.createTextureView(target);
         GpuTexture depth = device.createTexture("points depth", GpuTexture.USAGE_RENDER_ATTACHMENT,
                 GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
@@ -2350,7 +2351,7 @@ public final class RenderCheck {
         }
 
         GpuTexture color = device.createTexture("depth bias", GpuTexture.USAGE_RENDER_ATTACHMENT
-                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
         GpuTextureView colorView = device.createTextureView(color);
         GpuTexture depth = device.createTexture("depth bias depth", GpuTexture.USAGE_RENDER_ATTACHMENT,
                 GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);
@@ -2435,7 +2436,7 @@ public final class RenderCheck {
         }
 
         GpuTexture color = device.createTexture("depth state", GpuTexture.USAGE_RENDER_ATTACHMENT
-                | GpuBuffer.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+                | GpuTexture.USAGE_COPY_SRC, GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
         GpuTextureView colorView = device.createTextureView(color);
         GpuTexture depth = device.createTexture("depth state depth",
                 GpuTexture.USAGE_RENDER_ATTACHMENT, GpuFormat.D32_FLOAT, WIDTH, HEIGHT, 1, 1);

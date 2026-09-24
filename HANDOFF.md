@@ -137,21 +137,27 @@ they measured resolution scaling only, and the CPU floor they implied was optimi
 
 ### Queued, not done
 
-- **Batch utility submissions.** Every `writeToBuffer` allocates a fresh staging `MTLBuffer` and its
-  own command buffer, commits it, and the same is true of the clears, buffer copies and texture
-  copies (`mmm_write_buffer_bytes`, `mmm_copy_buffer_to_buffer`, `mmm_clear_textures*`,
-  `mmm_copy_texture_to_texture`). One per-frame utility command buffer plus a reused staging ring
-  would remove most of that.
-- **Storage-mode split.** Every texture and buffer is `MTLStorageModeShared`, including render
-  targets and the depth buffer (`MetalTexture`, `mmm_buffer_create` both carry a comment saying a
-  private/staging split is a deferred "Phase 3 performance task"). On Apple GPUs private render
-  targets get lossless framebuffer compression; upload/readback paths would need staging blits.
+- **Batch utility submissions.** *Done.* `mmm_write_buffer_bytes`, `mmm_copy_buffer_to_buffer` and
+  `mmm_copy_texture_to_texture` share one pending command buffer with a single blit encoder, and
+  uploads go into a per-frame staging ring. It cut the underground upload path's cost by 95%.
+- **Storage-mode split.** *Textures done, buffers not.* `MetalTexture` creates private storage unless
+  the engine declares `USAGE_COPY_DST`/`USAGE_COPY_SRC`; depth buffers and color render targets are
+  what that claims, and the log names them. Readback from a private texture goes through a shared
+  staging texture. `mmm_buffer_create` still creates every buffer `MTLStorageModeShared` - the
+  engine's mapping and upload paths touch buffer bytes directly, so a private split there needs the
+  same staging treatment the texture path now has.
 - **Presentation copy.** The `CAMetalLayer` keeps its default BGRA8 format while the main target is
   RGBA8, so the present is a full-screen fragment shader; matching the formats would allow a
   copy-engine blit.
+- **Render-pass store actions.** Every attachment is `MTLStoreActionStore`, including depth buffers
+  that the next pass clears. Relaxing that to `DontCare` needs lookahead - the encoder is already
+  ended by the time the next pass begins - so it needs either engine cooperation or an encoder the
+  backend holds open across the frame.
 - **Real GPU timing.** `GPU wait` is a proxy. A per-frame GPU execution time needs
   `MTLCounterSampleBuffer` timestamps; summing command-buffer `GPUStartTime`/`GPUEndTime` spans does
-  not work (command buffers on one queue overlap execution).
+  not work (command buffers on one queue overlap execution). This is now the main measurement gap:
+  the frame is GPU-bound in its heaviest moments and the capture can only infer that from the
+  drawable wait.
 
 ## Environment specifics that matter
 
