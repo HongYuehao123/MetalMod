@@ -197,15 +197,27 @@ values or save data.
 | Image correctness | **Met offline, partly confirmed in game.** The render check covers falloff at centre/radius/outside, two coloured lights, large world and camera coordinates, fog order, cutout, translucency, entities, items and moving blocks, all with explicit composition assertions. Not covered: the offhand specifically, and a literal chunk-boundary crossing (the large-origin case exercises the same arithmetic). |
 | Lifecycle | **Not met.** Pickup, despawn, dimension switch, disconnect/reconnect and resize have no recorded evidence, in game or offline. Buffer churn is covered by the four-rotation fence test, and interpolation by the fractional-camera case, but that is not the gate. |
 | Scope honesty | **Met except the wall scene.** GUI, emissive and glint paths are excluded and asserted; placed torches are indexed but never added on top of their baked light. A wall scene demonstrating the remaining leakage has not been captured. |
-| Scaling | **Not met.** Deterministic 0/1/16/64/256 scenes have not been run, and the cap is 32 lights with 4 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
+| Scaling | **Not met.** Deterministic scenes have not been run, and the implemented bounds are 32 active lights and 16 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
 | Performance | **Not met.** No measurement of any kind. The interleaved off/on/off/on route captures and the 10% budget are untouched. |
 | Consumer | **Not met.** No diagnostic shader consumer and no ownership modes. The records, ABI version and cluster table are published and unit-tested, but nothing shipped reads them as a consumer. |
 
 Closing the gaps, cheapest first: a wall scene and an in-game lifecycle pass cost a session each; the
 scaling and performance gates need the capture route and, for honest numbers, true GPU timing; the
-consumer gate is a new slice. Raising the cap to the proposed 256 is a separate piece of work - it
-needs a buffer or texture-backed list rather than the current uniform array, and it should not be
-attempted before the performance gate, which is what would justify it.
+consumer gate is a new slice.
+
+**On the two bounds.** They limit different things and should not be quoted as one number:
+
+- the **snapshot capacity** (32) is how many sources exist at once, gathered within 32 blocks of the
+  camera and kept by contribution. It bounds coverage across that window, not the cost of a pixel, and
+  a scene with hundreds of lights spread over hundreds of blocks does not stress it - only density
+  within the search radius does, which is what F3's `dropped` counter reports.
+- the **cell capacity** (16) is how many lights may light one 16-block cell. It bounds per-pixel work in
+  the clustered path, and it is the number a saturation argument applies to: the per-fragment sum is
+  clamped to 1, so once enough sources reach a cell the rest are wasted work. The shader breaks at the
+  cell's actual count, so a sparse cell costs what it always did.
+
+The plan's proposed 256 was an active-set figure, so "a 256-light scene" in the scaling gate has to say
+whether it means 256 in the world or 256 within the search radius; only the second exercises the cap.
 
 ## 6. Implementation update (2026-09-24)
 
@@ -474,6 +486,24 @@ wrong place if it had been assumed. These pipelines are reachable only through `
 
 `core/glint` is deliberately excluded: an enchantment glint is an additive overlay, like the outline,
 not a lit material.
+
+### The cluster table packed three entries into a cell that claimed four
+
+Found while working out what the per-cell bound actually was. Each cell was one RGBA texel holding a
+count plus three indices, because reading the k-th component of a vec4 needs a constant index in GLSL
+and the entry number is a loop variable. The constant said four, and the encoder wrote one float per
+entry into a four-float stride, so the fourth index landed on the next cell's count texel and was
+overwritten. The real capacity was three; the shader's third entry read as a duplicate of the second;
+and the last cell's spill was only harmless because the record copy happens to run after the cell
+encode.
+
+`LightClusterTest` could not see any of it: it decoded with the CPU stride, not the texel stride, so it
+was checking the layout the encoder believed in rather than the one the GPU reads.
+
+Fixed by giving each cell its own texels - one count texel and one index texel per entry - which makes
+the entry number a texel coordinate, the one kind of dynamic indexing GLSL does allow, and removes the
+packing that caused it. The capacity is now 16, and a full cell is asserted to publish all sixteen
+distinct records with its neighbour's count intact.
 
 ### Buried sources are dropped (added 2026-09-24)
 

@@ -216,7 +216,8 @@ public final class TerrainLightVariant {
                 + "uniform sampler2D " + LightClusterGrid.DATA_UNIFORM + ";\n";
         String accessors =
                 "const int MetalModHeaderTexel = " + LightClusterGrid.HEADER_TEXELS + ";\n"
-                        + "const int MetalModCells = " + LightClusterGrid.CELLS + ";\n"
+                        + "const int MetalModCellTexels = " + LightClusterGrid.CELL_TEXELS + ";\n"
+                        + "const int MetalModRecordBase = " + LightClusterGrid.RECORD_BASE + ";\n"
                         + "const int MetalModEntriesPerCell = " + LightClusterGrid.ENTRIES_PER_CELL + ";\n"
                         // A flat texel fetch: the whole table is one row, so an element index is a
                         // texel index and no stride arithmetic can go wrong.
@@ -228,20 +229,19 @@ public final class TerrainLightVariant {
                         + "    return metalmodTexel(0);\n"
                         + "}\n"
                         + "int metalmodEntryCount(int cell) {\n"
-                        + "    return int(metalmodTexel(MetalModHeaderTexel + cell).x);\n"
+                        + "    return int(metalmodTexel(MetalModHeaderTexel + cell * MetalModCellTexels).x);\n"
                         + "}\n"
                         // Every decoded index is clamped to the published light count, so a table that
-                        // ever disagreed with the records still cannot read past them.
-                        // Components are selected explicitly: GLSL has no dynamic vector index.
+                        // ever disagreed with the records still cannot read past them. Entry k lives in
+                        // its own texel, so the index is a texel coordinate - the one kind of dynamic
+                        // indexing GLSL does allow.
                         + "int metalmodRecordOf(int cell, int entry) {\n"
-                        + "    vec4 cellData = metalmodTexel(MetalModHeaderTexel + cell);\n"
                         + "    int bound = max(int(metalmodMeta().x) - 1, 0);\n"
-                        + "    if (entry == 0) return clamp(int(cellData.y), 0, bound);\n"
-                        + "    if (entry == 1) return clamp(int(cellData.z), 0, bound);\n"
-                        + "    return clamp(int(cellData.w), 0, bound);\n"
+                        + "    int slot = MetalModHeaderTexel + cell * MetalModCellTexels + 1 + entry;\n"
+                        + "    return clamp(int(metalmodTexel(slot).x), 0, bound);\n"
                         + "}\n"
                         + "vec4 metalmodRecordHalf(int record, int part) {\n"
-                        + "    return metalmodTexel(MetalModHeaderTexel + MetalModCells + record * 2 + part);\n"
+                        + "    return metalmodTexel(MetalModRecordBase + record * 2 + part);\n"
                         + "}\n";
         int loopAt = base.fragment().indexOf("vec3 metalmodLight = vec3(0.0);");
         int applyAt = base.fragment().indexOf(SINGLE_APPLY_CLUSTERED);

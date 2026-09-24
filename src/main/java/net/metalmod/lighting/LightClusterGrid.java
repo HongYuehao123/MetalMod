@@ -50,8 +50,19 @@ public final class LightClusterGrid {
     public static final double EXTENT = 128;
     public static final int CLUSTERS_PER_AXIS = 8;
     public static final double CLUSTER_SIZE = EXTENT / CLUSTERS_PER_AXIS;
-    /** Entries per cell. Four is above what a 16-block cell holds in normal play. */
-    public static final int ENTRIES_PER_CELL = 4;
+    /**
+     * How many lights may light one cell.
+     *
+     * <p>Chosen from the contribution model rather than from a byte budget: the per-fragment sum is
+     * clamped to 1, and each light contributes at most its intensity times its falloff squared, so a
+     * spot reached by this many sources is saturated in practice and any further source would be
+     * provably wasted work. It is a cap on lights <em>per cell</em>, not on lights in the world - the
+     * snapshot capacity is what bounds how many exist at once, and the two are independent.
+     *
+     * <p>The shader breaks out of its loop at the cell's actual entry count, so a sparse cell costs
+     * the same as it did at a smaller cap; only a genuinely crowded cell evaluates this many.
+     */
+    public static final int ENTRIES_PER_CELL = 16;
     public static final int CELLS = CLUSTERS_PER_AXIS * CLUSTERS_PER_AXIS * CLUSTERS_PER_AXIS;
     /** ivec4 header, then one ivec4 per cell. */
     public static final int HEADER_SLOTS = 4;
@@ -61,10 +72,24 @@ public final class LightClusterGrid {
 
     /** Records the data texture has room for: one light set's worst case, plus slack. */
     public static final int MAX_RECORDS = LightSnapshot.CAPACITY + 8;
-    // GPU layout: one header texel, one texel per cell, then two RGBA texels per light record.
+    /**
+     * GPU layout: one header texel, then one count texel plus one index texel per entry for each
+     * cell, then two RGBA texels per light record.
+     *
+     * <p><b>One index per texel, deliberately.</b> Packing four indices into one RGBA texel would be
+     * four times smaller, but reading the k-th component of a vec4 needs a constant index in GLSL, and
+     * the entry number here is a loop variable. A dynamic <em>texel</em> coordinate is fine; a dynamic
+     * <em>component</em> is not. The earlier packing worked around that by reading {@code .y}, {@code
+     * .z} and {@code .w} from a single texel - which is exactly three entries however many the cell
+     * claimed to hold, so the constant said four, the encoder wrote five floats per cell, and the
+     * fourth landed on the next cell's count texel and was overwritten.
+     */
     public static final int HEADER_TEXELS = 1;
+    public static final int CELL_TEXELS = 1 + ENTRIES_PER_CELL;
+    public static final int CELLS_TEXELS = CELLS * CELL_TEXELS;
+    public static final int RECORD_BASE = HEADER_TEXELS + CELLS_TEXELS;
     public static final int RECORD_TEXELS = MAX_RECORDS * 2;
-    public static final int TEXELS = HEADER_TEXELS + CELLS + RECORD_TEXELS;
+    public static final int TEXELS = RECORD_BASE + RECORD_TEXELS;
     /** One row holds the header, every cell and every record, so a texel address is a flat index. */
     public static final int TEXELS_PER_ROW = TEXELS;
     public static final int TEXEL_ROWS = 1;
@@ -272,13 +297,23 @@ public final class LightClusterGrid {
         texels[3] = (int) CLUSTER_SIZE;
         for (int cell = 0; cell < CELLS; cell++) {
             int base = HEADER_SLOTS + cell * CELL_STRIDE;
-            int out = (1 + cell) * 4;
+            int out = cellBase(cell) * 4;
             texels[out] = this.slots[base];
+            int used = this.slots[base];
             for (int entry = 0; entry < ENTRIES_PER_CELL; entry++) {
-                texels[out + 1 + entry] = Math.max(0, Math.min(bound, this.slots[base + 1 + entry]));
+                // Only the entries the cell actually holds are written. A cell's slots are its own
+                // texels now, so there is nothing beyond them to overwrite - which is the property the
+                // old packing broke.
+                texels[out + (1 + entry) * 4] = entry < used
+                        ? Math.max(0, Math.min(bound, this.slots[base + 1 + entry])) : 0;
             }
         }
         return texels;
+    }
+
+    /** The first texel of a cell's own block: its entry count, then one texel per entry. */
+    public static int cellBase(int cell) {
+        return HEADER_TEXELS + cell * CELL_TEXELS;
     }
 
     /** The record region of the same texture: two RGBA texels per camera-relative light. */
@@ -302,7 +337,7 @@ public final class LightClusterGrid {
 
     /** Where a record's position/radius texel starts, in flat texel units. */
     public static int recordTexel(int record) {
-        return HEADER_TEXELS + CELLS + record * 2;
+        return RECORD_BASE + record * 2;
     }
 
     /**

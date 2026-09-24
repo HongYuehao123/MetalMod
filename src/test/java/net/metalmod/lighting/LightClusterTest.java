@@ -19,8 +19,9 @@ public final class LightClusterTest {
             fullCellsKeepTheStrongestAndCountTheRest();
             publishedIndicesAreAlwaysInRange();
             emptyAndOrphanedLights();
+            aFullCellDoesNotDisturbItsNeighbour();
             largeWorldOriginsKeepTheirCells();
-            System.out.println("PASS clustered light grid: bounds, stability, overflow and origins");
+            System.out.println("PASS clustered light grid: bounds, stability, overflow, layout and origins");
             return 0;
         } catch (AssertionError error) {
             error.printStackTrace();
@@ -120,11 +121,11 @@ public final class LightClusterTest {
         require((int) texels[1] == LightClusterGrid.CLUSTERS_PER_AXIS
                 && (int) texels[2] == LightClusterGrid.ENTRIES_PER_CELL, "header publishes the geometry");
         for (int cell = 0; cell < LightClusterGrid.CELLS; cell++) {
-            int base = (1 + cell) * 4;
+            int base = LightClusterGrid.cellBase(cell) * 4;
             int entries = (int) texels[base];
             require(entries >= 0 && entries <= LightClusterGrid.ENTRIES_PER_CELL, "cell count in range");
             for (int entry = 0; entry < LightClusterGrid.ENTRIES_PER_CELL; entry++) {
-                int record = (int) texels[base + 1 + entry];
+                int record = (int) texels[base + (1 + entry) * 4];
                 require(record >= 0 && record < Math.max(1, count),
                         "cell " + cell + " entry " + entry + " -> record " + record);
                 // Unused slots are clamped rather than left arbitrary, so even a consumer that read
@@ -141,6 +142,35 @@ public final class LightClusterTest {
                 "records exactly fill the tail of the table");
         require(LightClusterGrid.TEXELS_PER_ROW == LightClusterGrid.TEXELS
                 && LightClusterGrid.TEXEL_ROWS == 1, "one row: a texel address is a flat index");
+    }
+
+    /**
+     * A cell's entries must not disturb its neighbour.
+     *
+     * <p>This is the assertion the old layout needed and did not have: it packed a cell into a single
+     * RGBA texel but wrote one float per entry, so the highest entry landed on the next cell's count
+     * texel and was overwritten - the capacity was silently three however many the constant claimed,
+     * and the shader's third entry read as a duplicate of the second. Only a full cell shows it, so a
+     * full cell is what is published here.
+     */
+    private static void aFullCellDoesNotDisturbItsNeighbour() {
+        LightClusterGrid grid = new LightClusterGrid();
+        List<PointLight> lights = new ArrayList<>();
+        for (int index = 0; index < LightClusterGrid.ENTRIES_PER_CELL; index++) {
+            lights.add(new PointLight(0, 0, 0, 4, 1, 1, 1, 1));
+        }
+        grid.build(new LightSnapshot(0, 0, 0, lights));
+        float[] texels = grid.encodeTexels();
+        int cell = cellIndex(4, 4, 4);
+        require((int) texels[LightClusterGrid.cellBase(cell) * 4] == LightClusterGrid.ENTRIES_PER_CELL,
+                "a full cell publishes its full count");
+        for (int entry = 0; entry < LightClusterGrid.ENTRIES_PER_CELL; entry++) {
+            int record = (int) texels[LightClusterGrid.cellBase(cell) * 4 + (1 + entry) * 4];
+            require(record == entry,
+                    "entry " + entry + " of a full cell publishes its own record, not a duplicate");
+        }
+        require((int) texels[LightClusterGrid.cellBase(cell + 1) * 4] == 0,
+                "the neighbouring cell's count survives its neighbour's last entry");
     }
 
     /** An empty set publishes an empty grid; a source outside the window is counted, not indexed. */
