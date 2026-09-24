@@ -1,9 +1,10 @@
 # Phase 6 — Dynamic lighting
 
-Status: **6A, 6B and 6C are implemented and verified; 6D is partly implemented. Phase 6 is NOT
-complete** - the lifecycle, scaling-measurement, performance and consumer gates in §5 are unmet, and
-the published capacity is 64 lights rather than the proposed 256. The feature is usable and the wiring is
-confirmed in game. Updated 2026-09-24.
+Status: **implementation complete; the evidence gates need a final in-game pass.** 6A, 6B, 6C and the
+implemented part of 6D are done, and the two things Phase 6 deliberately does not do - occlusion and
+linear composition - are handed to Phase 8B in writing. The lifecycle, scaling-record and performance
+gates in §5 are what remains, and all three need a game session rather than code; the capture now
+records the lighting figures they ask for. The published capacity is 64 lights. Updated 2026-09-24.
 Baseline reviewed: `bdcd5c0`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro.
 
 > **Recovery note.** The 6A/6B sources were lost before they were committed. They were reconstructed
@@ -199,7 +200,7 @@ values or save data.
 | Scope honesty | **Met except the wall scene.** GUI, emissive and glint paths are excluded and asserted; placed torches are indexed but never added on top of their baked light. A wall scene demonstrating the remaining leakage has not been captured. |
 | Scaling | **Not met.** Deterministic scenes have not been run, and the implemented bounds are 64 active lights and 16 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
 | Performance | **Not met.** No measurement of any kind. The interleaved off/on/off/on route captures and the 10% budget are untouched. |
-| Consumer | **Not met.** No diagnostic shader consumer and no ownership modes. The records, ABI version and cluster table are published and unit-tested, but nothing shipped reads them as a consumer. |
+| Consumer | **Re-scoped, not met.** A diagnostic *shader* consumer and ownership modes were aimed at shaderpacks, which the roadmap has since made an optional track. The first real consumer is now the native material and lighting work in Phase 8 and the ray tracing in Phase 9, so the layout, offsets, version and guarantees are written down in [the light-record ABI](lighting-abi.md) instead; ownership modes move to Phase 8 with them. |
 
 Closing the gaps, cheapest first: a wall scene and an in-game lifecycle pass cost a session each; the
 scaling and performance gates need the capture route and, for honest numbers, true GPU timing; the
@@ -218,6 +219,28 @@ consumer gate is a new slice.
 
 The plan's proposed 256 was an active-set figure, so "a 256-light scene" in the scaling gate has to say
 whether it means 256 in the world or 256 within the search radius; only the second exercises the cap.
+
+### Handover to Phase 8B
+
+Phase 6 stops in two places on purpose, and neither is an unfinished part of it.
+
+**Occlusion.** Lights are unshadowed: a source in an open room still reaches the far side of the wall
+behind it. Sources buried in or sealed by opaque blocks are dropped, because that case is decidable one
+cell at a time, but nothing shadows a light through geometry. Phase 8B is where that belongs - it asks
+for the native direct-light contribution to be separable "so a ray visibility result can shadow that
+contribution". This is already the shape of what Phase 6 built: the dynamic term fills only the
+lightmap headroom vanilla left and is added to the shaded surface, so it is a distinct contribution
+that a visibility result can multiply. Building a shadow path now would invent something 8B has
+already specified.
+
+**Linear composition.** The contribution is composed in vanilla working space - the shader says so in
+a comment - with a saturating per-channel clamp and no exposure or tone mapping. Phase 8B owns
+"linear-light composition, exposure and tone mapping", and changing it will change how this
+contribution composes. That is a change to make once, in 8B, not twice.
+
+The contract both will build against is [the light-record ABI](lighting-abi.md): layouts, offsets,
+version, and the guarantees a consumer may rely on. It also lists what is reserved and must not be
+advertised - light type, shadow flags, environment in a GPU block, ownership modes.
 
 ## 6. Implementation update (2026-09-24)
 

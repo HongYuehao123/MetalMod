@@ -66,7 +66,7 @@ public final class PerformanceCapture {
         }
         try {
             // Allocate before the countdown so this setup does not become a measured hitch.
-            recording = new PerformanceRecording(36_000, MetalNative.CAPTURE_METRICS);
+            recording = new PerformanceRecording(36_000, captureColumns());
             collectors = ManagementFactory.getGarbageCollectorMXBeans();
             outputRoot = minecraft.gameDirectory.toPath().resolve("debug/metalmod");
             String backend = RenderSystem.getDevice().getDeviceInfo().backendName();
@@ -177,6 +177,7 @@ public final class PerformanceCapture {
                     recording.put(PerformanceRecording.COL_FIRST_NATIVE + i,
                             nativeSample.getAtIndex(ValueLayout.JAVA_LONG, i));
                 }
+                putLighting(recording);
             }
             long gcCount = gcTotal(false), gcMillis = gcTotal(true);
             recording.put(PerformanceRecording.COL_GC_COLLECTIONS, delta(gcCount, lastGcCount));
@@ -201,6 +202,24 @@ public final class PerformanceCapture {
             }
         } catch (RuntimeException error) {
             fail(minecraft, error);
+        }
+    }
+
+    /**
+     * The native columns plus the lighting ones, appended so native indices keep their positions.
+     */
+    private static java.util.List<String> captureColumns() {
+        java.util.List<String> names = new java.util.ArrayList<>(MetalNative.CAPTURE_METRICS);
+        names.addAll(LightingCaptureColumns.NAMES);
+        return java.util.List.copyOf(names);
+    }
+
+    /** Write this frame's lighting figures into their columns, past the native block. */
+    private static void putLighting(PerformanceRecording recording) {
+        MetalDevice.LightingStats stats = MetalDevice.lightingStats();
+        int base = PerformanceRecording.COL_FIRST_NATIVE + MetalNative.CAPTURE_METRICS.size();
+        for (int i = 0; i < LightingCaptureColumns.NAMES.size(); i++) {
+            recording.put(base + i, LightingCaptureColumns.value(stats, i));
         }
     }
 

@@ -83,6 +83,13 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                     + "§r dropped §b" + net.metalmod.lighting.LightCollector.dropped()
                     + "§r buried §b" + net.metalmod.lighting.LightCollector.occluded()
                     + "§r §7(snapshot/cap; unshadowed)§r");
+            // The two live numbers the scaling pass reads while flying a scene: what extraction costs
+            // and what it uploads. The rest lives in the F8 capture, where it is recorded per frame.
+            var cost = net.metalmod.backend.MetalDevice.lightingStats();
+            displayer.addLine("§6[MetalMod]§r light cost §b"
+                    + oneDecimal((float) (cost.extractNanos() / 1_000_000.0)) + " ms§r extract | §b"
+                    + (cost.uploadBytes() / 1024) + "§r KiB up | §b"
+                    + cost.clusterBuilds() + "§r cluster builds");
             // Cluster occupancy is how the scaling gate is read off: how full the lists got, and how
             // many sources could not be represented in the cell they reached.
             if (live != null ? live.clusteredLightsEnabled()

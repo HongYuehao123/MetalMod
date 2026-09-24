@@ -556,6 +556,97 @@ One play session, no captures needed. Each line is what to look at and what "cor
 The three `summary.txt` files and the two route JSON files are enough to do the analysis; `frames.csv`
 is only needed if something looks wrong and the per-waypoint table is not enough to explain it.
 
+## 5.6 Phase 6 final test
+
+The implementation is complete; this pass produces the evidence the remaining Phase 6 gates ask for.
+Everything it needs is already on F3 and in the F8 capture - no code changes are expected, and a
+failure here is a finding rather than a missing step.
+
+**Setup.** Launch with the Metal backend, `-Dmetalmod.dynamicLights=true`, and
+`-Dmetalmod.clusteredLights=true` (or set all three on the in-game Lighting page). Open F3 and keep the
+MetalMod block visible: every check below is read from it.
+
+### A. Wiring, once at the start
+
+- The log shows `lighting: pointLightProof=false dynamicLights=true clusteredLights=true`.
+- The log shows `lighting variant terrain-clustered-lights-v1 applied to minecraft:pipeline/...` for
+  the terrain pipelines, and the same for particle, entity, item and block pairs as they appear.
+- After 30 s the hook summary contains `+LevelExtractor.extract +LevelExtractor.setLevel
+  +OptionsScreen.init`, and the resource line reads `failures=0 pipelineFailures=0 unboundBindings=0
+  missingVertexAttributes=0`.
+- **No** `point-light proof skipped for ...` line. If one appears, a shader pair did not match its
+  recorded fingerprints and is running vanilla.
+
+### B. Image correctness, per family
+
+Hold a torch and confirm each of these brightens with the terrain and keeps its own shading and alpha:
+
+- terrain, including cutout leaves and translucent water;
+- particles (dust, flame) — these were a separate gap and were dark;
+- a mob or dropped item — the entity pair;
+- the item in your **main** hand, then the **offhand**; then press F5 for third person;
+- put a block on a piston and push it — the moving-block pair.
+
+Then: walk into fog (illumination must be applied *before* fog), and stand in water.
+
+### C. Lifecycle — the gate with no evidence yet
+
+| Action | Expected |
+|---|---|
+| Throw a light-emitting item down | light appears at it |
+| Walk away until it despawns | light goes with it |
+| Pick it up | light disappears |
+| Nether → Overworld | `environment` line changes; no light left behind |
+| Disconnect and reconnect | `block sources` resets; no stale emitters |
+| `F3+T` (resource reload) | lit variants come back, not silently vanilla |
+| Resize the window | no crash, no leak, counters unchanged |
+| Toggle lighting off and on in the Lighting page | world goes vanilla and returns, no stale glow |
+
+### D. Scope honesty
+
+- **The inventory must not change** near a torch. Items there are drawn fully lit, so the dynamic term
+  has no headroom; if an inventory item brightens, that is a bug worth reporting immediately.
+- Emissive passes (entity eyes, energy swirl) stay exactly as they were.
+- A **placed** torch must not be brighter than vanilla - it is baked, and MetalMod does not add to it.
+- A glow squid, sealed or in the open, lights **nothing**.
+- A source buried in or sealed by opaque blocks is dark; F3's `buried` shows a non-zero count.
+- Standing next to a wall, light **does** still leak through it. That is the known limitation and
+  Phase 8B's job, not a defect to report.
+
+### E. Scaling record
+
+Walk one dense scene and read F3, then the capture:
+
+- `dynamic lights N/64 dropped D` — D non-zero means more than 64 sources were within 32 blocks.
+- `clusters … occupancy X max/Y mean, overflowed O, evicted E, unreachable U` — O or E non-zero means a
+  cell wanted more than its 16 entries.
+- `light cost X ms extract | Y KiB up | Z cluster builds`.
+
+Then run an F8 capture in scenes with roughly 0, 1, 16 and 64 nearby sources. The CSV now carries
+`light_published`, `light_dropped`, `light_buried`, `light_examined`, `light_allocated`,
+`light_extract_ns`, `light_cluster_builds`, `light_cluster_build_ns`, `light_uploads`,
+`light_upload_bytes`, `light_occupancy_max`, `light_overflowed`, `light_evicted` and
+`light_unreachable`, which is what the scaling gate asks to record.
+
+### F. Performance, and one open decision
+
+Capture the same route **interleaved** — off, on, off, on — at least three paired repetitions, after a
+warm-up, and record settings, build and thermal state. Report median and p95 frame time; these are
+wall-time figures and must be labelled as such, because there is still no true GPU timing.
+
+The decision this settles: **flat versus clustered as the default.** The flat path loops over all 64
+published lights per fragment; the clustered path loops over its cell's entries, at most 16 and usually
+one or two. Capture both (`-Dmetalmod.clusteredLights=false` for flat) and if clustered is no slower
+and looks the same, it becomes the default and the two switches collapse into one.
+
+### What to send back
+
+`logs/latest.log` for the session, one F3 screenshot per section above, and the F8 capture summaries
+from `debug/metalmod` for E and F. Anything that fails is worth a screenshot of F3 as well - the
+counters usually say which part disagreed.
+
+---
+
 ## 6. Troubleshooting
 
 - **`libmetalmod.dylib` fails to load.** The Java bindings resolve native symbols by name and throw

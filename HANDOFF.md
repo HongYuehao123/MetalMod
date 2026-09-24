@@ -62,8 +62,10 @@ Phase 5 is complete for the tested vanilla 26.2/M4 Pro scope. All fourteen visua
 confirmed in game; the routed Overworld comparison meets the comparable-performance criterion.
 The final review reran all five offline gates successfully.
 
-Phase 6 (dynamic lighting) is opt-in and in progress; see
-[docs/phase6-plan.md](docs/phase6-plan.md) for the full status, evidence and limits.
+Phase 6 (dynamic lighting) is implemented; see [docs/phase6-plan.md](docs/phase6-plan.md) for the
+status, the remaining evidence gates and the limits, and
+[docs/lighting-abi.md](docs/lighting-abi.md) for the published light-record contract that Phase 8
+builds on. `TESTING.md` §5.6 is the final-test checklist.
 
 | Switch | Effect |
 |---|---|
@@ -119,7 +121,7 @@ Run all five before trusting a change:
 | `./scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence, `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics from any pipeline |
-| `./tools/render_check/run.sh` | 165 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths and the runtime toggle, `RENDER CHECK PASSED` |
+| `./tools/render_check/run.sh` | 167 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths, the runtime toggle, and the measured zero-work disabled path, `RENDER CHECK PASSED` |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets, UMA ownership |
 
 A green check is only evidence if it can fail: the scissor assertion is a case in point — it passed

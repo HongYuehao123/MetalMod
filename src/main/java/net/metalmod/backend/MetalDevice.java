@@ -203,6 +203,7 @@ public final class MetalDevice implements GpuDeviceBackend {
      * pipeline and a plain light-set pipeline, and each must be given the buffers it declares.
      */
     private LightFrame publishLightFrame(boolean clustered) {
+        long publishStarted = System.nanoTime();
         if (!this.dynamicLights) throw new IllegalStateException("Dynamic lights are disabled");
         if (clustered && !this.clusteredLights) {
             throw new IllegalStateException("Clustered lights are disabled");
@@ -217,12 +218,22 @@ public final class MetalDevice implements GpuDeviceBackend {
         }
         if (generation != this.uploadedLightGeneration) {
             LightSnapshot snapshot = LightCollector.current();
-            upload(this.currentLightFrame.list, "MetalMod dynamic lights", snapshot.encode());
+            ByteBuffer encoded = snapshot.encode();
+            upload(this.currentLightFrame.list, "MetalMod dynamic lights", encoded);
+            this.frameUploads++;
+            this.frameUploadBytes += encoded.capacity();
             if (this.clusteredLights) {
+                long clusterStarted = System.nanoTime();
                 this.clusterGrid.build(snapshot);
-                upload(this.currentLightFrame.grid, "MetalMod light grid",
-                        this.clusterGrid.encodeGridUniform());
+                this.frameClusterBuilds++;
+                this.frameClusterNanos += System.nanoTime() - clusterStarted;
+                ByteBuffer grid = this.clusterGrid.encodeGridUniform();
+                upload(this.currentLightFrame.grid, "MetalMod light grid", grid);
+                this.frameUploads++;
+                this.frameUploadBytes += grid.capacity();
+                this.frameUploadBytes += this.clusterGrid.encodedBytes();
                 uploadClusterTexture(snapshot);
+                this.frameUploads++;
                 PUBLISHED_CLUSTER_STATS = this.clusterGrid.stats();
             }
             this.uploadedLightGeneration = generation;
@@ -312,12 +323,76 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
+     * Everything Phase 6 costs or produces in one frame, for F3 and the performance capture.
+     *
+     * <p>A snapshot of the frame that just ended, taken at the present boundary. The scaling gate asks
+     * for selected, culled, dropped, occupancy, extraction and culling time, and upload bytes, so those
+     * are what this carries rather than only the counts F3 happens to print.
+     */
+    public record LightingStats(boolean enabled, boolean clustered, int published, int dropped,
+                                int buried, int examined, int allocated, long extractNanos,
+                                int clusterBuilds, long clusterBuildNanos, int uploads,
+                                long uploadBytes, int occupancyMax, int occupancyMean100,
+                                int cellsTouched, int overflowed, int evicted, int unreachable) {
+
+        static final LightingStats EMPTY = new LightingStats(false, false, 0, 0, 0, 0, 0, 0L,
+                0, 0L, 0, 0L, 0, 0, 0, 0, 0, 0);
+    }
+
+    private static volatile LightingStats LAST_LIGHTING = LightingStats.EMPTY;
+
+    /** The lighting cost of the last completed frame. */
+    public static LightingStats lightingStats() {
+        return LAST_LIGHTING;
+    }
+
+    /**
+     * Uploads accumulated in the current, not yet presented, frame.
+     *
+     * <p>Exposed so "the disabled path does no lighting work" can be measured on a device that never
+     * presents, which is how the offline checks run.
+     */
+    public int pendingLightUploads() {
+        return this.frameUploads;
+    }
+
+    /** Cluster builds accumulated in the current, not yet presented, frame. */
+    public int pendingClusterBuilds() {
+        return this.frameClusterBuilds;
+    }
+
+    // Per-frame accumulators, folded into LAST_LIGHTING at the present boundary.
+    private int frameClusterBuilds;
+    private long frameClusterNanos;
+    private int frameUploads;
+    private long frameUploadBytes;
+
+    /**
      * Close the light frame at present: fence the slot in use and advance the ring.
      *
      * <p>Called on the present path, so a light set is published at most once per presented frame,
      * and a frame that never presents never leaves a buffer unfenced.
      */
     public void endDynamicLightFrame() {
+        // Snapshot before the early return: a frame with lighting off is exactly the frame whose
+        // numbers matter for "the disabled path costs nothing", and it must report zeros rather than
+        // leave the previous frame's figures standing.
+        LightClusterGrid.Stats cluster = this.clusterGrid.stats();
+        LAST_LIGHTING = new LightingStats(this.dynamicLights, this.dynamicLights && this.clusteredLights,
+                LightCollector.current().lights().size(), LightCollector.dropped(),
+                LightCollector.occluded(), LightCollector.examined(), LightCollector.allocated(),
+                LightCollector.extractNanos(), this.frameClusterBuilds, this.frameClusterNanos,
+                this.frameUploads, this.frameUploadBytes,
+                this.clusteredLights ? cluster.occupancyMax() : 0,
+                this.clusteredLights ? cluster.occupancyMeanTimes100() : 0,
+                this.clusteredLights ? cluster.cellsTouched() : 0,
+                this.clusteredLights ? cluster.cellsOverflowing() : 0,
+                this.clusteredLights ? cluster.evicted() : 0,
+                this.clusteredLights ? cluster.orphaned() : 0);
+        this.frameClusterBuilds = 0;
+        this.frameClusterNanos = 0L;
+        this.frameUploads = 0;
+        this.frameUploadBytes = 0L;
         if (this.currentLightFrame == null) return;
         MemorySegment fence = MetalNative.fenceCreate(this.queue);
         if (fence == null || fence.address() == 0) {

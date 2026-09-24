@@ -54,6 +54,9 @@ public final class LightCollector {
     private static volatile EnvironmentRecord environment = EnvironmentRecord.UNKNOWN;
     private static int dropped;
     private static int occluded;
+    private static int examined;
+    private static int allocated;
+    private static volatile long extractNanos;
     /** Source ids kept by the previous frame's selection, for hysteresis. */
     private static final java.util.Set<Long> HELD = new java.util.HashSet<>();
     /**
@@ -79,6 +82,22 @@ public final class LightCollector {
      */
     public static int occluded() { return occluded; }
 
+    /** Distinct sources the search examined this frame, before the capacity cut. */
+    public static int examined() { return examined; }
+
+    /**
+     * Source records allocated this frame.
+     *
+     * <p>A proxy for the extraction path's allocation rate, which the scaling gate asks to record. It
+     * counts the records built, not every object the query touches: the entity query and the candidate
+     * list allocate too, and pretending otherwise would make the number look more authoritative than
+     * it is.
+     */
+    public static int allocated() { return allocated; }
+
+    /** Wall time spent in {@link #extract} for the last frame, in nanoseconds. */
+    public static long extractNanos() { return extractNanos; }
+
     /**
      * Publish this frame's light set.
      *
@@ -90,7 +109,18 @@ public final class LightCollector {
      * saying so explicitly.
      */
     public static void extract(ClientLevel level, Camera camera, float partialTick) {
+        long startedAt = System.nanoTime();
+        try {
+            extractInternal(level, camera, partialTick);
+        } finally {
+            extractNanos = System.nanoTime() - startedAt;
+        }
+    }
+
+    private static void extractInternal(ClientLevel level, Camera camera, float partialTick) {
         if (level == null || camera == null) { clear(); return; }
+        examined = 0;
+        allocated = 0;
         Vec3 view = camera.position();
         environment = EnvironmentRecord.capture(level, partialTick);
         List<Candidate> candidates = new ArrayList<>();
@@ -170,6 +200,8 @@ public final class LightCollector {
         double dx = x - camera.x;
         double dy = y - camera.y;
         double dz = z - camera.z;
+        examined++;
+        allocated++;
         out.add(new Candidate(id, dx * dx + dy * dy + dz * dz, emitter.radius(),
                 emitter.strength(), light));
     }
@@ -185,6 +217,8 @@ public final class LightCollector {
         float strength = Math.min(1, emission / 15f);
         PointLight light = new PointLight(pos.x, pos.y, pos.z,
                 radius, 1, 0.72f, 0.42f, strength);
+        examined++;
+        allocated++;
         out.add(new Candidate(((long) entity.getId() << 2) | slot,
                 pos.distanceToSqr(camera), radius, strength, light));
     }

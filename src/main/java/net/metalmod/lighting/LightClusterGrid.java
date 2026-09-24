@@ -311,6 +311,11 @@ public final class LightClusterGrid {
         return texels;
     }
 
+    /** Bytes one published table occupies on the GPU, for the scaling record's upload accounting. */
+    public int encodedBytes() {
+        return TEXELS * 16;
+    }
+
     /** The first texel of a cell's own block: its entry count, then one texel per entry. */
     public static int cellBase(int cell) {
         return HEADER_TEXELS + cell * CELL_TEXELS;

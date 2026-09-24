@@ -932,6 +932,36 @@ public final class RenderCheck {
                     device.pipelineFor(terrain) != null
                             && device.pipelineFor(terrain).fragmentBuffer(lightSet) < 0, "");
 
+            // Draw once with the feature off. This is the one place the baseline gate's "no light
+            // uploads while disabled" claim is measured rather than argued from the call graph: a
+            // vanilla pipeline has no light block, so the pass must never ask the device for a buffer.
+            GpuTexture offSurface = device.createTexture("off surface", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture offBaked = device.createTexture("off baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            solid(offSurface, 128, 128, 128, 128);
+            solid(offBaked, 64, 64, 64, 255);
+            GpuTextureView offSurfaceView = device.createTextureView(offSurface);
+            GpuTextureView offBakedView = device.createTextureView(offBaked);
+            GpuBuffer offVertices = device.createBuffer(() -> "off vertices",
+                    GpuBuffer.USAGE_VERTEX, terrainVertices());
+            GpuBuffer offIndices = device.createBuffer(() -> "off indices",
+                    GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> offUniforms = new LinkedHashMap<>();
+            putProofUniform(device, offUniforms, "Projection", identityMat4());
+            putProofUniform(device, offUniforms, "Globals", globals());
+            putProofUniform(device, offUniforms, "ChunkSection", chunkSection());
+            putProofUniform(device, offUniforms, "Fog", fog());
+            Map<String, GpuTextureView> offTextures = Map.of("Sampler0", offSurfaceView,
+                    "Sampler2", offBakedView);
+            renderQuad(device, terrain, offVertices, offIndices, offUniforms, offTextures, true,
+                    "lighting off draw", new float[]{0, 1, 0, 1});
+            check("lighting off uploads nothing and builds no cluster lists",
+                    device.pendingLightUploads() == 0 && device.pendingClusterBuilds() == 0
+                            && MetalDevice.lightingStats().published() == 0,
+                    "uploads=" + device.pendingLightUploads()
+                            + " clusterBuilds=" + device.pendingClusterBuilds());
+
             // Flip it exactly as the screen does - record the choice, request the rebuild - and
             // adopt at the frame boundary.
             net.metalmod.lighting.LightingSettings.chooseDynamicLights(true);
@@ -945,6 +975,23 @@ public final class RenderCheck {
             check("the rebuilt pipeline is the clustered variant", rebuilt != null
                     && rebuilt.usesClusteredLights() && rebuilt.fragmentBuffer(lightSet) >= 0
                     && rebuilt.fragmentTexture(net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM) >= 0, "");
+            // The mirror of the assertion above: with the feature on, the same draw must upload. Without
+            // this the "uploads nothing while disabled" check could pass because the counter is dead.
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(0, 0, 1, 2, 1, 1, 1, 1))));
+            int uploadsBefore = device.pendingLightUploads();
+            renderQuad(device, terrain, offVertices, offIndices, offUniforms, offTextures, true,
+                    "lighting on draw", new float[]{0, 1, 0, 1});
+            check("lighting on uploads the set and builds the cluster list",
+                    device.pendingLightUploads() > uploadsBefore
+                            && device.pendingClusterBuilds() > 0,
+                    "uploads=" + device.pendingLightUploads()
+                            + " clusterBuilds=" + device.pendingClusterBuilds());
+            net.metalmod.lighting.LightCollector.clear();
+            offVertices.close(); offIndices.close(); offSurfaceView.close(); offBakedView.close();
+            offSurface.close(); offBaked.close();
+            for (GpuBuffer buffer : offUniforms.values()) buffer.close();
+            net.metalmod.lighting.LightCollector.clear();
 
             // Toggling back must also work, or a user who tries it once is stuck with it.
             net.metalmod.lighting.LightingSettings.chooseDynamicLights(false);
