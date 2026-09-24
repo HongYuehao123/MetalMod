@@ -341,7 +341,8 @@ MetalMod/
   Measured in a real session at 5120x2664: **50% runs 13.5 ms / 74 fps against native's 16.9 ms /
   61 fps** at the same spot. Render scaling saves about 20% of a full-scene frame here, and the
   upscale itself is inside the noise. Press **F10** to take that comparison yourself - it flips the
-  scale in place so the F3 `frame` line is the only thing that changes.
+  scale in place so the F3 `frame` line is the only thing that changes - and **F6** to cycle off /
+  spatial / temporal at one spot, which is the comparison the two effects need.
 - **Config screen**: the Metal backend toggle, the UMA memory option, and two live sub-pages —
   **Lighting** and **Upscaling**.
 - **Render scale / upscaler**: `-Dmetalmod.renderScale=0.5` and

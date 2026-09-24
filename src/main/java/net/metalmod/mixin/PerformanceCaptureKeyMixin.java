@@ -33,6 +33,11 @@ public class PerformanceCaptureKeyMixin {
             // upscaler costs frames. See ScaleHotkey.
             if (action == GLFW.GLFW_PRESS) net.metalmod.metalfx.ScaleHotkey.toggle(minecraft);
             ci.cancel();
+        } else if (event.key() == GLFW.GLFW_KEY_F6) {
+            // F6 cycles off / spatial / temporal at one spot, which is the comparison the phase's exit
+            // criterion asks for and the one F10 cannot make - both of its sides are scaled.
+            if (action == GLFW.GLFW_PRESS) net.metalmod.metalfx.ScaleHotkey.cycleUpscaler(minecraft);
+            ci.cancel();
         } else if (event.key() == GLFW.GLFW_KEY_F9) {
             // F9 measures what the GPU actually costs, so render scaling can be judged without a
             // stopwatch. See GpuCostProbe for why a frame rate cannot answer that question.

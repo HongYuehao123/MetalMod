@@ -93,6 +93,7 @@ public final class ScalingCheck {
             disabledPathCheck();
             scaledPathCheck(device);
             temporalCheck(device);
+            temporalCostCheck(device);
         } finally {
             WorldRenderTarget.close();
             device.close();
@@ -738,6 +739,97 @@ public final class ScalingCheck {
      * rate - which is exactly why "MetalFX seems slower" has been hard to settle. Here the GPU is
      * asked directly, with a fence after each batch so the time is execution rather than submission.
      */
+    /**
+     * What the temporal path costs, offscreen and fenced, against the spatial path at the same sizes.
+     *
+     * <p>The roadmap's exit criterion asks for measured performance, and a frame rate cannot supply it:
+     * the display paces the loop, so "the frame rate did not move" is consistent with both an idle and a
+     * saturated GPU. Here the whole upscale step is timed with the queue drained after each iteration, so
+     * the number is execution rather than submission.
+     *
+     * <p>Spatial is measured too, in the same run and at the same sizes. The difference between the two
+     * is what the motion dispatch, the overlay and the temporal scaler's own reconstruction add - which
+     * is the number a decision about the mode actually needs, and the one no in-scene frame rate can
+     * separate from where the player happens to be standing.
+     */
+    private static void temporalCostCheck(MetalDevice device) throws Exception {
+        section("temporal path cost (offscreen)");
+        final int NATIVE_W = 2560;
+        final int NATIVE_H = 1332;
+        final int ITERATIONS = 40;
+
+        RenderScaleSettings.chooseRenderScale(0.5);
+
+        double spatialMs = timePath(device, NATIVE_W, NATIVE_H, ITERATIONS, MetalFx.SPATIAL);
+        double temporalMs = timePath(device, NATIVE_W, NATIVE_H, ITERATIONS, MetalFx.TEMPORAL);
+        if (Double.isNaN(spatialMs) || Double.isNaN(temporalMs)) {
+            check("both upscaling paths could be timed", false,
+                    "spatial " + spatialMs + " ms, temporal " + temporalMs + " ms");
+            RenderScaleSettings.clearSessionChoices();
+            return;
+        }
+        System.out.println(String.format(java.util.Locale.ROOT,
+                "       %dx%d -> %dx%d: spatial %.3f ms, temporal %.3f ms (motion + overlay + scaler"
+                        + " %.3f ms)",
+                NATIVE_W / 2, NATIVE_H / 2, NATIVE_W, NATIVE_H, spatialMs, temporalMs,
+                temporalMs - spatialMs));
+        check("both upscaling paths could be timed", true, "");
+        check("the temporal path stays well inside a frame", temporalMs < 8.0,
+                "temporal " + temporalMs + " ms");
+        check("the motion pass is not the dominant cost", temporalMs - spatialMs < 5.0,
+                "difference " + (temporalMs - spatialMs) + " ms");
+        RenderScaleSettings.clearSessionChoices();
+    }
+
+    /** Mean milliseconds per upscale step for one effect, with the queue drained after each. */
+    private static double timePath(MetalDevice device, int nativeWidth, int nativeHeight,
+                                   int iterations, String upscaler) throws Exception {
+        RenderScaleSettings.chooseUpscaler(upscaler);
+        WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
+        WorldRenderTarget.refresh(nativeWidth, nativeHeight);
+        WorldRenderTarget.applyPending();
+        WorldRenderTarget.decideScalingForFrame();
+        WorldRenderTarget.beginFrame(true);
+        var world = WorldRenderTarget.worldTarget();
+        if (world == null || !WorldRenderTarget.scalingThisFrame()) {
+            return Double.NaN;
+        }
+        if (MetalFx.TEMPORAL.equals(upscaler) && !WorldRenderTarget.temporalActive()) {
+            return Double.NaN;
+        }
+
+        MainTarget main = new MainTarget(nativeWidth, nativeHeight);
+        CameraRenderState camera = new CameraRenderState();
+        camera.viewRotationMatrix = new Matrix4f();
+        camera.pos = new Vec3(0.0, 0.0, 0.0);
+        Matrix4f projection = new Matrix4f().setPerspective(
+                (float) Math.toRadians(70.0), (float) nativeWidth / (float) nativeHeight,
+                0.05f, 1000.0f, true);
+
+        // Warm-up, so the first iteration's scaler creation and pipeline compilation are not counted.
+        for (int i = 0; i < 5; i++) {
+            temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
+            MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
+                    ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true,
+                    0.5);
+            WorldRenderTarget.upscale(main);
+            ProjectionJitter.endFrame();
+        }
+        MetalNative.queueSynchronize(device.queueHandle());
+
+        long started = System.nanoTime();
+        for (int i = 0; i < iterations; i++) {
+            temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
+            MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
+                    ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true,
+                    0.5);
+            WorldRenderTarget.upscale(main);
+            ProjectionJitter.endFrame();
+            MetalNative.queueSynchronize(device.queueHandle());
+        }
+        return (System.nanoTime() - started) / 1_000_000.0 / iterations;
+    }
+
     private static void costCheck(MetalDevice device,
                                   com.mojang.blaze3d.pipeline.RenderTarget world,
                                   com.mojang.blaze3d.pipeline.RenderTarget main) {

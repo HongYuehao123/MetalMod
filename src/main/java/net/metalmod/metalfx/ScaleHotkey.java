@@ -26,6 +26,14 @@ import net.minecraft.network.chat.Component;
  *
  * <p>The first setting is remembered, so the toggle is a comparison rather than a reset: F10 twice
  * returns to exactly the configuration that was in use.
+ *
+ * <h2>The second comparison: F6 cycles the effect</h2>
+ *
+ * <p>F10 answers "is scaling worth it". It cannot answer "is temporal better than spatial", because
+ * both are scaled. F6 cycles the effect - off, spatial, temporal - in place, with the same F3 line and
+ * the same pixel sample, so the three modes are compared a second apart at one spot rather than across
+ * sessions. Spatial and temporal are the two things the roadmap's exit criterion asks to be compared,
+ * and this is the smallest way to make that a judgement instead of an argument.
  */
 public final class ScaleHotkey {
 
@@ -70,6 +78,47 @@ public final class ScaleHotkey {
         // Sample the next frame's pixels, so the comparison includes what the picture itself looks
         // like and not only how fast it was produced. Deferred by one frame because the target is
         // rebuilt at the boundary.
+        if (minecraft != null) {
+            SAMPLES_REMAINING.set(2);
+        }
+    }
+
+    /**
+     * Cycle the upscaler - off, spatial, temporal - at the current scale, and say which way it went.
+     *
+     * <p>At native scale the three modes are the same frame, so the cycle also restores the last scaled
+     * setting when it moves to one of the effects. Otherwise the first press would appear to do nothing
+     * and the comparison would start with a press that has to be repeated.
+     */
+    public static void cycleUpscaler(Minecraft minecraft) {
+        String current = RenderScaleSettings.upscaler();
+        String next = switch (current) {
+            case MetalFx.SPATIAL -> MetalFx.TEMPORAL;
+            case MetalFx.TEMPORAL -> MetalFx.OFF;
+            default -> MetalFx.SPATIAL;
+        };
+        RenderScaleSettings.chooseUpscaler(next);
+
+        // An effect with no scaling is not an effect: bring the scale back with it.
+        if (!MetalFx.OFF.equals(next) && RenderScaleSettings.renderScale() >= 1.0) {
+            RenderScaleSettings.chooseRenderScale(
+                    rememberedScale > 0.0 && rememberedScale < 1.0
+                            ? rememberedScale
+                            : RenderScaleSettings.PRESETS[RenderScaleSettings.PRESETS.length - 1]);
+        }
+
+        String describe = switch (next) {
+            case MetalFx.TEMPORAL -> "MetalFX temporal";
+            case MetalFx.SPATIAL -> "MetalFX spatial";
+            default -> "no upscaler (native)";
+        };
+        String message = String.format(java.util.Locale.ROOT,
+                "MetalMod: %s at %s - compare the F3 frame time and the picture",
+                describe, RenderScaleSettings.percentLabel());
+        if (minecraft != null && minecraft.gui != null && minecraft.gui.hud != null) {
+            minecraft.gui.hud.setOverlayMessage(Component.literal(message), false);
+        }
+        System.out.println("[MetalMod] " + message);
         if (minecraft != null) {
             SAMPLES_REMAINING.set(2);
         }

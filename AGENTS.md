@@ -66,7 +66,7 @@ Before trusting any code changes or declaring work complete, an agent must verif
 | **3. Shader Inventory** | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics | Compiles all 87 vanilla pipelines and 9 post-processing passes offline through GLSL → SPIR-V → MSL. |
 | **4. Pixel Render Check** | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 pixel assertions) | Offscreen real pipeline execution: GUI, terrain, entities, cutout, lines, mipmaps, scissor conversions, blend modes, lightmap, Phase 6 dynamic lighting paths, Phase 7A MetalFX spatial upscaling. |
 | **5. Standalone Tests** | See runner command below | `ALL TESTS PASSED SUCCESSFULLY!` | Panama FFI bridge loading, UMA allocator routing, format mappings, sub-buffer offsets, Phase 6 cluster grid / ABI byte offsets. |
-| **6. Phase 7 Scaling Check** | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (86 assertions) | The scaled level target built from the engine's own `MainTarget`, written through the engine's own `FrameGraphBuilder` as an imported external resource, upscaled to native, resized, released; the jitter sequence; and the Phase 7B temporal path - the scene contract, the depth-derived motion field's values and conventions, the per-object stamps and their depth test, and the reset lifecycle. |
+| **6. Phase 7 Scaling Check** | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (89 assertions) | The scaled level target built from the engine's own `MainTarget`, written through the engine's own `FrameGraphBuilder` as an imported external resource, upscaled to native, resized, released; the jitter sequence; and the Phase 7B temporal path - the scene contract, the depth-derived motion field's values and conventions, the per-object stamps and their depth test, the reset lifecycle, and the effect's offscreen cost against spatial at the same sizes. |
 | **7. Mixin Target Check** | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks) | Every mixin's target class, injected method, `@Shadow` member and `@At` descriptor resolved against the real client jar. Catches the quiet failures `defaultRequire: 0` produces. |
 
 #### Running Gate 5 (Standalone Tests):
@@ -231,6 +231,7 @@ Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the
 ### In-Game Performance Capture & Telemetry
 - **F3 Overlay:** MetalMod section reports selected backend, render resolution, CPU/GPU wait time proxy, active dynamic light count, health counters (`unbound/missingAttr/failed`), the Phase 7 `upscale` line (sizes, effect, frame counts, failure reason), the Phase 7B `motion` line when temporal is running (producer, objects captured and stamped, dispatched frames, drops, resets and their reason) or a `temporal not running` line with the fallback reason, and the `pacing` line (last interval, p95, steady share, dropped count).
 - **F8 Key:** Starts a 60-second performance capture (saves summary and per-frame CSV under `debug/metalmod/`).
+- **F6 Key:** Cycles off / spatial / temporal in place, at one spot, so the three modes can be compared on the same scene; the pixel sample and the F3 `frame` line are the reading.
 - **F7 Key:** Records or plays back reproducible movement routes for rigorous A/B benchmarking.
 
 ---

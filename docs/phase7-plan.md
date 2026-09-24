@@ -201,7 +201,7 @@ scene depth and asserts that the frame is untouched.
 | Gate | Command | Result |
 |---|---|---|
 | Native motion kernel and overlay | `./scripts/run_smoke.sh` | `ALL CHECKS PASSED`, including twenty motion assertions: an exact convention check (a one-NDC-unit shift is exactly half the texture in pixels, with y down), an unmoved camera producing zero motion on a perspective projection, uniform motion on a flat depth plane scaling as one over view depth with the documented sign, zero motion at the far plane, a mismatched depth size being refused, a stamp replacing the depth-derived motion exactly inside its box, a stamp the depth test rejects changing nothing, and the stamp table being clamped and counted rather than overrun. |
-| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (86 assertions), of which twenty-one are temporal: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, an entity with no previous position contributing nothing, an entity's own movement being stamped while the rest of the frame keeps the depth-derived answer, **a stamp the depth buffer contradicts being rejected**, particles and pushed blocks being stamped, a first frame and a camera cut each requesting a reset while a continuous camera does not, and a resize keeping the path running. |
+| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (89 assertions), of which twenty-four are temporal or its cost: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, an entity with no previous position contributing nothing, an entity's own movement being stamped while the rest of the frame keeps the depth-derived answer, **a stamp the depth buffer contradicts being rejected**, particles and pushed blocks being stamped, a first frame and a camera cut each requesting a reset while a continuous camera does not, and a resize keeping the path running. |
 | Mixin injection points | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks), including `GameRendererProjectionMixin`, `EntityMotionMixin`, `ParticleMotionMixin` and `PistonMotionMixin` with their exact targets and descriptors. |
 | Build, shaders, render check, standalone suite | `./scripts/build_mod.sh`, `./tools/shader_inventory/run.sh`, `./tools/render_check/run.sh`, `StandaloneTestRunner` | all green. |
 
@@ -221,9 +221,20 @@ scene depth and asserts that the frame is untouched.
    would be a claim the code cannot back, so it stays off.
 4. **Transparency is unvalidated as a temporal case.** Water, particles and cutouts render correctly in
    the spatial path's pixel checks; what they do under accumulation has not been looked at.
-5. **No measured temporal cost.** The spatial upscale is measured; the temporal one is not, and the
-   motion dispatch is a full-resolution pass over the depth buffer that has never been timed in a
-   scene.
+5. **The temporal cost is measured offscreen, not in a scene.** The scaling check times the whole
+   upscale step with the queue drained after each iteration, at 1280x666 -> 2560x1332, and times the
+   spatial path at the same sizes in the same run:
+
+   | Path | Mean |
+   |---|---:|
+   | MetalFX spatial | 0.919 ms |
+   | MetalFX temporal | 2.240 ms |
+   | motion dispatch + overlay + temporal reconstruction | 1.321 ms |
+
+   Against the measured 13.5 ms scaled frame at 50%, that is about a tenth of the frame for the
+   temporal path - real, and well inside it. What offscreen cannot say is how the cost behaves in a
+   scene with hundreds of moving objects and a rain shower, which is what `TESTING.md` §6.D step 10
+   is for. The number is the effect's floor, not a scene's.
 
 ### 3.5 Anti-aliasing — optional separate work after Temporal
 

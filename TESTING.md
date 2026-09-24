@@ -38,7 +38,7 @@ Run all five; they are the cheap, deterministic checks.
 | `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
 | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 assertions) |
-| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (86 assertions) |
+| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (89 assertions) |
 | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
@@ -51,12 +51,13 @@ The last two were added in Phase 7 and are worth knowing about:
 - **`scaling_check`** drives Phase 7's real machinery offscreen: the engine's own `MainTarget` and
   `FrameGraphBuilder`, the redirect's two states, the MetalFX upscale over a real draw, the resize
   path, the release when the scale returns to 1.0, and the jitter sequence's centring. It is the only
-  offline gate that would catch a break in the *shape* of the scaling frame. Twenty-one of its assertions
+  offline gate that would catch a break in the *shape* of the scaling frame. Twenty-four of its assertions
   are Phase 7B: the scene contract, the motion field's exact values and conventions (a still camera
   must produce zero motion; different jitter phases with a still camera must still produce zero; a
   moved camera must produce uniform motion with MetalFX's sign), the per-object stamps (an entity's
   movement and none of its neighbours', a stamp the depth buffer contradicts being rejected, particles
-  and pushed blocks), and the reset lifecycle.
+  and pushed blocks), the reset lifecycle, and the effect's offscreen cost against the spatial path
+  at the same sizes.
 - **`mixin_check`** resolves every mixin's target class, `@Inject`/`@Redirect` method, `@Shadow` member
   and `@At` descriptor against the real client jar, without launching. `defaultRequire: 0` means a hook
   that names a method the client no longer has fails *quietly* - the feature it drives simply does
@@ -800,9 +801,9 @@ expected results are specific:
 8. **The HUD stays native and sharp**, exactly as at 100% - the same check as §6.B.
 9. **Resize at 50% temporal.** The scaler and the motion resource both have to be rebuilt for the new
    size. The world must not stretch, freeze, or show the pre-resize frame.
-10. **Compare the three modes at one spot.** Native, Spatial and Temporal at the same camera position,
-    with F10 flipping between them: note edge quality, texture detail, stability, and the F3 `frame`
-    line's cost. The motion pass is a full-resolution read of the depth buffer plus one instanced draw
+10. **Compare the three modes at one spot.** Press **F6** to cycle off / spatial / temporal in place -
+    the same camera, the same scene, a second apart - and note edge quality, texture detail, stability,
+    and the F3 `frame` line's cost. The motion pass is a full-resolution read of the depth buffer plus one instanced draw
     per moving object, and neither has been timed in a scene; the number is the point of the
     comparison.
 
