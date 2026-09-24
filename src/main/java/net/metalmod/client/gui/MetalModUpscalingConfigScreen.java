@@ -6,6 +6,7 @@ import net.metalmod.backend.MetalNative;
 import net.metalmod.metalfx.MetalFx;
 import net.metalmod.metalfx.MetalFxScaler;
 import net.metalmod.metalfx.RenderScaleSettings;
+import net.metalmod.metalfx.SceneMotion;
 import net.metalmod.metalfx.UpscalingNotifier;
 import net.metalmod.metalfx.WorldRenderTarget;
 import net.minecraft.client.Minecraft;
@@ -47,7 +48,6 @@ public class MetalModUpscalingConfigScreen extends Screen {
     private Button scaleDownButton;
     private Button scaleUpButton;
     private Button upscalerCycleButton;
-    private Button temporalButton;
     private Button noticeButton;
     private MultiLineTextWidget statusWidget;
 
@@ -79,26 +79,16 @@ public class MetalModUpscalingConfigScreen extends Screen {
                 b -> setScale(1.0)).bounds(buttonX + 68, y, 74, 20).build());
         y += ROW;
 
-        // 2. Upscaler: MetalFX, or no scaling at all. There is deliberately no third mode. A linear
-        //    blit fallback existed and was removed - it was a second upscaling path that had to be
-        //    correct in its own right, measured several times slower than the effect it stood in for,
-        //    and produced visibly wrong frames. When MetalFX cannot run, the world renders at native
-        //    resolution instead, which costs the performance win and cannot produce a wrong image.
+        // 2. Upscaler: MetalFX spatial, MetalFX temporal, or no scaling at all. Temporal is a real
+        //    choice now that a motion source exists, and it is offered rather than hidden: it costs
+        //    more than spatial and it is the only mode that resolves detail across frames, so which
+        //    one is right is a judgement only the person looking at the screen can make.
         label(left, y, "Upscaler");
         this.upscalerCycleButton = addRenderableWidget(Button.builder(Component.literal(""),
                 b -> cycleUpscaler()).bounds(buttonX, y, 142, 20).build());
         y += ROW;
 
-        // 3. Temporal, shown as unavailable rather than hidden. A control that is absent reads as a
-        //    feature that was never written; a control that says why it is unavailable is a fact about
-        //    the phase, and it is the fact a user reporting on 7B needs.
-        label(left, y, "Temporal");
-        this.temporalButton = addRenderableWidget(Button.builder(Component.literal(""),
-                b -> { }).bounds(buttonX, y, 142, 20).build());
-        this.temporalButton.active = false;
-        y += ROW;
-
-        // 4. The in-world notice. On by default, and the reason this page can be checked without F3.
+        // 3. The in-world notice. On by default, and the reason this page can be checked without F3.
         label(left, y, "Show change notice");
         this.noticeButton = addRenderableWidget(Button.builder(Component.literal(""),
                 b -> {
@@ -159,10 +149,18 @@ public class MetalModUpscalingConfigScreen extends Screen {
         refresh();
     }
 
-    /** Spatial, or off. Temporal is shown separately and is not in this cycle. */
+    /** Off, Spatial, Temporal, and around again. */
     private void cycleUpscaler() {
-        RenderScaleSettings.chooseUpscaler(
-                MetalFx.OFF.equals(RenderScaleSettings.upscaler()) ? MetalFx.SPATIAL : MetalFx.OFF);
+        String current = RenderScaleSettings.upscaler();
+        String next;
+        if (MetalFx.OFF.equals(current)) {
+            next = MetalFx.SPATIAL;
+        } else if (MetalFx.SPATIAL.equals(current)) {
+            next = MetalFx.TEMPORAL;
+        } else {
+            next = MetalFx.OFF;
+        }
+        RenderScaleSettings.chooseUpscaler(next);
         announce();
         refresh();
     }
@@ -190,14 +188,14 @@ public class MetalModUpscalingConfigScreen extends Screen {
         }
         if (this.upscalerCycleButton != null) {
             String mode = RenderScaleSettings.upscaler();
-            this.upscalerCycleButton.setMessage(Component.literal(
-                    MetalFx.OFF.equals(mode) ? "Off (native)" : "MetalFX spatial"));
+            this.upscalerCycleButton.setMessage(Component.literal(switch (mode) {
+                case MetalFx.TEMPORAL -> "MetalFX temporal";
+                case MetalFx.OFF -> "Off (native)";
+                default -> "MetalFX spatial";
+            }));
             // Always clickable, including at 100%: the scale is what turns scaling on or off, and a
             // disabled row here would hide the only control that says which scaler is chosen.
             this.upscalerCycleButton.active = true;
-        }
-        if (this.temporalButton != null) {
-            this.temporalButton.setMessage(Component.literal("unavailable - needs motion"));
         }
         if (this.noticeButton != null) {
             this.noticeButton.setMessage(Component.literal(
@@ -255,6 +253,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
 
         long fx = WorldRenderTarget.scaledFrameCount();
         long failed = WorldRenderTarget.failedFrameCount();
+        text.append("   Effect: MetalFX ").append(WorldRenderTarget.effectName());
         text.append("   Upscaled frames: ").append(fx);
         if (failed > 0) {
             text.append("   FAILED: ").append(failed).append(" - ")
@@ -262,6 +261,20 @@ public class MetalModUpscalingConfigScreen extends Screen {
         }
         if (fx == 0 && failed == 0) {
             text.append("   (no frame has been upscaled yet)");
+        }
+
+        // Temporal's own answers. The motion line is the one that says which half of the motion field
+        // is being published: camera reprojection covers a moving camera and static geometry, while
+        // anything that moves on its own is Phase 8C's and still reprojects as if it were static.
+        if (WorldRenderTarget.temporalActive()) {
+            text.append("   Temporal: ").append(SceneMotion.summary());
+        } else if (WorldRenderTarget.temporalRequested()
+                && !WorldRenderTarget.temporalFallbackReason().isEmpty()) {
+            text.append("   Temporal: unavailable - ")
+                    .append(WorldRenderTarget.temporalFallbackReason())
+                    .append(". MetalFX spatial is running instead.");
+        } else if (MetalFx.TEMPORAL.equals(RenderScaleSettings.upscaler())) {
+            text.append("   Temporal: selected; it starts when a scaled frame is next drawn.");
         }
 
         if (!WorldRenderTarget.scalerAvailable()) {

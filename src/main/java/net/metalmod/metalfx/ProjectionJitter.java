@@ -64,6 +64,16 @@ public final class ProjectionJitter {
     private static int frameIndex;
     private static volatile boolean resetRequested;
 
+    /**
+     * Whether an offset was put in force since the frame began.
+     *
+     * <p>Distinct from {@link #active()}, which is only true inside the extraction window the offset
+     * is applied in. The motion producer runs at the other end of the same frame, after that window
+     * has closed, and still has to know whether the projection it is handed carries the offset - so
+     * that it can take it back out before building its matrices.
+     */
+    private static volatile boolean appliedThisFrame;
+
     /** Whether jitter is being applied this frame. Set by {@link #beginFrame}. */
     private static final ThreadLocal<Boolean> ACTIVE = ThreadLocal.withInitial(() -> false);
 
@@ -79,12 +89,18 @@ public final class ProjectionJitter {
      */
     public static void beginFrame() {
         ACTIVE.set(true);
+        appliedThisFrame = true;
         frameIndex = (frameIndex + 1) % PHASES;
     }
 
     /** Stop applying the offset. Paired with {@link #beginFrame} in a finally. */
     public static void endFrame() {
         ACTIVE.set(false);
+    }
+
+    /** Whether {@link #beginFrame} ran this frame, so the projection carries the offset. */
+    public static boolean appliedThisFrame() {
+        return appliedThisFrame;
     }
 
     /** Whether a jittered matrix is expected right now, on this thread. */
@@ -151,6 +167,7 @@ public final class ProjectionJitter {
     public static void clear() {
         frameIndex = 0;
         resetRequested = false;
+        appliedThisFrame = false;
         ACTIVE.set(false);
     }
 

@@ -38,8 +38,8 @@ Run all five; they are the cheap, deterministic checks.
 | `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
 | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 assertions) |
-| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (47 checks) |
-| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (58 checks) |
+| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (63 checks) |
+| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (62 checks) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
 The standalone runner needs the client classpath; `build_mod.sh` prints the exact command. The
@@ -48,10 +48,13 @@ shader tools and render check also accept an instance directory as an argument o
 
 The last two were added in Phase 7 and are worth knowing about:
 
-- **`scaling_check`** drives Phase 7A's real machinery offscreen: the engine's own `MainTarget` and
+- **`scaling_check`** drives Phase 7's real machinery offscreen: the engine's own `MainTarget` and
   `FrameGraphBuilder`, the redirect's two states, the MetalFX upscale over a real draw, the resize
   path, the release when the scale returns to 1.0, and the jitter sequence's centring. It is the only
-  offline gate that would catch a break in the *shape* of the scaling frame.
+  offline gate that would catch a break in the *shape* of the scaling frame. Fifteen of its checks
+  are Phase 7B: the scene contract, the motion field's exact values and conventions (a still camera
+  must produce zero motion; different jitter phases with a still camera must still produce zero; a
+  moved camera must produce uniform motion with MetalFX's sign), and the reset lifecycle.
 - **`mixin_check`** resolves every mixin's target class, `@Inject`/`@Redirect` method, `@Shadow` member
   and `@At` descriptor against the real client jar, without launching. `defaultRequire: 0` means a hook
   that names a method the client no longer has fails *quietly* - the feature it drives simply does
@@ -687,9 +690,10 @@ counters usually say which part disagreed.
 
 ## 6. Phase 7 render scaling and upscaling
 
-Phase 7A has no in-game confirmation yet. This section is what closes it: the wiring check, the
-visual check, and the native-versus-scaled measurement the roadmap's exit criterion asks for. Nothing
-here needs code changes.
+Phase 7 has no in-game confirmation yet - neither 7A nor 7B. This section is what closes it: the
+wiring check, the visual checks, the temporal checks the motion producer makes possible, and the
+native-versus-scaled measurement the roadmap's exit criterion asks for. Nothing here needs code
+changes.
 
 ### The entry point
 
@@ -701,21 +705,22 @@ setting raises are about the frame, not about the setting:
 | Control | What it does |
 |---|---|
 | **Render scale `-` / `+` / Native** | Steps through 100% / 85% / 75% / 67% / 50%. `-` renders fewer pixels (faster, softer), `+` more (sharper, slower), `Native` turns scaling off |
-| **Upscaler** | `MetalFX spatial` or `Blit (no MetalFX)`. Blit is a real choice: it isolates "is the smaller resolution what saved the time" from "is MetalFX contributing anything" |
-| **Temporal** | Shown unavailable, with the reason. Temporal needs motion vectors the level does not publish yet, so it runs spatial instead - a disabled row with a reason is a fact about the phase; a hidden row reads as a feature that was never written |
+| **Upscaler** | Cycles **Off (native) → MetalFX spatial → MetalFX temporal**. Off renders at native resolution; spatial reconstructs from one frame; temporal accumulates across frames using the motion producer, which is the mode that resolves detail beyond the render resolution - and the one whose motion field covers the camera and static geometry only |
 | **Show change notice** | An in-world toast naming the resolution the next frame will use. On by default: without it the only confirmation is F3, which does not say *when* a change landed |
-| **Live status** | What is actually happening, refreshed every frame |
+| **Live status** | What is actually happening, refreshed every frame, including which effect ran and - for temporal - the motion producer's own counters |
 
 The live status is the part worth reading, because every number comes from the running frame rather
 than from a setting:
 
 ```
-Renderer: Metal   Scale: 50%   World: 1280x666 -> native 2560x1332   Upscaled frames: 412
+Renderer: Metal   Scale: 50%   World: 1280x666 -> native 2560x1332   Effect: MetalFX temporal
+Upscaled frames: 412   Temporal: motion 1280x666 camera-only, dispatched 412, resets 3
 ```
 
-If it says **`blit fallback: N`** instead, MetalFX declined and the reason is on the page. If it says
-**`FAILED: N`**, the reason is there too. A page that restated the settings would look identical
-whether the feature worked or not, which is the failure this display exists to make impossible.
+If it says **`FAILED: N`**, the reason is on the page. If temporal was selected but cannot run, the
+page says why and that spatial is running instead. A page that restated the settings would look
+identical whether the feature worked or not, which is the failure this display exists to make
+impossible.
 
 ### A. Wiring, once
 
@@ -727,9 +732,10 @@ with the Metal backend on. The log should name the target it built:
 [MetalMod] MetalFX spatial scaler: <w>x<h> -> <w>x<h> (colour mode 0)
 ```
 
-F3's `[MetalMod] upscale` line reports the sizes, which path ran (`fx` for MetalFX, `blit` for the
-fallback) and a failure count with its reason. **`blit` counting up instead of `fx` is not a crash** -
-it is the fallback, and the reason is on the line.
+F3's `[MetalMod] upscale` line reports the sizes, which effect actually ran, and a failure count with
+its reason. When temporal is running there is a second `motion` line naming the producer, the frames
+dispatched and the resets with the last reset's reason; when temporal was asked for but cannot run,
+that line is replaced by `temporal not running` and the fallback reason.
 
 ### B. The observation that matters most
 
@@ -753,8 +759,40 @@ At 50% the terrain is genuinely softer - that is the trade, not a defect. What i
 - **Stretching**: the aspect ratio wrong after a resize.
 - **A frozen or missing world** with the interface drawn over it - the case the conditional colour
   split exists for. Open and close a menu over the world and check the world is still there.
-- **Ghosting on camera movement** at `Temporal`: temporal is gated off, so this must not happen at all.
-  If it does, the gate is broken.
+- **The world replaced by an older frame** on a resize. That was [BUG-031](../bug.md), fixed by making
+  the upscale consult the frame's own "am I scaling" decision; a regression shows as the world lagging
+  one frame behind the interface during a drag.
+
+### D. Temporal (Phase 7B)
+
+Select `MetalFX temporal` at 50% and work through the checks that separate a motion source from a
+scaler that is merely running. The motion field covers the camera and static geometry, so the
+expected results are specific:
+
+1. **A still camera must be stable.** Stand still and look at a hard edge (a block corner against the
+   sky). It must not shimmer or crawl. Temporal accumulates, so it should *converge* - the edge
+   steadying over a few frames rather than vibrating.
+2. **A moving camera must not smear the world.** Walk forward, then strafe, then look around. Terrain
+   edges must stay attached to their surfaces. Camera motion is the case the producer is exact for,
+   so any whole-screen dragging means the matrices or the conventions are wrong, not that the mode is
+   young.
+3. **Turning on the spot must not ghost the terrain.** Rotate 180° slowly, then quickly. A quick turn
+   is a camera cut by the reset heuristic; a slow one has to expand across the screen without leaving
+   duplicate edges.
+4. **Moving geometry will ghost.** Watch a mob walk past, or break a block and watch the particles.
+   They are expected to trail: their velocity is not in the field. This is the named gap, not a
+   regression - record what it looks like, with the mob type and distance, because that is the
+   evidence Phase 8C's producer is judged against.
+5. **A dimension change must not blend the two worlds.** Use a portal or `/execute in`. The frames
+   either side have the same camera coordinates, so only the explicit reset stops the two being
+   blended; a visible cross-fade through the old dimension means the reset did not reach the encode.
+6. **The HUD stays native and sharp**, exactly as at 100% - the same check as §6.B.
+7. **Resize at 50% temporal.** The scaler and the motion resource both have to be rebuilt for the new
+   size. The world must not stretch, freeze, or show the pre-resize frame.
+8. **Compare the three modes at one spot.** Native, Spatial and Temporal at the same camera position,
+   with F10 flipping between them: note edge quality, texture detail, stability, and the F3 `frame`
+   line's cost. The motion pass is a full-resolution read of the depth buffer and its cost has never
+   been measured; the number is the point of the comparison.
 
 ### D. The measured comparison
 
@@ -880,11 +918,15 @@ If nothing else gets done, this does:
 1. Load a world on the Metal backend. Stand still and note the FPS.
 2. **Options → MetalMod… → MetalFX Upscaling**.
 3. Press `-` twice (to 75%, then 67%). A toast names the new size. The frame rate should rise.
-4. Check the status line: `Upscaled frames` counting up, no `FAILED`, no `blit fallback`.
+4. Check the status line: `Upscaled frames` counting up, no `FAILED`, and the effect named as
+   `MetalFX spatial`.
 5. Press `Native`. The toast says native, the frame rate drops back, and the world sharpens.
 6. Press `-` four times (to 50%). Open the inventory. **The HUD must be as sharp as at 100%.**
    This is the single observation that decides whether 7A works.
-7. Resize the window once, and check the log for `Scissor`.
+7. Cycle the upscaler to `MetalFX temporal` and repeat step 5 of §6.D: walk, strafe and look around,
+   then stand still. The world must stay attached while the camera moves, and steady once it stops.
+   Moving mobs are expected to trail - that is the named gap, not a failure.
+8. Resize the window once, and check the log for `Scissor`.
 
 Anything that fails: screenshot the page (it carries the evidence) and F3 (the log line).
 
@@ -913,8 +955,9 @@ thing for A and C together, since it carries the sizes, the path and the failure
 - **`@Mixin target ... was not found`.** Mixin rejects an entire mixin if any target is missing.
   Report the exact text.
 - **Render scale seems to do nothing.** Check F3's `upscale` line: if it is absent, the scaled target
-  was never created (look for a `could not create the scaled world target` line in the log), and if it
-  says `blit` rather than `fx`, MetalFX declined and the reason is on the same line.
+  was never created (look for a `could not create the scaled world target` line in the log), and if the
+  line names `spatial` while you selected temporal, the `temporal not running` line under it carries
+  the fallback reason.
 - **The interface is blurry at a render scale below 100%.** That is the defect this design exists to
   prevent - the redirect is leaking. Report it with the scale and an F3 screenshot; do not work around
   it by raising the scale.

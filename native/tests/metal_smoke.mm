@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "metalmod/metalmod_metal.h"
 #include "metalmod/metalmod_metalfx.h"
+#include "metalmod/metalmod_motion.h"
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
 // on the Java side in one place.
@@ -1226,7 +1227,10 @@ static void test_metalfx_temporal(void) {
 
     const int64_t kRGBA8 = 70;
     const int64_t kDepth32F = 252;   // MTLPixelFormatDepth32Float
-    const int64_t kRG16F = 115;      // MTLPixelFormatRG16Float - the motion format MetalFX expects
+    // MTLPixelFormatRG16Float - the two-channel format Apple documents for temporal motion. An
+    // earlier revision used 115 here, which is RGBA16Float: the scaler was created for a four-channel
+    // motion texture that the producer would never write, and the constant's comment said otherwise.
+    const int64_t kRG16F = 65;
     const int IN_W = 32, IN_H = 24, OUT_W = 96, OUT_H = 72;
 
     bool temporalSupported = mmm_fx_temporal_supported(device, kRGBA8, kDepth32F, kRG16F, kRGBA8);
@@ -1280,6 +1284,269 @@ static void test_metalfx_temporal(void) {
     mmm_device_release(device);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Phase 7B: render-resolution motion vectors
+// ---------------------------------------------------------------------------------------------
+
+// Column-major 4x4 helpers, matching JOML's `Matrix4f.get(float[])` and MSL's `float4x4`. Written
+// out here rather than pulled in, because the test's whole job is to state the convention the kernel
+// has to agree with, and a library's own convention would be a second opinion.
+static void mat4_identity(float* m) {
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = m[5] = m[10] = m[15] = 1.0f;
+}
+
+static void mat4_translate(float* m, float x, float y, float z) {
+    mat4_identity(m);
+    m[12] = x;
+    m[13] = y;
+    m[14] = z;
+}
+
+static void mat4_multiply(float* out, const float* a, const float* b) {
+    float result[16];
+    for (int col = 0; col < 4; col++) {
+        for (int row = 0; row < 4; row++) {
+            float sum = 0.0f;
+            for (int k = 0; k < 4; k++) sum += a[k * 4 + row] * b[col * 4 + k];
+            result[col * 4 + row] = sum;
+        }
+    }
+    memcpy(out, result, sizeof(result));
+}
+
+// JOML's `setPerspective(fovY, aspect, zNear, zFar, /*zZeroToOne=*/true)`, which is what the engine
+// builds because the Metal backend reports `isZZeroToOne`. Near maps to 0 and far to 1, which is the
+// convention the temporal scaler is created with (`depthReversed = false`).
+static void mat4_perspective(float* m, float fovYRadians, float aspect, float zNear, float zFar) {
+    memset(m, 0, 16 * sizeof(float));
+    float f = 1.0f / tanf(fovYRadians * 0.5f);
+    m[0] = f / aspect;
+    m[5] = f;
+    m[10] = zFar / (zNear - zFar);
+    m[11] = -1.0f;
+    m[14] = zFar * zNear / (zNear - zFar);
+}
+
+// Standard cofactor inverse. The kernel is handed an inverse, so the test has to produce one the
+// same way the Java side does - by actually inverting a projection, not by asserting a formula.
+static bool mat4_invert(float* out, const float* m) {
+    float inv[16];
+    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
+            + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
+    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
+            - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
+    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
+            + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
+    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
+            - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
+    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
+            - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
+    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
+            + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
+    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
+            - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
+    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
+            + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
+    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
+            + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
+    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
+            - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
+    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
+            + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
+    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
+            - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
+    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
+            - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
+    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
+            + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
+    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
+            - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
+    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
+            + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
+
+    float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if (fabsf(det) < 1e-20f) return false;
+    det = 1.0f / det;
+    for (int i = 0; i < 16; i++) out[i] = inv[i] * det;
+    return true;
+}
+
+// Run one dispatch, wait for it, and read the motion texture back into `out` (2 floats per pixel).
+//
+// The fence is created *after* the dispatch is committed, which is the direction the fence contract
+// documents: it reports that everything committed before it has completed. A shared-storage read
+// issued straight after the commit would otherwise race the GPU and read the texture's zeros, which
+// is exactly the shape of a false pass.
+//
+// The texture is RG16Float, so the bytes are half-precision and are widened here. Reading them as
+// float32 would decode two pixels' halves as one float and produce a plausible-looking mixture of
+// garbage - which is what this test did before the format was honoured.
+static bool motion_run_and_read(void* motion, void* queue, void* depth,
+                                const float* currentInverse, const float* previous, float* out) {
+    if (mmm_motion_run(motion, queue, depth, currentInverse, previous) != 0) return false;
+    void* fence = mmm_fence_create(queue);
+    bool signaled = mmm_fence_wait(fence, 5000000000LL);
+    mmm_fence_release(fence);
+    if (!signaled) return false;
+    int width = mmm_motion_width(motion);
+    int height = mmm_motion_height(motion);
+    static __fp16 halves[64 * 64 * 2];
+    if (width * height * 2 > 64 * 64 * 2) return false;
+    if (mmm_texture_read_region(mmm_motion_texture(motion), 0, 0, 0, 0, width, height, halves,
+                                (size_t)width * height * 2 * sizeof(__fp16),
+                                (size_t)width * 2 * sizeof(__fp16)) != 0) {
+        return false;
+    }
+    for (int i = 0; i < width * height * 2; i++) out[i] = (float)halves[i];
+    return true;
+}
+
+static void test_motion_vectors(void) {
+    printf("\n== motion vectors (Phase 7B) ==\n");
+    void* device = mmm_device_create();
+    if (device == NULL) { check("motion device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+
+    const int64_t kDepth32F = 252;
+    const int W = 16, H = 12;
+
+    check("Depth32Float is readable by the motion kernel",
+          mmm_motion_depth_format_supported(device, kDepth32F), "");
+    check("a combined depth/stencil format is refused",
+          !mmm_motion_depth_format_supported(device, 260), "");
+
+    void* motion = mmm_motion_create(device, W, H);
+    check("motion resource created", motion != NULL, mmm_motion_last_error());
+    if (motion == NULL) {
+        mmm_queue_release(queue);
+        mmm_device_release(device);
+        return;
+    }
+    check("motion size round-trips",
+          mmm_motion_width(motion) == W && mmm_motion_height(motion) == H, "");
+    check("invalid sizes are refused", mmm_motion_create(device, 0, H) == NULL, "");
+    check("release of NULL is safe", true, "");
+    mmm_motion_release(NULL);
+
+    uint32_t depthUsage = kUsageShaderRead | kUsageRenderTarget;
+    void* depth = mmm_texture_create_full(device, kDepth32F, W, H, 1, 1, 2, true, depthUsage);
+    check("depth texture allocated", depth != NULL, "");
+
+    static float vectors[W * H * 2];
+
+    // 1. An identity current inverse with a previous projection translated by exactly one NDC unit
+    //    on each axis. The kernel's pixel mapping is x: 0.5*(ndc+1)*width and y: 0.5*(1-ndc)*height,
+    //    so the expected motion is (+0.5*W, -0.5*H) exactly. This is the check that pins the
+    //    convention: a flipped y, a transposed matrix, an off-by-half pixel or a wrong pixel scale
+    //    all move the answer, and the depth value is irrelevant because identity and translation
+    //    carry no perspective divide.
+    float identity[16];
+    mat4_identity(identity);
+    float shifted[16];
+    mat4_translate(shifted, 1.0f, 1.0f, 0.0f);
+    check("depth clear", mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 0.5) == 0,
+          "");
+    if (motion_run_and_read(motion, queue, depth, identity, shifted, vectors)) {
+        float expectedX = 0.5f * W;
+        float expectedY = -0.5f * H;
+        // Tolerance is half-precision, not float: the texture is RG16Float, so a value of 8 is stored
+        // to the nearest 0.0078 and 6 to the nearest 0.0039.
+        bool allMatch = true;
+        for (int i = 0; i < W * H; i++) {
+            if (fabsf(vectors[i * 2] - expectedX) > 0.02f
+                    || fabsf(vectors[i * 2 + 1] - expectedY) > 0.02f) {
+                allMatch = false;
+                printf("     pixel %d = (%.4f, %.4f), expected (%.4f, %.4f)\n",
+                       i, vectors[i * 2], vectors[i * 2 + 1], expectedX, expectedY);
+                break;
+            }
+        }
+        check("a one-unit NDC shift is exactly half the texture in pixels, with y down", allMatch,
+              "");
+    } else {
+        check("motion dispatch and readback", false, mmm_motion_last_error());
+    }
+
+    // 2. The same camera twice must produce zero motion at every pixel and every depth. This is the
+    //    round trip that catches an inverse that does not match its forward matrix - which is the
+    //    failure mode that would silently smear the whole image.
+    float perspective[16];
+    mat4_perspective(perspective, 70.0f * 3.14159265f / 180.0f, (float)W / (float)H,
+                     0.05f, 1000.0f);
+    float inversePerspective[16];
+    check("perspective inverse", mat4_invert(inversePerspective, perspective), "");
+    check("depth clear", mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 0.3) == 0,
+          "");
+    if (motion_run_and_read(motion, queue, depth, inversePerspective, perspective, vectors)) {
+        float worst = 0.0f;
+        for (int i = 0; i < W * H * 2; i++) worst = fmaxf(worst, fabsf(vectors[i]));
+        check("an unmoved camera produces no motion at all", worst < 1e-4f, "");
+    } else {
+        check("motion dispatch and readback", false, mmm_motion_last_error());
+    }
+
+    // 3. The depth buffer has to be used, not ignored. A camera moved one unit to the right shifts a
+    //    nearer surface further across the image than a farther one, and the whole field stays
+    //    uniform because every pixel is the same distance away.
+    float previousRight[16];
+    float translateRight[16];
+    mat4_translate(translateRight, 1.0f, 0.0f, 0.0f);
+    mat4_multiply(previousRight, perspective, translateRight);
+
+    float nearMotion = 0.0f, farMotion = 0.0f;
+    bool uniform = true;
+    check("depth clear", mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 0.2) == 0,
+          "");
+    if (motion_run_and_read(motion, queue, depth, inversePerspective, previousRight, vectors)) {
+        nearMotion = vectors[0];
+        for (int i = 0; i < W * H; i++) {
+            if (fabsf(vectors[i * 2] - nearMotion) > 1e-3f
+                    || fabsf(vectors[i * 2 + 1]) > 1e-3f) uniform = false;
+        }
+    }
+    check("depth clear", mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 0.8) == 0,
+          "");
+    if (motion_run_and_read(motion, queue, depth, inversePerspective, previousRight, vectors)) {
+        farMotion = vectors[0];
+    }
+    // A camera that moved to the right makes the world appear to move left, so a surface's previous
+    // image position is to the *right* of where it is now and the motion vector is positive - the
+    // sign MetalFX's "previous position minus current position" convention gives.
+    check("a camera move produces uniform motion on a flat depth plane", uniform, "");
+    check("a nearer surface moves further across the image than a farther one",
+          nearMotion > 0.0f && farMotion > 0.0f && nearMotion > farMotion + 0.01f, "");
+    // Uniform NDC depth is not uniform view depth: the pixel shift is proportional to 1/z, and with
+    // this projection the ratio between the two planes is exactly 4. Checking the ratio rather than
+    // the magnitude pins the depth reconstruction without hard-coding a constant.
+    check("the shift scales as one over view depth",
+          fabsf(nearMotion / farMotion - 4.0f) < 0.05f, "");
+    printf("     motion at depth 0.2: %.3f px, at depth 0.8: %.3f px\n", nearMotion, farMotion);
+
+    // 4. The far plane has no finite world position, so its motion is defined to be zero rather than
+    //    an arbitrary reprojection of a point at infinity.
+    check("depth clear", mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 1.0) == 0,
+          "");
+    if (motion_run_and_read(motion, queue, depth, inversePerspective, previousRight, vectors)) {
+        bool allZero = true;
+        for (int i = 0; i < W * H * 2; i++) if (fabsf(vectors[i]) > 1e-6f) allZero = false;
+        check("the far plane carries zero motion rather than noise", allZero, "");
+    }
+
+    // 5. A depth buffer of the wrong size is refused rather than read out of bounds.
+    void* wrongDepth = mmm_texture_create_full(device, kDepth32F, W - 1, H, 1, 1, 2, true, depthUsage);
+    check("a mismatched depth size is refused",
+          mmm_motion_run(motion, queue, wrongDepth, inversePerspective, perspective) != 0, "");
+    mmm_texture_release(wrongDepth);
+
+    printf("     %s\n", mmm_motion_describe(motion));
+
+    mmm_texture_release(depth);
+    mmm_motion_release(motion);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1301,6 +1568,7 @@ int main(void) {
         test_capture();
         test_utility_batching();
         test_private_storage();
+        test_motion_vectors();
         test_metalfx_spatial();
         test_metalfx_temporal();
     }

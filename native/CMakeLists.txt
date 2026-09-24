@@ -22,6 +22,7 @@ set(SOURCES
     src/metalmod_memory.mm
     src/metalmod_metal.mm
     src/metalmod_metalfx.mm
+    src/metalmod_motion.mm
 )
 
 add_library(metalmod SHARED ${SOURCES})

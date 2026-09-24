@@ -51,18 +51,22 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | **7A done** (verified offline, awaiting one in-game session); 7B partial (scaler, jitter, history; no motion source); 7C not started |
+| 7 — MetalFX | **7A done** (verified offline, awaiting one in-game session); **7B implemented** (camera motion producer, live encode, resets; verified offline, moving geometry is the named gap); 7C not started |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
 ## Agreed next priority
 
-Finish **Phase 7B Temporal first**, bringing forward the motion/previous-transform contract shared
-with Phase 8C and completing live temporal encoding, history resets and transparency validation.
-Temporal already includes AA. Separate AA for Spatial is optional afterward, only if time remains
-and visual evaluation justifies it. See [the corrected AA plan](docs/antialiasing-plan.md).
-This is a planning decision, not a new implementation or verification result.
+**Evaluate Temporal in game, then add per-object motion.** 7B now runs end to end: a native
+camera-reprojection kernel produces render-resolution motion vectors, `SceneMotion` publishes the
+current/previous view-projection contract shared with Phase 8C, and the temporal scaler is encoded on
+the device queue behind the level's passes and ahead of the interface, with history resets on camera
+cuts, world changes and resizes. What it does not have is motion for geometry that moves
+independently of the camera - a mob, a particle, an animated block - which reprojects as if it were
+static and ghosts. That is the next implementation step, and it is the same contract 8C needs.
+Separate AA remains optional afterward. See [the corrected AA plan](docs/antialiasing-plan.md) and
+[the Phase 7 record](docs/phase7-plan.md). This is a planning decision, not a verification result.
 
 ## Phase 5 close-out and next step
 
@@ -75,17 +79,21 @@ final verdict per gate, the carried-forward evidence items and the limits, and
 [docs/lighting-abi.md](docs/lighting-abi.md) for the published light-record contract that Phase 8
 builds on. `TESTING.md` §5.6 is the final-test checklist.
 
-Phase 7 (MetalFX) is **7A done, 7B partial, 7C not started**; see
+Phase 7 (MetalFX) is **7A done, 7B implemented, 7C not started**; see
 [docs/phase7-plan.md](docs/phase7-plan.md) for the per-increment record, the integration contract,
-the three defects the work found, and the six in-game observations that close 7A. What that means in
-a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale, switches between
-MetalFX and the plain blit, shows the live sizes and which path ran, and raises a toast in world when
-a change lands. The world renders at that fraction into its own target and MetalFX returns it to
-native, while the HUD, menus and tooltips keep drawing at native resolution. **No in-game run has
-happened yet** - the design's central claim is verified offscreen against the engine's own
-`MainTarget` and `FrameGraphBuilder`, not on screen. [TESTING.md](TESTING.md) §6.E is the five-minute
-pass that closes it; the one observation that decides it is the HUD at 50%, which must be as sharp as
-at 100%.
+the six defects the work found, and the six in-game observations that close 7A. What that means in
+a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale and cycles the
+upscaler through **off / MetalFX spatial / MetalFX temporal**, shows the live sizes and which effect
+actually ran, and raises a toast in world when a change lands. The world renders at that fraction
+into its own target and MetalFX returns it to native, while the HUD, menus and tooltips keep drawing
+at native resolution. Temporal adds a native camera-reprojection motion pass over the level's depth;
+it is exact for a moving camera and static geometry, and **geometry that moves on its own still
+ghosts** because its per-object velocity is Phase 8C's contract. When temporal cannot run - an older
+device, no motion producer, a depth format the kernel cannot read - the frame falls back to Spatial
+and F3 and the settings page say why. **No in-game run has happened yet** - the design's central claim
+is verified offscreen against the engine's own `MainTarget` and `FrameGraphBuilder`, not on screen.
+[TESTING.md](TESTING.md) §6.E is the five-minute pass that closes 7A; the one observation that decides
+it is the HUD at 50%, which must be as sharp as at 100%.
 
 What that means in a session, concretely: held and dropped items, entities, particles and moving
 blocks light the world; a source buried in or sealed by opaque blocks contributes nothing; a placed
@@ -152,7 +160,7 @@ Run all five before trusting a change:
 | `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence and the MetalFX spatial/temporal scalers, `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics from any pipeline |
 | `./tools/render_check/run.sh` | 173 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths, the runtime toggle, the measured zero-work disabled path, and six MetalFX spatial upscaling assertions, `RENDER CHECK PASSED` |
-| `./tools/scaling_check/run.sh` | Phase 7A end to end offscreen: the scaled level target through the engine's own `MainTarget` and `FrameGraphBuilder`, the upscale, the resize, the release, and the jitter sequence, `SCALING CHECK PASSED` |
+| `./tools/scaling_check/run.sh` | Phase 7 end to end offscreen: the scaled level target through the engine's own `MainTarget` and `FrameGraphBuilder`, the upscale, the resize, the release, the jitter sequence, and the temporal path - the scene contract, the motion field's values and conventions, and the reset lifecycle, `SCALING CHECK PASSED` |
 | `./tools/mixin_check/run.sh` | every mixin target, injected method, `@Shadow` member and `@At` descriptor against the client jar, `MIXIN CHECK PASSED` |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets, UMA ownership |
 

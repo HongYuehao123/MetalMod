@@ -447,8 +447,9 @@ procedure. Phase 7A itself needs no further code for it.
 
 ### Phase 7 — MetalFX, natively  · **M–L**
 
-**7A complete and verified offline (2026-09-25); 7B partially delivered; 7C not implemented.** The
-per-increment record, the evidence and the gaps are in [the Phase 7 plan](docs/phase7-plan.md).
+**7A complete and verified offline (2026-09-25); 7B implemented and verified offline, with a camera
+motion producer; 7C not implemented.** The per-increment record, the evidence and the gaps are in
+[the Phase 7 plan](docs/phase7-plan.md).
 MetalMod owns the device, textures and swapchain, so MetalFX operates on its own resources with no
 interop and no presentation conflict - which is what the retired MoltenVK design could never do.
 
@@ -458,41 +459,49 @@ interop and no presentation conflict - which is what the retired MoltenVK design
   that drives the engine's own `MainTarget` and `FrameGraphBuilder`, a mixin-target check, and pixel
   assertions in the render check. **Not yet confirmed in game** - see the plan's §2.4 for the six
   observations that settle it.
-- **7B — Temporal upscaling. Partial.** The native temporal scaler, the mean-centred Halton
-  projection jitter and history reset helpers are implemented; live temporal/reset integration and motion vectors remain outstanding,
-  and without them a temporal filter ghosts camera movement, so the path is gated off rather than
-  enabled. The producer is a motion-vector pass, which is Phase 8C's scene contract.
-- **7C — Frame generation. Not implemented.** Blocked on 7B's motion vectors and on frame-loop
-  pacing; a stub would misrepresent that. What is delivered is the pacing measurement
+- **7B — Temporal upscaling. IMPLEMENTED, camera motion only.** The native temporal scaler, the
+  mean-centred Halton projection jitter, the live temporal encode and the history-reset lifecycle are
+  in place, driven by a native motion-vector kernel: each pixel's depth is reprojected through the
+  previous frame's view-projection, which is exact for a moving camera and static geometry. The
+  current/previous-transform contract is `metalfx/SceneMotion`, shared with 8C. **Independently moving
+  geometry is the named gap** - a mob, a particle or an animated block carries the terrain's motion and
+  ghosts - and supplying it is 8C's previous-transform work. Verified by ten new native smoke
+  assertions, fifteen new scaling-check assertions and the mixin check; no in-game run and no measured
+  temporal cost yet.
+- **7C — Frame generation. Not implemented.** Blocked on 7B's per-object motion vectors and on
+  frame-loop pacing; a stub would misrepresent that. What is delivered is the pacing measurement
   (`presentedTime` intervals, p95, dropped count) that a `CAMetalDisplayLink` pacer is validated
   against.
 
 **Integration contract:** published and implemented - see the plan's §5. It fixes what the scaler
 reads and writes, the resolution and coordinate conventions, that upscaling sits after everything the
-level draws (including its post chains) and before the interface, that history belongs to the scaler
-alone, and that scale 1.0 allocates nothing.
+level draws (including its post chains and, when temporal is on, the motion dispatch) and before the
+interface, that history belongs to the scaler alone, that scale 1.0 allocates nothing, and what the
+fallback is when the requested effect cannot run.
 
 **Done when:** spatial and temporal modes render correctly through resizing and history resets, with
 measured quality and performance; frame generation passes its separate pacing and latency checks.
 **7A meets this for spatial** (correctness verified offline, quality and performance measurement
-procedured in TESTING.md §6 but not yet run; no in-game confirmation). Temporal and frame generation
-do not.
+procedured in TESTING.md §6 but not yet run; no in-game confirmation). **7B meets the resize and
+history-reset halves and has a verified motion source**, but not measured quality, not in-game
+confirmation, and not moving-geometry motion. Frame generation does not.
 
 **Dependencies:** builds on Phase 5's rendering and presentation foundations. Frame generation is
 independently validated and is not an algorithmic prerequisite for ray tracing; neither is temporal
 upscaling, which is why Phase 8 is not blocked by this phase's remainder.
 
 **Risks:** owning presentation removed the old interoperability obstacle, but motion correctness and
-temporal reconstruction remain substantial work - which is what 7B and 7C ran into. The measured
-risk that did *not* materialise is the one the roadmap named first: the HUD. Because the level gets
-its own target rather than the engine's being resized, the interface never changes resolution, and
-the scissor-rectangle failure that reverted the pre-Phase-5 attempt cannot occur by construction.
+temporal reconstruction remain substantial work - which is what 7B and 7C ran into, and per-object
+motion is the part of it that is still open. The measured risk that did *not* materialise is the one
+the roadmap named first: the HUD. Because the level gets its own target rather than the engine's
+being resized, the interface never changes resolution, and the scissor-rectangle failure that
+reverted the pre-Phase-5 attempt cannot occur by construction.
 
 ### Anti-aliasing — Temporal first; separate AA optional afterward
 
-Finish Phase 7B Temporal first, bringing forward the current/previous-frame scene contract shared
-with 8C. Temporal combines AA and upscaling, but still needs camera and moving-geometry motion,
-live resource/encode integration, history resets and transparency validation.
+Temporal is implemented; the remaining work is per-object motion, bringing forward the
+current/previous-frame scene contract shared with 8C, and an in-game evaluation. Temporal combines AA
+and upscaling, but the motion field it has today covers the camera and static geometry only.
 
 [The anti-aliasing plan](docs/antialiasing-plan.md) records the corrected alternatives. Apple recommends
 antialiased input for Spatial, so optional FXAA/SMAA before Spatial is a valid later experiment.
@@ -581,11 +590,12 @@ must not delay Phases 8–9.
 
 ## 7. Immediate next step
 
-**Finish Phase 7B Temporal next, then consider separate AA only if time remains.** Bring forward
-8C's current/previous-frame transform contract for motion vectors; the rest of Phase 8 need not
-finish first. Wire the live temporal path, resets and transparency handling, then compare image
-quality and frame cost against native and Spatial. Retain the outstanding 7A visual checks and
-BUG-029 verification; this scheduling decision does not establish that they passed.
+**Evaluate Phase 7B Temporal in game, then add per-object motion.** 7B now runs end to end offline -
+the motion kernel, the `SceneMotion` current/previous-transform contract shared with 8C, the live
+encode and the reset lifecycle - so the next step is an in-game comparison of native, Spatial and
+Temporal, followed by the per-object velocity that removes moving-geometry ghosting. Retain the
+outstanding 7A visual checks and BUG-029 verification; this scheduling decision does not establish
+that they passed.
 
 Temporal already includes AA. A later separate AA experiment would primarily improve the Spatial
 fallback if evaluation establishes a need. Frame generation remains separate work.

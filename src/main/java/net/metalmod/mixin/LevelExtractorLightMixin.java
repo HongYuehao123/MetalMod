@@ -46,5 +46,10 @@ public class LevelExtractorLightMixin {
         LightCollector.clear();
         // A different level, or no level: every indexed section belongs to the world being left.
         BlockLightIndex.clear();
+        // The temporal history belongs to the world being left too. A dimension change keeps the same
+        // camera coordinates on the other side, so the camera-cut heuristic cannot see it - the
+        // previous frame is a different world at the same position, and blending the two is exactly
+        // the smear the reset exists to prevent.
+        net.metalmod.metalfx.SceneMotion.clearHistory();
     }
 }

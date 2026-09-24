@@ -1,6 +1,7 @@
 package net.metalmod.mixin;
 
 import net.metalmod.metalfx.ProjectionJitter;
+import net.metalmod.metalfx.RenderScaleSettings;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
@@ -31,9 +32,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * change which chunks are visible, or the drawn set would flicker frame to frame.
  *
  * <p><b>Why it is gated.</b> The offset is applied only while {@link ProjectionJitter#active()}, which
- * is true only for frames the renderer declares temporal. With no temporal effect running - every frame
- * until a motion source exists - the engine's own matrix is left byte-for-byte alone, and the
- * feature-off path stays the pre-Phase-7 path.
+ * is true only for frames the frame hook begins - that is, frames a temporal scaler is actually going
+ * to run on. With spatial upscaling or no effect, the engine's own matrix is left byte-for-byte alone,
+ * and the feature-off path stays the pre-Phase-7 path.
  */
 @Mixin(Camera.class)
 public class CameraJitterMixin {
@@ -52,10 +53,17 @@ public class CameraJitterMixin {
         if (matrix == null || this.projection == null) {
             return;
         }
-        // Expressed against the projection's own viewport, which is the resolution the level is
-        // drawing at - and the unit MetalFX takes its jitter offset in, so the two cannot disagree.
-        float clipX = ProjectionJitter.clipX(Math.round(this.projection.width()));
-        float clipY = ProjectionJitter.clipY(Math.round(this.projection.height()));
+        // Expressed against the resolution the level is drawing at, not the window's: the projection
+        // is set up with the window's dimensions, but the level renders into the scaled target, so a
+        // clip translation derived from the window size would move the image by only `scale` of the
+        // requested pixels - and MetalFX, which is told the offset in input-texture pixels, would
+        // then be reprojecting a frame that was jittered by a different amount.
+        int windowWidth = Math.round(this.projection.width());
+        int windowHeight = Math.round(this.projection.height());
+        int renderWidth = RenderScaleSettings.scaledSize(windowWidth);
+        int renderHeight = RenderScaleSettings.scaledSize(windowHeight);
+        float clipX = ProjectionJitter.clipX(renderWidth);
+        float clipY = ProjectionJitter.clipY(renderHeight);
         // Post-multiplied: the offset is a clip-space translation, so it composes after the projection.
         matrix.translate(clipX, clipY, 0.0f);
     }

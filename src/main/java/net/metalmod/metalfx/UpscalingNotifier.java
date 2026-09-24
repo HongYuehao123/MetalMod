@@ -66,8 +66,10 @@ public final class UpscalingNotifier {
         }
         String target = size == null ? "world at " + RenderScaleSettings.percentLabel()
                 : "world " + size[0] + "x" + size[1] + " -> native";
-        return target + ", " + RenderScaleSettings.upscaler() + " ("
-                + (MetalFx.available() ? "MetalFX" : "blit fallback") + ") - from the next frame";
+        // The requested effect, not the running one: the frame that will act on this has not run yet.
+        // F3 and the settings page report what actually ran, which is where the difference between a
+        // request and a fallback belongs.
+        return target + ", MetalFX " + RenderScaleSettings.upscaler() + " - from the next frame";
     }
 
     /**

@@ -8,6 +8,7 @@
     "GameRendererFrameMixin",
     "GameRendererMixin",
     "GameRendererScalingMixin",
+    "GameRendererProjectionMixin",
     "LevelRendererScalingMixin",
     "LevelExtractorLightMixin",
     "OptionsScreenMetalModMixin",

@@ -54,6 +54,10 @@ public class LevelRendererScalingMixin {
         // built, so it has to be final by here rather than by the end of the method.
         RenderTarget main = this.gameRenderer.mainRenderTarget();
         WorldRenderTarget.ensureBeforeLevel(main.width, main.height);
+        // The camera half of the temporal scene contract, recorded here because this is the camera the
+        // level is about to be drawn from. The projection half was captured earlier in the same frame,
+        // where the engine handed its finished level matrix to the device.
+        net.metalmod.metalfx.SceneMotion.captureCamera(cameraRenderState);
         WorldRenderTarget.enterLevel();
     }
 

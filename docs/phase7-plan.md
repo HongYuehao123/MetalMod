@@ -1,9 +1,10 @@
 # Phase 7 — MetalFX
 
-Status: **7A complete and verified offline (2026-09-25); 7B partially delivered; 7C not
-implemented.** This document records what each increment actually delivers, what evidence backs it,
-and what is missing - in the same form as [the Phase 6 plan](phase6-plan.md), because a phase that
-reports "done" without naming its gaps is how a project accumulates claims it cannot support.
+Status: **7A complete and verified offline (2026-09-25, awaiting one in-game run); 7B implemented and
+verified offline, including a camera motion producer; 7C not implemented.** This document records what
+each increment actually delivers, what evidence backs it, and what is missing - in the same form as
+[the Phase 6 plan](phase6-plan.md), because a phase that reports "done" without naming its gaps is how
+a project accumulates claims it cannot support.
 
 Baseline reviewed: `280f3df`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro, macOS 27.
 
@@ -94,9 +95,9 @@ in-game session has to confirm:
 4. **A window resize at scale 0.5**, including a fullscreen toggle.
 5. **A GUI-only frame** (open the pause menu over the world) - the case the conditional clear split
    exists for.
-6. **F3 says what happened**: the `upscale` line's sizes, and `fx` counting up rather than `blit`.
-   The settings page's own status line says the same thing without F3, which is what makes step 5 of
-   the five-minute pass possible.
+6. **F3 says what happened**: the `upscale` line's sizes and which effect ran, and - when temporal is
+   selected - the `motion` line's dispatched count and reset reasons. The settings page's own status
+   line says the same thing without F3, which is what makes step 5 of the five-minute pass possible.
 
 [TESTING.md](../TESTING.md) §6.E is the five-minute version of the list above; step 6 there - the HUD
 at 50%, which must be as sharp as at 100% - is the one observation that decides the increment.
@@ -140,62 +141,66 @@ Until those are done, the honest statement is *"implemented and verified offline
 
 | Piece | State |
 |---|---|
-| Native temporal scaler | **Done and exercised.** `mmm_fx_temporal_*`, created in the smoke test for the backend's real formats, with `depthReversed = false` matching Minecraft's near-0/far-1 projection, and the reactive-mask and dynamic-resolution descriptor options |
-| Projection jitter | **Done and verified.** `metalfx/ProjectionJitter` plus `CameraJitterMixin`: a mean-centred Halton (2,3) sequence, applied as a clip-space translation to `CameraRenderState.projectionMatrix`, gated off |
-| History lifecycle | **Helpers implemented.** `requestReset` / `consumeReset` exist; live temporal event/reset integration remains to be completed and verified |
-| Motion vectors | **Not implemented.** Nothing publishes them |
-| The temporal path itself | **Not enabled.** A `temporal` request resolves to `spatial` |
+| Native temporal scaler | **Done and exercised.** `mmm_fx_temporal_*`, created for the backend's real formats - `RGBA8` colour, `Depth32Float` depth, `RG16Float` motion, `RGBA8` output - with `depthReversed = false` matching Minecraft's near-0/far-1 projection, and the reactive-mask and dynamic-resolution descriptor options available. Dynamic resolution is reported as unsupported on this machine and is left off. |
+| Camera motion producer | **Done and verified.** `native/src/metalmod_motion.mm` plus the `mmm_motion_*` surface: one Metal compute kernel that reconstructs each pixel's camera-relative world position from the level depth and reprojects it through the previous frame's view-projection, writing an `RG16Float` motion texture at the render resolution. |
+| The scene contract | **Done.** `metalfx/SceneMotion` captures the current and previous finished projection matrix, the camera's view rotation and position, and the frame's jitter, and folds the frame-to-frame camera translation into the previous matrix. Shared with Phase 8C. |
+| Live temporal path | **Done.** `WorldRenderTarget.upscaleTemporal` creates the motion resource, builds the matrices, dispatches the motion pass and encodes the scaler on the device queue, in that order, between the level's passes and the interface. |
+| Projection jitter | **Done, and corrected.** The mean-centred Halton (2,3) sequence advances per temporal frame. The clip-space conversion now uses the *render* target's size rather than the window's, which is [BUG-030](../bug.md). |
+| History lifecycle | **Done.** `requestReset`/`consumeReset` reach a real encode; resets are wired to camera cuts, world/dimension changes and every target rebuild or resize. |
+| Transparency / reactive mask | **Not implemented.** No producer exists, so the descriptor option stays off rather than being enabled without a mask. |
+| Moving geometry | **Not implemented.** Pixels that move independently of the camera reproject as if they were static. This is the named remainder, and it is what Phase 8C's previous-transform contract supplies. |
 
-### 3.2 Why the temporal path is gated rather than enabled
+### 3.2 How the motion is produced, and what it deliberately does not claim
 
-A temporal scaler reconstructs each output pixel from where the corresponding input pixels were in
-previous frames. It cannot derive that itself: it needs a motion texture, and MetalFX's own
-documentation is explicit that depth reprojection describes camera motion but not independently
-moving objects.
+MetalFX needs a motion texture and documents that depth reprojection on its own describes camera
+motion but not independently moving objects. This increment produces the camera half exactly: the
+level's depth is turned back into a camera-relative world position by inverting the current
+view-projection, and that position is reprojected with the previous frame's view-projection - which
+also carries the camera's own displacement between the two frames, so no world coordinate is ever
+materialised in a float.
 
-Minecraft 26.2 publishes no motion vectors. Producing them means a new shader pass that reads the
-level's depth and colour and writes an RG16F texture at the render resolution - and a *useful* one
-needs per-draw model transforms as well, or every mob, particle and animated block tears along with
-the camera. That is a rendering-pipeline addition, not a scaler integration, and Phase 8C already
-owns the contract for it ("scene contracts... current/previous-frame transforms").
+Three conventions are load-bearing, and each has a check:
 
-So 7B stops at the point where the next step stops being an integration:
+- **Camera-relative space.** Minecraft's level shaders build a camera-relative position and multiply it
+  by a rotation-only view, so the matrix the kernel inverts is `projection * viewRotation`, not a
+  world-space view-projection.
+- **Unjittered.** The descriptor's `jitteredMotionVectors` option is off, so the jitter the projection
+  was given is removed before the matrices are built - for the *previous* frame as well as this one, or
+  a still camera produces motion equal to the change in jitter phase. The offset itself is passed to
+  the scaler in input-texture pixels, which is now the unit the projection was actually jittered in.
+- **Metal's depth convention.** The backend reports `isZZeroToOne`, so the stored depth is the
+  clip-space z directly and a depth of exactly 1.0 is the far plane, which is given zero motion rather
+  than an arbitrary reprojection of a point at infinity.
 
-- the scaler exists, is created with the right formats and depth convention, and is exercised;
-- the jitter exists, is centred, is sub-pixel, and is verified as a sequence;
-- history reset helpers exist, with live event/encode integration still outstanding;
-- and the path is **off**, with `temporalEnabled()` as the single predicate both the jitter and the
-  scaler selection read, so the two cannot disagree.
+### 3.3 What was verified
 
-Enabling it without motion vectors would be worse than not having it: a temporally accumulated frame
-with zero motion vectors ghosts the camera's own movement across the whole screen, which looks like a
-broken renderer rather than an unfinished feature.
+| Gate | Command | Result |
+|---|---|---|
+| Native motion kernel | `./scripts/run_smoke.sh` | `ALL CHECKS PASSED`, including ten new motion assertions: an exact convention check (a one-NDC-unit shift is exactly half the texture in pixels, with y down), an unmoved camera producing zero motion on a perspective projection, uniform motion on a flat depth plane scaling as one over view depth with the documented sign, zero motion at the far plane, and a mismatched depth size being refused. |
+| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (now 63 checks), of which fifteen are temporal: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, a first frame and a camera cut each request a reset while a continuous camera does not, and a resize keeps the path running. |
+| Mixin injection points | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (62 checks), including the new `GameRendererProjectionMixin` and its `ProjectionMatrixBuffer.getBuffer` target. |
+| Build, shaders, render check, standalone suite | `./scripts/build_mod.sh`, `./tools/shader_inventory/run.sh`, `./tools/render_check/run.sh`, `StandaloneTestRunner` | all green. |
 
-### 3.3 What the jitter verification covers
+### 3.4 What is not verified, and what remains
 
-`./tools/scaling_check/run.sh` asserts that:
-
-- every offset is sub-pixel (largest observed `0.46875`);
-- the sixteen phases are distinct, so consecutive frames sample different positions;
-- the offsets **sum to zero** over the cycle - the property that stops the image drifting. The raw
-  Halton prefix does *not* have this property (it sums to `+0.47` on the base-2 axis over sixteen
-  samples), which is why the implementation subtracts the prefix mean rather than assuming `0.5`;
-- the clip-space conversion at 1600 pixels moves the image by exactly the requested number of pixels;
-- a reset request is delivered exactly once.
-
-### 3.4 What is needed to finish 7B — next priority
-
-1. Produce render-resolution motion: camera reprojection from depth and current/previous transforms,
-   plus previous transforms/animated positions for moving geometry. Bring forward the shared Phase
-   8C scene contract; completing all of Phase 8 is not a prerequisite.
-2. Integrate temporal resource allocation, scaler ownership, queue ordering and depth/motion/jitter
-   inputs into the live world path. The existing Spatial caller does not provide this integration.
-3. Wire history resets through actual encoding on camera cuts, world/dimension changes and resize.
-   Existing reset helpers alone do not establish that these events are handled.
-4. Validate transparency; if using a reactive mask, implement both its producer and encode binding.
-5. Enable Temporal only with valid inputs, keep a supported fallback, and expose useful diagnostics.
-6. Run applicable offline gates and in-game comparisons of native, Spatial and Temporal, including
-   entities, particles, water, foliage, camera movement, disocclusion, HUD sharpness and frame cost.
+1. **No in-game run of temporal.** The same caveat as 7A applies: the mixins are checked for targets
+   that exist, not for behaviour at runtime. A session has to confirm that a moving camera produces a
+   stable image, that turning the camera does not smear, that a dimension change does not blend two
+   worlds, and that the frame cost is what it is.
+2. **Moving geometry ghosts.** The motion field describes the camera, so a mob, a particle or an
+   animated block carries the motion of the terrain behind it and accumulates into a trailing image.
+   This is not a small remainder: Phase 8C's previous-transform contract exists to supply exactly this,
+   and until it does the honest description of this mode is "temporal upscaling and antialiasing for a
+   static world and a moving camera".
+3. **No reactive mask.** The scaler can be told per pixel to favour the current frame where its motion
+   is unreliable, but the mask needs a producer - per-object identity or coverage - and the render
+   state this engine exposes has no such identifier. Enabling the descriptor option without the mask
+   would be a claim the code cannot back, so it stays off.
+4. **Transparency is unvalidated as a temporal case.** Water, particles and cutouts render correctly in
+   the spatial path's pixel checks; what they do under accumulation has not been looked at.
+5. **No measured temporal cost.** The spatial upscale is measured; the temporal one is not, and the
+   motion dispatch is a full-resolution pass over the depth buffer that has never been timed in a
+   scene.
 
 ### 3.5 Anti-aliasing — optional separate work after Temporal
 
@@ -251,6 +256,7 @@ composition, so Phases 8–9 can compose against it. This is that contract, as i
         │  │   translucency post-chain, entity-outline post-chain               │    │
         │  └────────────────────────────────────────────────────────────────────┘    │
         │                                                                           │
+        │  MOTION (temporal only)  depth + previous view-projection → RG16F          │
         │  UPSCALE  →  native target                                                │
         │                                                                           │
         │  level post-effect chain (blur, invert, creeper, spider) at native        │
@@ -261,15 +267,17 @@ composition, so Phases 8–9 can compose against it. This is that contract, as i
 
 | Question | Answer |
 |---|---|
-| What the scaler reads | The level target's colour, `RGBA8_UNORM`, with `USAGE_TEXTURE_BINDING` and `USAGE_RENDER_ATTACHMENT` (the usage bits MetalFX reports) |
+| What the scaler reads | Spatial: the level target's colour, `RGBA8_UNORM`, with `USAGE_TEXTURE_BINDING` and `USAGE_RENDER_ATTACHMENT` (the usage bits MetalFX reports). Temporal adds the level target's `Depth32Float` depth and an `RG16Float` motion texture at the render resolution |
 | What it writes | The native target's colour view, same format |
 | Resolution | Input `round(native * scale)`, output the native window size; both dimensions scale, so the aspect ratio never changes |
 | Coordinates | Metal convention throughout; no flip is introduced by the upscale, and the level's Y convention is the one the backend already applies |
-| Where it sits | **After** everything the level draws, including its post chains; **before** the interface |
+| Where it sits | **After** everything the level draws, including its post chains and - when temporal is on - the motion dispatch; **before** the interface |
+| Motion ownership | `SceneMotion`: the native kernel, the current/previous matrices and the camera history. `WorldRenderTarget` owns the resource's lifetime and the queue order; nothing else reads the motion texture |
 | Post-processing | Phase 7A runs the level's post chains at the render resolution. Effects applied *after* upscaling (the level post-effect chain, the interface) are native |
-| History ownership | The scaler's, and only its: nothing else reads or writes its history. A resolution change, a world change or a camera cut calls `ProjectionJitter.requestReset()` |
+| History ownership | The scaler's, and only its: nothing else reads or writes its history. A resolution change, a world change or a camera cut calls `ProjectionJitter.requestReset()`, which the next temporal encode consumes exactly once |
 | Who owns the effect | The backend. A shaderpack or a future phase that brings its own temporal processing must declare it and turn this off, as the optional track's acceptance criteria state |
 | Feature-off guarantee | Scale 1.0 allocates nothing, creates no scaler and leaves the engine's target in place |
+| Fallback | Temporal unable to run - unsupported device, no motion producer, unreadable depth, or three consecutive failures - runs Spatial for the frame and states the reason on F3 and the settings page. Spatial unable to run renders natively |
 
 ---
 
@@ -282,6 +290,9 @@ All three are recorded in [bug.md](../bug.md) with their symptoms and causes.
 | [BUG-026](../bug.md) | `RenderScaleSettings.active()` was built from a rounded dimension (`scaledSize(1) != 1`), which is true at every scale | The predicate answered "scaling is on" at 1.0, which would have allocated a second, identical target and routed the default frame through the scaling path. Found by the scaling check's own assertion; the predicate now tests the scale |
 | [BUG-027](../bug.md) | The Halton jitter prefix does not average to zero (it sums to `+0.47` on the base-2 axis over sixteen samples) | The assumption "Halton is centred" is common and wrong for a finite prefix. An offset with a non-zero mean drifts the image; the prefix mean is now subtracted |
 | [BUG-028](../bug.md) | The colour-and-depth split would have cleared the small target on a frame that draws no level | The main menu and the loading screen would have drawn over the previous frame's contents. Fixed by recording the engine's own "is a level being drawn" decision before the clear |
+| [BUG-030](../bug.md) | The projection jitter was converted against the *window* size while the level renders at a fraction of it | The scaler would have been told an offset in input pixels that the frame was not jittered by. Found while building the motion matrices; the conversion now uses the same function that sizes the level target |
+| [BUG-031](../bug.md) | `upscale` did not consult the frame's "am I scaling" decision, so it could write the stale level target over a frame that had rendered natively | Found by reading the class's own once-per-frame invariant against the code. The redirect and the upscale now agree about which frame they are |
+| [BUG-032](../bug.md) | MetalFX documents its output texture as private-storage; this backend hands it a shared one | **Open.** The pixels are verified correct offscreen and the requirement is not enforced in release builds, but the contract is not met. Recorded rather than ignored |
 
 ---
 
@@ -290,16 +301,18 @@ All three are recorded in [bug.md](../bug.md) with their symptoms and causes.
 | Increment | Verdict |
 |---|---|
 | **7A — Spatial upscaling** | **Delivered and now exercised in game.** Render-resolution controls, the level's own target, MetalFX spatial upscaling at native HUD resolution, resize handling, a measured feature-off path, and a measured in-session gain of about 20% of the frame at 50% scale (13.5 ms against native's 16.9 ms). Quality against native is still unmeasured. |
-| **7B — Temporal upscaling** | **Partially delivered.** Native scaler and jitter/reset helpers exist. Motion producers, live temporal encoding and event-driven history resets remain outstanding; bring forward the shared Phase 8C contract. The path remains gated off. |
-| **7C — Frame generation** | **Not implemented.** Blocked on 7B's motion vectors and on frame-loop pacing; the pacing measurement is delivered as its groundwork, and the contract is recorded above. |
+| **7B — Temporal upscaling** | **Implemented and verified offline, with a camera motion producer.** The native kernel, the scene contract, the live encode, the jitter (corrected to render pixels) and the reset lifecycle are all in place and covered by the smoke and scaling checks. It is enabled as a setting, falls back to Spatial with a stated reason when it cannot run, and reports its own state on F3 and the settings page. The named remainder is **moving geometry**: independently moving objects reproject as if static and ghost, because the per-object previous transforms are Phase 8C's contract. No in-game run and no measured temporal cost yet. |
+| **7C — Frame generation** | **Not implemented.** Blocked on 7B's per-object motion vectors and on frame-loop pacing; the pacing measurement is delivered as its groundwork, and the contract is recorded above. |
 
 The roadmap's 7A exit criterion - "spatial and temporal modes render correctly through resizing and
 history resets, with measured quality and performance" - is met for spatial in **performance** and
-**resize**, and not met for temporal. **Quality is the remaining half**: nobody has compared the
-upscaled image against native side by side, which is a visual judgement and needs a session. The
-in-game numbers in §2.5 come from one spot in one world, so they establish that the feature pays
-*here*, not a general figure.
+**resize**, and for temporal in **resize**, **history resets** and the offline correctness of its
+motion source. It is not met for temporal quality, which needs a session, and moving geometry is a
+stated gap rather than a completed item. The in-game numbers in §2.5 come from one spot in one world,
+so they establish that the feature pays *here*, not a general figure.
 
-The next implementation priority is **finishing 7B Temporal** (§3.4), bringing forward the shared
-8C scene contract. Outstanding 7A visual checks remain required. Separate AA is optional after
-Temporal evaluation, only if time remains (§3.5).
+The next implementation priorities are the two visual checks 7A still owes (§2.4), then an in-game
+evaluation of Temporal, and then **per-object motion for moving geometry** - bringing forward the
+shared 8C previous-transform contract, which is now the only thing standing between this motion source
+and a complete one. Separate AA remains optional after that, only if the evaluation justifies it
+(§3.5), and 7C remains blocked on the same motion vectors plus a pacer.

@@ -64,6 +64,11 @@ public final class MetalNative {
             mhFxTemporalDescribe, mhPresentTime, mhPresentReadReset,
             mhGpuTimeFill, mhGpuTimeUpscale;
 
+    // Phase 7B motion vectors. Also optional, for the same reason: a dylib without them leaves the
+    // backend able to render and to run Spatial, it just cannot run Temporal.
+    private static MethodHandle mhMotionCreate, mhMotionRelease, mhMotionTexture, mhMotionWidth,
+            mhMotionHeight, mhMotionLastError, mhMotionRun, mhMotionFormatSupported, mhMotionDescribe;
+
     static {
         try {
             load();
@@ -215,6 +220,19 @@ public final class MetalNative {
         mhPresentReadReset = optional(lookup, linker, "mmm_present_read_reset", FunctionDescriptor.of(I, A, I));
         mhGpuTimeFill = optional(lookup, linker, "mmm_gpu_time_fill", FunctionDescriptor.of(D, A, A, I));
         mhGpuTimeUpscale = optional(lookup, linker, "mmm_gpu_time_upscale", FunctionDescriptor.of(D, A, A, A, A, I));
+
+        // Motion vectors (Phase 7B). Optional like the rest of the Phase 7 surface.
+        mhMotionCreate = optional(lookup, linker, "mmm_motion_create", FunctionDescriptor.of(A, A, I, I));
+        mhMotionRelease = optional(lookup, linker, "mmm_motion_release", FunctionDescriptor.ofVoid(A));
+        mhMotionTexture = optional(lookup, linker, "mmm_motion_texture", FunctionDescriptor.of(A, A));
+        mhMotionWidth = optional(lookup, linker, "mmm_motion_width", FunctionDescriptor.of(I, A));
+        mhMotionHeight = optional(lookup, linker, "mmm_motion_height", FunctionDescriptor.of(I, A));
+        mhMotionLastError = optional(lookup, linker, "mmm_motion_last_error", FunctionDescriptor.of(A));
+        mhMotionRun = optional(lookup, linker, "mmm_motion_run",
+                FunctionDescriptor.of(I, A, A, A, A, A));
+        mhMotionFormatSupported = optional(lookup, linker, "mmm_motion_depth_format_supported",
+                FunctionDescriptor.of(B, A, L));
+        mhMotionDescribe = optional(lookup, linker, "mmm_motion_describe", FunctionDescriptor.of(A, A));
     }
 
     private static MethodHandle optional(SymbolLookup lookup, Linker linker, String name,
@@ -971,6 +989,119 @@ public final class MetalNative {
                     jittered.get(ValueLayout.JAVA_BOOLEAN, 0)};
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    // Motion vectors (Phase 7B) ------------------------------------------------------------------
+
+    /**
+     * Whether the dylib exports the motion-vector producer at all.
+     *
+     * <p>Temporal upscaling is the only thing that needs it, so a library without it still renders and
+     * still runs Spatial - the backend reports the missing half rather than failing.
+     */
+    public static boolean motionAvailable() {
+        return available && mhMotionCreate != null && mhMotionRun != null
+                && mhMotionTexture != null && mhMotionRelease != null;
+    }
+
+    public static MemorySegment motionCreate(MemorySegment device, int width, int height) {
+        if (mhMotionCreate == null) return MemorySegment.NULL;
+        ffiCalls++;
+        try {
+            return (MemorySegment) mhMotionCreate.invokeExact(device, width, height);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static void motionRelease(MemorySegment motion) {
+        if (mhMotionRelease == null || isNull(motion)) return;
+        ffiCalls++;
+        try {
+            mhMotionRelease.invokeExact(motion);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    /** The RG16Float motion texture, for the temporal scaler and for the offline readback. */
+    public static MemorySegment motionTexture(MemorySegment motion) {
+        if (mhMotionTexture == null || isNull(motion)) return MemorySegment.NULL;
+        ffiCalls++;
+        try {
+            return (MemorySegment) mhMotionTexture.invokeExact(motion);
+        } catch (Throwable t) {
+            return MemorySegment.NULL;
+        }
+    }
+
+    public static int motionWidth(MemorySegment motion) {
+        if (mhMotionWidth == null || isNull(motion)) return 0;
+        try {
+            return (int) mhMotionWidth.invokeExact(motion);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    public static int motionHeight(MemorySegment motion) {
+        if (mhMotionHeight == null || isNull(motion)) return 0;
+        try {
+            return (int) mhMotionHeight.invokeExact(motion);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    public static String motionLastError() {
+        if (mhMotionLastError == null) return "";
+        try {
+            MemorySegment p = addr(mhMotionLastError);
+            if (isNull(p)) return "";
+            return p.reinterpret(512).getString(0);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    public static String motionDescribe(MemorySegment motion) {
+        if (mhMotionDescribe == null || isNull(motion)) return "";
+        try {
+            MemorySegment p = (MemorySegment) mhMotionDescribe.invokeExact(motion);
+            if (isNull(p)) return "";
+            return p.reinterpret(256).getString(0);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    public static boolean motionDepthFormatSupported(MemorySegment device, long depthFormat) {
+        if (mhMotionFormatSupported == null) return false;
+        ffiCalls++;
+        try {
+            return (boolean) mhMotionFormatSupported.invokeExact(device, depthFormat);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Dispatch one frame of motion vectors.
+     *
+     * <p>The two matrix arguments are 16-float segments in column-major order - the layout
+     * {@code Matrix4f.get(float[])} writes and MSL's {@code float4x4} reads - so the caller allocates
+     * them once and rewrites them per frame rather than this side marshalling per call.
+     */
+    public static int motionRun(MemorySegment motion, MemorySegment queue, MemorySegment depth,
+            MemorySegment currentInverseViewProjection, MemorySegment previousViewProjection) {
+        if (mhMotionRun == null) return -1;
+        ffiCalls++;
+        try {
+            return (int) mhMotionRun.invokeExact(motion, queue, depth,
+                    currentInverseViewProjection, previousViewProjection);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
         }
     }
 }

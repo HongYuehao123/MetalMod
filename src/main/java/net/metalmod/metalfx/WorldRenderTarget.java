@@ -61,6 +61,18 @@ public final class WorldRenderTarget {
     /** The format every render target in the engine uses, and what MetalFX is asked to scale. */
     private static final long NATIVE_FORMAT = MetalFormat.mtlPixelFormat(GpuFormat.RGBA8_UNORM);
 
+    /** The level target's depth format, which the temporal scaler is created against. */
+    private static final long DEPTH_FORMAT = MetalFormat.mtlPixelFormat(GpuFormat.D32_FLOAT);
+
+    /**
+     * MTLPixelFormatRG16Float, the format Apple documents for temporal motion vectors.
+     *
+     * <p>Two channels, not four: motion is a 2D quantity and the scaler reads it as a pair. The
+     * format is fixed here rather than taken from the engine's table because the engine has no
+     * motion texture to take it from.
+     */
+    private static final long MOTION_FORMAT = 65L;
+
     // ---------------------------------------------------------------------------------------------
     // State
     // ---------------------------------------------------------------------------------------------
@@ -70,6 +82,28 @@ public final class WorldRenderTarget {
 
     /** The MetalFX effect for the current sizes, created on first use and reused after that. */
     private static volatile MetalFxScaler scaler;
+
+    /**
+     * The temporal effect, when one is running.
+     *
+     * <p>Separate from {@link #scaler} rather than replacing it: a temporal failure falls back to the
+     * spatial effect for that frame, and the spatial effect has to still be there to fall back to.
+     */
+    private static volatile MetalFxTemporalScaler temporalScaler;
+
+    /** Whether the requested upscaler is temporal. Read from the settings at the frame boundary. */
+    private static volatile boolean temporalRequested;
+
+    /** Whether temporal can run here: formats, device, dylib and a usable motion producer. */
+    private static volatile boolean temporalUsable;
+
+    /** Why temporal is not running, when it was asked for. Empty when it is running or not asked. */
+    private static volatile String temporalFallbackReason = "";
+
+    /** Consecutive temporal failures. A persistent one stops the attempt instead of retrying forever. */
+    private static int temporalFailures;
+
+    private static final AtomicLong temporalFrames = new AtomicLong();
 
     private static volatile double appliedScale = DISABLED_SCALE;
 
@@ -315,7 +349,32 @@ public final class WorldRenderTarget {
             System.out.println("[MetalMod] render scaling requested but MetalFX cannot run here ("
                     + (unavailableReason.isEmpty() ? "no usable scaler" : unavailableReason)
                     + "); rendering at native resolution");
+            return;
         }
+        if (usable && temporalRequested && !temporalUsable && !temporalFallbackReason.isEmpty()) {
+            System.out.println("[MetalMod] temporal upscaling requested but unavailable: "
+                    + temporalFallbackReason + "; Spatial will run instead");
+        }
+    }
+
+    /** Whether the frame being rendered is scaled by the temporal scaler. */
+    public static boolean temporalActive() {
+        return scaleThisFrame && temporalRequested && temporalUsable && temporalFailures < MAX_TEMPORAL_FAILURES;
+    }
+
+    /** Whether temporal was asked for this frame, whatever the machine decided. */
+    public static boolean temporalRequested() {
+        return temporalRequested;
+    }
+
+    /** Why temporal is not running when it was asked for. Empty when it is running. */
+    public static String temporalFallbackReason() {
+        return temporalFallbackReason;
+    }
+
+    /** How many frames the temporal scaler has produced. */
+    public static long temporalFrameCount() {
+        return temporalFrames.get();
     }
 
     /** Whether MetalFX can scale at all here, independent of what this frame decided. */
@@ -324,24 +383,69 @@ public final class WorldRenderTarget {
     }
 
     /**
-     * Whether MetalFX can scale for the current configuration.
+     * Whether MetalFX can scale for the current configuration, and which effect it will be.
      *
      * <p>Asked at the frame boundary, before the level's frame graph is built, so a machine that cannot
      * scale renders natively rather than rendering small into a target nothing would present.
+     *
+     * <p><b>Two questions, not one.</b> Scaling at all needs the spatial scaler's formats to be
+     * supported. Running <em>temporally</em> additionally needs the temporal scaler, a depth format the
+     * motion kernel can read, and a dylib that exports the motion producer. When the second group
+     * fails, the frame does not fall back to native rendering - it falls back to Spatial, which is a
+     * supported, working upscaler, and the reason is recorded for F3 and the settings page.
      */
     public static boolean metalFxUsable(MetalDevice device) {
         if (device == null || !RenderScaleSettings.active()) {
+            temporalRequested = false;
+            temporalUsable = false;
             return false;
         }
+        temporalRequested = MetalFx.TEMPORAL.equals(RenderScaleSettings.upscaler());
+
         if (!MetalFxScaler.isSupported(device.deviceHandle(), NATIVE_FORMAT, NATIVE_FORMAT)) {
             if (unavailableReason.isEmpty()) {
                 unavailableReason = MetalFx.unavailableReason();
             }
+            temporalUsable = false;
             return false;
         }
         unavailableReason = "";
+
+        if (!temporalRequested) {
+            temporalUsable = false;
+            temporalFallbackReason = "";
+            return true;
+        }
+        if (temporalFailures >= MAX_TEMPORAL_FAILURES) {
+            temporalUsable = false;
+            temporalFallbackReason = "temporal failed " + temporalFailures
+                    + " times; Spatial is running for this session";
+            return true;
+        }
+        boolean supported = MetalNative.motionAvailable()
+                && MetalNative.fxTemporalAvailable()
+                && MetalNative.fxTemporalSupported(device.deviceHandle(), NATIVE_FORMAT,
+                        DEPTH_FORMAT, MOTION_FORMAT, NATIVE_FORMAT)
+                && SceneMotion.depthFormatSupported(device, DEPTH_FORMAT);
+        temporalUsable = supported;
+        if (!supported) {
+            String reason = MetalFx.unavailableReason();
+            temporalFallbackReason = reason == null || reason.isEmpty()
+                    ? "this machine or dylib cannot run temporal scaling" : reason;
+        } else {
+            temporalFallbackReason = "";
+        }
         return true;
     }
+
+    /**
+     * How many consecutive temporal failures stop the attempt.
+     *
+     * <p>One failure is a frame worth retrying; a run of them is a configuration that will not work,
+     * and retrying it every frame would run the motion dispatch and the scaler for nothing while
+     * still needing the spatial fallback afterwards.
+     */
+    private static final int MAX_TEMPORAL_FAILURES = 3;
 
     /** Why scaling is not running, when it is configured but cannot be. Empty when all is well. */
     public static String unavailableReason() {
@@ -384,6 +488,11 @@ public final class WorldRenderTarget {
         if (existing != null) {
             existing.close();
         }
+        temporalScalerRelease();
+        // The motion resource is sized to the target that is going away, and its history belongs to
+        // the frames that produced it.
+        SceneMotion.close();
+        ProjectionJitter.requestReset();
     }
 
     private static int scaledWidth() {
@@ -488,6 +597,14 @@ public final class WorldRenderTarget {
         if (world == null || main == null) {
             return false;
         }
+        if (!scaleThisFrame) {
+            // The frame decided at its boundary not to scale, so the level drew straight into the
+            // engine's own target. Upscaling the stale level target over it would replace this frame's
+            // world with an older one - the redirect and the upscale have to agree about which frame
+            // they are, which is the whole reason the decision is made once.
+            lastUpscaleError = "this frame rendered at native resolution";
+            return false;
+        }
         MetalDevice device = MetalDevice.active();
         if (device == null) {
             lastUpscaleError = "no active Metal device";
@@ -502,6 +619,116 @@ public final class WorldRenderTarget {
             return false;
         }
 
+        if (temporalActive()) {
+            if (upscaleTemporal(device, world, main)) {
+                return true;
+            }
+            // The temporal path failed, so this frame still has to reach the main target. Spatial is
+            // the supported fallback, and running it keeps the image correct while the failure is
+            // counted - a frame that returned false here would leave the interface drawing over the
+            // previous frame's world.
+            temporalFailures++;
+            System.err.println("[MetalMod] temporal upscale failed (" + temporalFailures + "/"
+                    + MAX_TEMPORAL_FAILURES + "): " + lastUpscaleError + "; using Spatial");
+            temporalScalerRelease();
+            if (temporalFailures >= MAX_TEMPORAL_FAILURES) {
+                temporalFallbackReason = "temporal failed " + temporalFailures
+                        + " times; Spatial is running for this session";
+                lastUpscaleError = temporalFallbackReason;
+            }
+        }
+
+        return upscaleSpatial(device, world, main);
+    }
+
+    /**
+     * The temporal path: motion vectors first, then the scaler.
+     *
+     * <p>Two dispatches, both committed on the device queue after the level's own passes have been
+     * submitted and before the interface draws. The ordering is the queue's, not this side's: the
+     * motion dispatch reads the depth the level wrote, and the scaler reads the motion the dispatch
+     * wrote, so commit order is the whole synchronisation.
+     */
+    private static boolean upscaleTemporal(MetalDevice device, RenderTarget world, RenderTarget main) {
+        // The scaler and the motion kernel are both built for DEPTH_FORMAT, so a target that allocated
+        // something else is refused here rather than read as if it were that format. The format is read
+        // from the target instead of assumed, because the engine owns the allocation.
+        long actualDepth = MetalFormat.mtlPixelFormat(world.getDepthTexture().getFormat());
+        if (actualDepth != DEPTH_FORMAT) {
+            lastUpscaleError = "the level depth is " + world.getDepthTexture().getFormat()
+                    + ", not the " + DEPTH_FORMAT + " the temporal scaler was built for";
+            return false;
+        }
+        if (!SceneMotion.ensureResource(device, world.width, world.height)) {
+            lastUpscaleError = "motion resource: " + SceneMotion.lastFailure();
+            return false;
+        }
+        MemorySegment depth = textureHandle(world.getDepthTextureView());
+        if (depth.address() == 0) {
+            lastUpscaleError = "the level depth view had no Metal texture behind it";
+            return false;
+        }
+        // Builds the matrices and decides whether the history is still valid. It runs every temporal
+        // frame, not only when the scaler is created, because the matrix pair is per frame.
+        SceneMotion.prepare(world.width, world.height);
+        if (SceneMotion.dispatch(device, depth) != 0) {
+            lastUpscaleError = "motion dispatch: " + SceneMotion.lastFailure();
+            return false;
+        }
+        MemorySegment motion = SceneMotion.texture();
+        if (motion.address() == 0) {
+            lastUpscaleError = "the motion texture had no Metal texture behind it";
+            return false;
+        }
+
+        MetalFxTemporalScaler effect = ensureTemporalScaler(device, world, main.width, main.height);
+        if (effect == null) {
+            lastUpscaleError = MetalFx.unavailableReason();
+            return false;
+        }
+        MemorySegment source = textureHandle(world.getColorTextureView());
+        MemorySegment destination = textureHandle(main.getColorTextureView());
+        if (source.address() == 0 || destination.address() == 0) {
+            lastUpscaleError = "a colour view had no Metal texture behind it";
+            return false;
+        }
+
+        // One reset per encode, taken here so it cannot be applied twice or missed: the flag is set by
+        // anything that makes the previous frames unrelated to this one, and it costs exactly one
+        // frame of convergence to honour.
+        boolean reset = ProjectionJitter.consumeReset();
+        MemorySegment commandBuffer = MetalNative.commandBufferCreate(device.queueHandle());
+        if (commandBuffer == null || commandBuffer.address() == 0) {
+            lastUpscaleError = "could not create a command buffer for the temporal scaler";
+            return false;
+        }
+        boolean ok = false;
+        try {
+            ok = effect.encode(commandBuffer, source, depth, motion, destination,
+                    ProjectionJitter.offsetX(), ProjectionJitter.offsetY(), reset);
+            if (!ok) {
+                lastUpscaleError = "MetalFX refused the temporal upscale";
+            }
+        } catch (Throwable t) {
+            lastUpscaleError = String.valueOf(t);
+        } finally {
+            // Committed either way: the buffer is ours and nothing else will release it, and an empty
+            // commit is cheaper than a leaked command buffer.
+            MetalNative.commandBufferCommit(commandBuffer);
+            MetalNative.commandBufferRelease(commandBuffer);
+        }
+        if (!ok) {
+            return false;
+        }
+        lastUpscaleError = "";
+        temporalFailures = 0;
+        scaledFrames.incrementAndGet();
+        temporalFrames.incrementAndGet();
+        return true;
+    }
+
+    /** The spatial path, unchanged from Phase 7A. */
+    private static boolean upscaleSpatial(MetalDevice device, RenderTarget world, RenderTarget main) {
         MetalFxScaler effect = ensureScaler(device, world, main.width, main.height);
         if (effect == null) {
             lastUpscaleError = MetalFx.unavailableReason();
@@ -571,6 +798,47 @@ public final class WorldRenderTarget {
 
     private static MemorySegment textureHandle(GpuTextureView view) {
         return view instanceof MetalTextureView metal ? metal.handle() : MemorySegment.NULL;
+    }
+
+    /**
+     * MetalFX's temporal scaler for the current sizes, created on first use and reused after that.
+     *
+     * <p>The depth format is read from the target rather than assumed: the scaler and the motion
+     * kernel both have to agree with whatever the engine allocated, and a mismatch there is a
+     * validation failure at encode time rather than a wrong picture.
+     */
+    private static MetalFxTemporalScaler ensureTemporalScaler(MetalDevice device, RenderTarget world,
+                                                              int outputWidth, int outputHeight) {
+        MetalFxTemporalScaler existing = temporalScaler;
+        if (existing != null && existing.matches(NATIVE_FORMAT, DEPTH_FORMAT, MOTION_FORMAT,
+                NATIVE_FORMAT, world.width, world.height, outputWidth, outputHeight)) {
+            return existing;
+        }
+        temporalScalerRelease();
+        if (!MetalFxTemporalScaler.isSupported(device.deviceHandle(), NATIVE_FORMAT, DEPTH_FORMAT,
+                MOTION_FORMAT, NATIVE_FORMAT)) {
+            MetalFx.setUnavailableReason("this device cannot scale temporally from "
+                    + world.getColorTexture().getFormat());
+            return null;
+        }
+        MetalFxTemporalScaler created = MetalFxTemporalScaler.create(device.deviceHandle(),
+                NATIVE_FORMAT, DEPTH_FORMAT, MOTION_FORMAT, NATIVE_FORMAT,
+                world.width, world.height, outputWidth, outputHeight,
+                /*depthReversed=*/false);
+        temporalScaler = created;
+        if (created != null) {
+            System.out.println("[MetalMod] MetalFX temporal scaler: " + created.describe()
+                    + " (camera motion only; independently moving geometry is Phase 8C)");
+        }
+        return created;
+    }
+
+    private static void temporalScalerRelease() {
+        MetalFxTemporalScaler existing = temporalScaler;
+        temporalScaler = null;
+        if (existing != null) {
+            existing.close();
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -759,7 +1027,17 @@ public final class WorldRenderTarget {
                     : "native resolution, no scaling";
         }
         return RenderScaleSettings.percentLabel() + " " + world.width + "x" + world.height
-                + " -> native, MetalFX spatial (upscaled " + scaledFrames.get() + ")";
+                + " -> native, MetalFX " + effectName() + " (upscaled " + scaledFrames.get() + ")";
+    }
+
+    /**
+     * Which effect the frame is using: {@code "temporal"} or {@code "spatial"}.
+     *
+     * <p>One name for the diagnostics to share, so the F3 line, the log line and the settings page
+     * cannot describe the same frame differently.
+     */
+    public static String effectName() {
+        return temporalActive() ? "temporal" : "spatial";
     }
 
     /** The scaled world size, or the native size when scaling is off. For the settings page. */
@@ -769,7 +1047,7 @@ public final class WorldRenderTarget {
             return nativeWidth + "x" + nativeHeight + " (native)";
         }
         return world.width + "x" + world.height + " -> " + nativeWidth + "x" + nativeHeight
-                + " MetalFX spatial";
+                + " MetalFX " + effectName();
     }
 
     /**

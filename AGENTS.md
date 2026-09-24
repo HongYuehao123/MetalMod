@@ -22,7 +22,7 @@ Instead of translating Vulkan through MoltenVK, it plugs into Minecraft's Blaze3
 ### Phase Roadmap Status
 - **Phases 0–5 (Foundations to Vanilla Parity): COMPLETE.** Backend selection, resources, pipelines, draw calls, all 87 vanilla pipelines + 9 post-processing passes compile, and visual/performance parity confirmed on Apple Silicon (M4 Pro).
 - **Phase 6 (Dynamic Lighting): COMPLETE.** Light snapshotting, moving sources (held/dropped items, entities, moving blocks), 16-block clustered grid evaluator, and published light-record ABI v1 (`docs/lighting-abi.md`).
-- **Phase 7 (MetalFX & Pacing): 7A DONE (verified offline, awaiting one in-game run); 7B PARTIAL; 7C NOT STARTED.** Native MetalFX spatial and temporal scalers (`native/src/metalmod_metalfx.mm`), render-resolution scaling of the level into its own target, projection jitter and history lifecycle. Temporal is gated off because nothing publishes motion vectors; frame generation needs those plus frame-loop pacing. Per-increment record: `docs/phase7-plan.md`.
+- **Phase 7 (MetalFX & Pacing): 7A DONE (verified offline, awaiting one in-game run); 7B IMPLEMENTED (camera motion producer, live encode, resets; verified offline; moving geometry is the named gap); 7C NOT STARTED.** Native MetalFX spatial and temporal scalers (`native/src/metalmod_metalfx.mm`), render-resolution scaling of the level into its own target, projection jitter and history lifecycle. Temporal is driven by a native camera-reprojection motion kernel (`native/src/metalmod_motion.mm`) plus the `metalfx/SceneMotion` current/previous-transform contract shared with Phase 8C; independently moving geometry is not yet in the motion field, and frame generation needs it plus frame-loop pacing. Per-increment record: `docs/phase7-plan.md`.
 - **Phase 8 (Native Material & Lighting Foundations): PLANNED.** Linear-light/HDR composition, G-buffer layouts, Phase 8B ray visibility occlusion/shadowing.
 - **Phase 9 (Hybrid Ray Tracing): PLANNED.** Metal ray tracing pipeline (`MTLAccelerationStructure`).
 - **Optional (GLSL Shaderpacks): DEFERRED.** Preserved as optional compatibility; not an RT prerequisite.
@@ -62,12 +62,12 @@ Before trusting any code changes or declaring work complete, an agent must verif
 | Gate | Command | Pass Criteria | What It Exercises |
 |---|---|---|---|
 | **1. Mod Build** | `./scripts/build_mod.sh` | `SUCCESS -> build/libs/metalmod-1.0.0.jar` | Native dylib compilation, Java compilation against real client JAR, mod packaging, test compilation. |
-| **2. Native Smoke Test** | `./native/build/metalmod_smoke`<br>*(or `./scripts/run_smoke.sh`)* | `ALL CHECKS PASSED` | Native device, queue, command buffers, textures, views, buffers, pipelines, draws, clear, staging uploads, texel buffers, fences, MetalFX spatial/temporal scalers. |
+| **2. Native Smoke Test** | `./native/build/metalmod_smoke`<br>*(or `./scripts/run_smoke.sh`)* | `ALL CHECKS PASSED` | Native device, queue, command buffers, textures, views, buffers, pipelines, draws, clear, staging uploads, texel buffers, fences, MetalFX spatial/temporal scalers, and the Phase 7B motion-vector kernel. |
 | **3. Shader Inventory** | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics | Compiles all 87 vanilla pipelines and 9 post-processing passes offline through GLSL → SPIR-V → MSL. |
 | **4. Pixel Render Check** | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 pixel assertions) | Offscreen real pipeline execution: GUI, terrain, entities, cutout, lines, mipmaps, scissor conversions, blend modes, lightmap, Phase 6 dynamic lighting paths, Phase 7A MetalFX spatial upscaling. |
 | **5. Standalone Tests** | See runner command below | `ALL TESTS PASSED SUCCESSFULLY!` | Panama FFI bridge loading, UMA allocator routing, format mappings, sub-buffer offsets, Phase 6 cluster grid / ABI byte offsets. |
-| **6. Phase 7A Scaling Check** | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (47 checks) | The scaled level target built from the engine's own `MainTarget`, written through the engine's own `FrameGraphBuilder` as an imported external resource, upscaled to native, resized, released; plus the jitter sequence. |
-| **7. Mixin Target Check** | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (58 checks) | Every mixin's target class, injected method, `@Shadow` member and `@At` descriptor resolved against the real client jar. Catches the quiet failures `defaultRequire: 0` produces. |
+| **6. Phase 7 Scaling Check** | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (63 checks) | The scaled level target built from the engine's own `MainTarget`, written through the engine's own `FrameGraphBuilder` as an imported external resource, upscaled to native, resized, released; the jitter sequence; and the Phase 7B temporal path - the scene contract, the motion field's values and conventions, and the reset lifecycle. |
+| **7. Mixin Target Check** | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (62 checks) | Every mixin's target class, injected method, `@Shadow` member and `@At` descriptor resolved against the real client jar. Catches the quiet failures `defaultRequire: 0` produces. |
 
 #### Running Gate 5 (Standalone Tests):
 ```bash
@@ -144,11 +144,13 @@ MetalMod/
 │   ├── include/metalmod/
 │   │   ├── metalmod_metal.h            # Exported C API for Metal backend (mmm_*)
 │   │   ├── metalmod_metalfx.h          # Exported C API for MetalFX upscaling (mmm_fx_*)
+│   │   ├── metalmod_motion.h           # Exported C API for the temporal motion kernel (mmm_motion_*)
 │   │   ├── metalmod_memory.h           # UMA telemetry & Mach VM memory pressure
 │   │   └── metalmod_types.h            # Shared types and enum definitions
 │   ├── src/
 │   │   ├── metalmod_metal.mm           # Native Metal substrate (device, layer, pipelines, passes, blit)
 │   │   ├── metalmod_metalfx.mm         # Native MetalFX spatial/temporal integration
+│   │   ├── metalmod_motion.mm          # Camera-reprojection motion vectors for the temporal scaler
 │   │   └── metalmod_memory.mm          # UMA memory pool and kernel pressure handler
 │   └── tests/
 │       └── metal_smoke.mm              # Native smoke test suite
@@ -161,7 +163,7 @@ MetalMod/
 │
 ├── tools/
 │   ├── render_check/run.sh             # Gate 4: Offscreen real pipeline pixel verification
-│   ├── scaling_check/run.sh            # Gate 6: Phase 7A scaled target + MetalFX upscale, offscreen
+│   ├── scaling_check/run.sh            # Gate 6: Phase 7 scaled target, MetalFX upscale and temporal path, offscreen
 │   ├── mixin_check/run.sh              # Gate 7: Mixin injection points against the client jar
 │   ├── shader_inventory/run.sh         # Gate 3: Compiles all 87 vanilla pipelines + 9 post passes
 │   └── shader_repro/run.sh             # Offline reproduction/debug of single shader pairs
@@ -212,7 +214,7 @@ Add `-Dmetalmod.dumpMsl=<substring>` to any tool or JVM launch command:
 ```
 
 ### Runtime Configuration & Toggles
-Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the in-game GUI: **Options → MetalMod… → MetalFX Upscaling** (Phase 7A render scale and upscaler, with a live status line) and **Options → MetalMod… → Lighting** (Phase 6).
+Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the in-game GUI: **Options → MetalMod… → MetalFX Upscaling** (Phase 7 render scale and upscaler - spatial, temporal or off - with a live status line) and **Options → MetalMod… → Lighting** (Phase 6).
 *Precedence:* In-Game UI > JVM `-D` flag > `metalmod.properties`.
 
 | Flag / Property | Description | Default |
@@ -223,11 +225,11 @@ Settings can be toggled via `config/metalmod.properties`, JVM `-D` flags, or the
 | `-Dmetalmod.pointLightProof=true` / `enablePointLightProof=true` | Single camera-centred amber test light | `false` |
 | `-Dmetalmod.privateTextures=all` | Forces private storage mode on render targets (measured slower) | `false` |
 | `-Dmetalmod.renderScale=0.5` / `renderScale=0.5` | Fraction of the window the world renders at; 1.0 is off (Phase 7A) | `1.0` |
-| `-Dmetalmod.upscaler=spatial` / `upscaler=spatial` | `spatial`, `off`; `temporal` resolves to spatial until motion vectors exist | `spatial` |
+| `-Dmetalmod.upscaler=spatial` / `upscaler=spatial` | `spatial`, `temporal`, `off`. Temporal needs a motion source and an `RG16Float`-capable device; when it cannot run the backend falls back to Spatial and says why | `spatial` |
 | `upscalingNotice=true` | Announce an upscaling change as an in-world toast | `true` |
 
 ### In-Game Performance Capture & Telemetry
-- **F3 Overlay:** MetalMod section reports selected backend, render resolution, CPU/GPU wait time proxy, active dynamic light count, health counters (`unbound/missingAttr/failed`), the Phase 7 `upscale` line (sizes, `fx`/`blit` counts, failure reason) and the `pacing` line (last interval, p95, steady share, dropped count).
+- **F3 Overlay:** MetalMod section reports selected backend, render resolution, CPU/GPU wait time proxy, active dynamic light count, health counters (`unbound/missingAttr/failed`), the Phase 7 `upscale` line (sizes, effect, frame counts, failure reason), the Phase 7B `motion` line when temporal is running (producer, dispatched frames, resets and their reason) or a `temporal not running` line with the fallback reason, and the `pacing` line (last interval, p95, steady share, dropped count).
 - **F8 Key:** Starts a 60-second performance capture (saves summary and per-frame CSV under `debug/metalmod/`).
 - **F7 Key:** Records or plays back reproducible movement routes for rigorous A/B benchmarking.
 

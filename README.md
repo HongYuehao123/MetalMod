@@ -37,7 +37,7 @@ parked in [bug.md](bug.md).
 > `-Dmetalmod.metalBackend=true`. The backend is chosen once at startup, so **restart** after
 > changing it.
 >
-> ## MetalFX status: spatial upscaling works, temporal and frame generation do not
+> ## MetalFX status: spatial and temporal upscaling are implemented; frame generation is not
 >
 > **Spatial upscaling (7A) is implemented.** The world renders into a target of its own at a chosen
 > fraction of the window and MetalFX returns it to native, while the interface keeps drawing at
@@ -46,12 +46,17 @@ parked in [bug.md](bug.md).
 > render check - but **no in-game session has confirmed it yet**. The six observations that close it
 > are in [docs/phase7-plan.md](docs/phase7-plan.md) §2.4.
 >
-> **Temporal upscaling (7B) is partial**: the scaler, the projection jitter and the history lifecycle
-> exist and are verified, but nothing publishes motion vectors, and a temporal filter without them
-> ghosts camera movement. The path is therefore gated off, and a `Temporal` request resolves to
-> spatial. **Frame generation (7C) is not implemented** - it needs those same motion vectors plus
-> frame-loop pacing. Nothing here is a stub that does nothing: the retired MoltenVK-interop scalers
-> are deleted, and every control on the Upscaling screen configures the path that runs.
+> **Temporal upscaling (7B) is implemented with a camera motion producer.** A native kernel
+> reconstructs each pixel's world position from the level depth and reprojects it through the previous
+> frame's view-projection, so the temporal scaler accumulates a moving camera and static geometry
+> correctly. The current/previous-transform contract (`metalfx/SceneMotion`) is shared with Phase 8C,
+> and history is reset on camera cuts, world changes and resizes. **Geometry that moves independently
+> of the camera still ghosts** - a mob, a particle or an animated block reprojects as if it were
+> static - because its per-object velocity is Phase 8C's contract. When temporal cannot run, the frame
+> falls back to Spatial and says why on F3 and the settings page. **Frame generation (7C) is not
+> implemented** - it needs those same per-object motion vectors plus frame-loop pacing. Nothing here
+> is a stub that does nothing: the retired MoltenVK-interop scalers are deleted, and every control on
+> the Upscaling screen configures the path that runs.
 
 ---
 
@@ -91,7 +96,8 @@ parked in [bug.md](bug.md).
 - **Off by default, and the off path is untouched.** At scale 1.0 nothing is allocated, no scaler is
   created, and the frame is the pre-Phase-7 frame.
 - **Controls**: **Options → MetalMod… → MetalFX Upscaling** (or Mod Menu → MetalMod). The page steps
-  the scale, switches between MetalFX and the plain blit, and reports the live sizes, which path ran,
+  the scale, cycles the upscaler through off / spatial / temporal, and reports the live sizes, which
+  effect actually ran,
   how many frames it has upscaled, and the reason if one failed. It also shows a toast in world when a
   change lands, so the effect is visible without opening F3. The same settings come from
   `renderScale` / `upscaler` in `config/metalmod.properties` or
@@ -160,10 +166,13 @@ These are the reasons the mod is not a drop-in replacement yet.
    heavy underground one. Before that, utility submission batching cut the chunk-mesh upload path's
    cost by 95% per frame, and private storage for render targets measured 9% *slower* and is off by
    default. See [TESTING.md](TESTING.md) for the numbers and the procedure.
-3. **MetalFX temporal upscaling and frame generation are not implemented (Phase 7B/7C).** Both need
-   motion vectors, which Minecraft 26.2 does not publish; frame generation additionally needs a
-   display-link pacer so two drawables land on different refreshes. Spatial upscaling (7A) is
-   implemented; see [docs/phase7-plan.md](docs/phase7-plan.md).
+3. **MetalFX frame generation is not implemented (Phase 7C), and temporal upscaling has no motion for
+   independently moving geometry.** Temporal upscaling (7B) is implemented against a native camera
+   reprojection producer, so a moving camera and static geometry accumulate correctly, but a mob, a
+   particle or an animated block carries the terrain's velocity and ghosts; that per-object velocity
+   is Phase 8C's contract, which frame generation also needs. Frame generation additionally needs a
+   display-link pacer so two drawables land on different refreshes. See
+   [docs/phase7-plan.md](docs/phase7-plan.md).
 4. **Render-resolution scaling is not confirmed in game, and its quality/performance comparison is
    not measured.** It is implemented against the level's own target - which is what keeps the GUI
    intact, the failure that reverted the pre-Phase-5 attempt - and verified offline, but a session
@@ -337,8 +346,11 @@ MetalMod/
   scale in place so the F3 `frame` line is the only thing that changes.
 - **Config screen**: the Metal backend toggle, the UMA memory option, and two live sub-pages —
   **Lighting** and **Upscaling**.
-- **Render scale / upscaler**: `-Dmetalmod.renderScale=0.5` and `-Dmetalmod.upscaler=spatial|off`, or
-  the Upscaling page, or `renderScale` / `upscaler` in `config/metalmod.properties`. The scale is the
-  fraction of the window the world renders at (100%, 85%, 75%, 67%, 50%); the upscaler is MetalFX
-  spatial or the backend's own blit. `temporal` is accepted but resolves to spatial, because motion
-  vectors are not published yet.
+- **Render scale / upscaler**: `-Dmetalmod.renderScale=0.5` and
+  `-Dmetalmod.upscaler=spatial|temporal|off`, or the Upscaling page, or `renderScale` / `upscaler` in
+  `config/metalmod.properties`. The scale is the fraction of the window the world renders at (100%,
+  85%, 75%, 67%, 50%); the upscaler is MetalFX spatial, MetalFX temporal, or off (which renders at
+  native resolution). Temporal produces its motion vectors with a camera reprojection pass, so it
+  resolves detail across frames for a moving camera and static geometry; independently moving
+  geometry is not in the field yet. If the machine or the dylib cannot run the requested effect, the
+  frame falls back to Spatial and F3 and the settings page state the reason.

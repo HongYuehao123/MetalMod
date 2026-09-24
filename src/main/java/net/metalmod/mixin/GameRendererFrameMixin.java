@@ -16,9 +16,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p><b>Jitter.</b> The offset has to be in force while the level's projection is <em>built</em>,
  * which happens during extraction - earlier than the frame's render call, and earlier than the Phase
  * 7A hooks. This pair on {@code GameRenderer.extract} is therefore the frame's own boundary as far as
- * jitter is concerned. Gated on {@link RenderScaleSettings#temporalEnabled()}, which is false for every
- * mode the backend can currently run: a temporal scaler needs motion information the level does not
- * publish yet, so a jittered projection would cost a sub-pixel offset every frame and buy nothing.
+ * jitter is concerned. Gated on {@link RenderScaleSettings#temporalEnabled()}, which is true only when
+ * a temporal scaler is actually going to run this frame: a jittered projection that nothing
+ * accumulates is a sub-pixel offset every frame and nothing in return.
  *
  * <p><b>Whether a level is drawn.</b> The colour clear at the top of {@code render} is split between
  * the level's target and the engine's own, and it happens <em>before</em> the engine decides whether to
@@ -31,6 +31,10 @@ public class GameRendererFrameMixin {
 
     @Inject(method = "extract", at = @At("HEAD"))
     private void metalmod$beginFrame(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
+        // Nothing about the camera has been captured for this frame yet. A frame that draws no level
+        // must not reuse the previous frame's camera as if it were current - that would publish
+        // motion for a frame that never rendered one.
+        net.metalmod.metalfx.SceneMotion.beginFrame();
         // The frame boundary for the level's target: anything the settings screen or a window resize
         // asked for is built here, and the target it replaced is retired rather than destroyed,
         // because the previous frame's command buffers may still be reading it. Doing this inside a
@@ -48,9 +52,11 @@ public class GameRendererFrameMixin {
                 System.out.println("[MetalMod] render target changed: compiled pipelines invalidated");
             }
         }
-        // Scaling only runs where MetalFX can actually do it. Asked here, before the frame graph is
-        // built, so a machine without a usable scaler renders natively instead of rendering small into
-        // a target nothing would present.
+        // Scaling only runs where MetalFX can actually do it - and which effect can run depends on
+        // what was asked for, because a temporal scaler additionally needs a motion source this
+        // machine and this dylib can produce. Asked here, before the frame graph is built, so a
+        // machine without a usable scaler renders natively instead of rendering small into a target
+        // nothing would present, and a machine without motion falls back to Spatial.
         net.metalmod.metalfx.WorldRenderTarget.setScalingAvailable(
                 net.metalmod.metalfx.WorldRenderTarget.metalFxUsable(
                         net.metalmod.backend.MetalDevice.active()));
@@ -60,8 +66,13 @@ public class GameRendererFrameMixin {
         net.metalmod.metalfx.WorldRenderTarget.decideScalingForFrame();
         net.metalmod.metalfx.WorldRenderTarget.beginFrame(
                 renderLevel && willDrawLevel());
-        if (RenderScaleSettings.temporalEnabled() && renderLevel
-                && net.metalmod.metalfx.WorldRenderTarget.renderingLevel()) {
+        // The jitter has to be in force while the level's projection is *built*, which happens during
+        // extraction - earlier than the frame's render call and earlier than any Phase 7A hook. This
+        // is therefore the frame's own boundary as far as jitter is concerned. Gated on the effect
+        // actually running: a jittered projection with no temporal accumulation to justify it is a
+        // sub-pixel offset every frame and nothing in return.
+        if (RenderScaleSettings.temporalEnabled()
+                && net.metalmod.metalfx.WorldRenderTarget.frameHasLevel()) {
             ProjectionJitter.beginFrame();
         }
     }

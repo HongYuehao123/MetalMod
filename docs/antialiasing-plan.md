@@ -24,18 +24,19 @@ MetalFX Temporal combines temporal antialiasing and upscaling. Jittered samples 
 frames can improve edge quality, detail and stability. It replaces Spatial in this mode; a separate
 FXAA/SMAA stage is not a prerequisite and should not be stacked ahead of it by default.
 
-The native temporal scaler and projection-jitter helpers exist, but the live world path still
-calls Spatial and `temporalEnabled()` remains false. This is substantial integration work,
-not merely enabling a flag or supplying one otherwise finished input.
+The native temporal scaler and projection-jitter helpers exist, and the live world path now runs
+temporal end to end: a camera motion producer, the current/previous-transform contract, the encode
+and the reset lifecycle are in `metalfx/SceneMotion`, `metalfx/WorldRenderTarget` and
+`native/src/metalmod_motion.mm`. What remains is **per-object motion** and an in-game evaluation.
 
-| Piece | Remaining work |
+| Piece | State |
 |---|---|
-| Camera motion | Reconstruct motion from depth and current/previous camera transforms; validate coordinate conventions, direction, units and jitter handling. |
-| Moving geometry | Publish previous transforms and the previous animated/deformed positions needed for entities, particles and moving geometry. A camera-only pass is a static-scene prototype, not a complete solution. |
-| Live temporal path | Allocate compatible depth/motion/output resources and wire scaler ownership, command ordering, per-frame inputs and fallback into world rendering. |
-| Jitter and history | Connect the existing helpers to actual temporal encoding and reset on resize, world/dimension changes and camera cuts; verify the reset reaches the scaler. |
-| Transparency | Validate water, particles, cutouts and other changing surfaces. A reactive mask is optional; using it requires producing and binding a real mask, not only enabling its descriptor option. |
-| Acceptance | Compare native, Spatial and Temporal at matching scenes and scales, stationary and moving. Check ghosting, disocclusion, shimmer, detail, HUD sharpness and frame cost. |
+| Camera motion | **Done.** Depth is reprojected through the previous frame's view-projection; the conventions (camera-relative space, Metal's zero-to-one depth, unjittered matrices, pixel-space vectors) are each verified offline in the native smoke test and `tools/scaling_check` |
+| Moving geometry | **Remaining work.** Publish previous transforms and the previous animated/deformed positions needed for entities, particles and moving geometry. A camera-only field covers the camera and static geometry, not a complete solution; this is Phase 8C's contract |
+| Live temporal path | **Done.** Compatible depth/motion/output resources, scaler ownership, command ordering and fallback are wired into world rendering |
+| Jitter and history | **Done.** The helpers reach a real encode; resets fire on resize, world/dimension changes and camera cuts, and the scaling check asserts the flag is delivered exactly once |
+| Transparency | **Remaining work.** Water, particles and cutouts have not been looked at under accumulation. A reactive mask is optional; using it requires producing and binding a real mask, not only enabling its descriptor option - and no producer exists, so the option stays off |
+| Acceptance | **Remaining work.** Compare native, Spatial and Temporal at matching scenes and scales, stationary and moving. Check ghosting, disocclusion, shimmer, detail, HUD sharpness and frame cost. [TESTING.md](../TESTING.md) §6.D is the procedure |
 
 Bring forward the current/previous-frame scene contract shared with Phase 8C. Completing all of
 Phase 8 is not a prerequisite. Reuse the contract for later RT work, without assuming Temporal

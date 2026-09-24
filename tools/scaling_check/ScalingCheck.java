@@ -14,10 +14,15 @@ import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
 import net.metalmod.backend.MetalBuffer;
 import net.metalmod.backend.MetalDevice;
+import net.metalmod.backend.MetalNative;
 import net.metalmod.metalfx.MetalFx;
 import net.metalmod.metalfx.ProjectionJitter;
 import net.metalmod.metalfx.RenderScaleSettings;
+import net.metalmod.metalfx.SceneMotion;
 import net.metalmod.metalfx.WorldRenderTarget;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
 import org.joml.Vector4f;
 
 import java.nio.ByteBuffer;
@@ -87,6 +92,7 @@ public final class ScalingCheck {
             qualityCheck(device);
             disabledPathCheck();
             scaledPathCheck(device);
+            temporalCheck(device);
         } finally {
             WorldRenderTarget.close();
             device.close();
@@ -152,13 +158,16 @@ public final class ScalingCheck {
      */
     private static void jitterCheck() {
         section("projection jitter (7B)");
-        check("temporal is gated off while there is no motion source",
+        check("temporal is off while the upscaler is spatial",
                 !RenderScaleSettings.temporalEnabled(), "");
-        check("a temporal request resolves to spatial", MetalFx.SPATIAL.equals(
-                resolveUpscaler("temporal")), "");
+        // The request is preserved rather than rewritten. Whether it can run is a capability question
+        // the frame boundary answers; rewriting it here is what made the setting unobservable.
+        check("a temporal request is preserved for the capability check",
+                MetalFx.TEMPORAL.equals(resolveUpscaler("temporal")), "");
 
         ProjectionJitter.clear();
         check("jitter is inactive before a frame begins", !ProjectionJitter.active(), "");
+        check("and reports that no offset was applied", !ProjectionJitter.appliedThisFrame(), "");
 
         // One full cycle.
         float sumX = 0.0f;
@@ -186,6 +195,8 @@ public final class ScalingCheck {
         // The clip-space conversion is what the projection actually receives, and it is the one place
         // a rounding difference between the renderer and the scaler could appear.
         ProjectionJitter.beginFrame();
+        check("a begun frame reports that the projection carries the offset",
+                ProjectionJitter.appliedThisFrame(), "");
         float offsetPx = ProjectionJitter.offsetX();
         float clip = ProjectionJitter.clipX(1600);
         check("the clip-space offset moves the image by exactly that many pixels",
@@ -347,6 +358,241 @@ public final class ScalingCheck {
                 WorldRenderTarget.worldTarget() == null, "");
         check("and the redirect goes back to the engine's own target",
                 WorldRenderTarget.worldTargetIfRenderingLevel() == null, "");
+    }
+
+    /**
+     * Phase 7B end to end, offscreen: the scene contract, the motion dispatch and the temporal scaler.
+     *
+     * <p>The native smoke test proves the kernel in isolation. This proves the integration the game
+     * actually runs - the matrices the mixins would capture, the resource the frame boundary would
+     * create, the queue order the upscale depends on, and the reset lifecycle - by driving
+     * {@link WorldRenderTarget} and {@link SceneMotion} exactly as the frame hooks do.
+     *
+     * <p>The assertions are chosen so a plausible wrong implementation fails them: an unjittered
+     * camera pair must give zero motion (so a transpose, a sign flip or a stray translation shows up),
+     * a moved camera must give non-zero motion with the right sign, and two frames rendered with
+     * <em>different</em> jitter but a still camera must still give zero motion - which is only true if
+     * the jitter is removed before the matrices are built.
+     */
+    private static void temporalCheck(MetalDevice device) throws Exception {
+        section("temporal path (7B)");
+
+        // The previous section turned scaling off; the upscaler is set to temporal by a session choice,
+        // which is the strongest form (it outranks the launch flag the harness seeded).
+        RenderScaleSettings.chooseRenderScale(0.5);
+        RenderScaleSettings.chooseUpscaler(MetalFx.TEMPORAL);
+        WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
+        WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
+        WorldRenderTarget.applyPending();
+        WorldRenderTarget.decideScalingForFrame();
+        WorldRenderTarget.beginFrame(true);
+
+        var world = WorldRenderTarget.worldTarget();
+        check("a level target exists for the temporal path", world != null, "");
+        if (world == null) {
+            return;
+        }
+        check("the frame runs temporally", WorldRenderTarget.temporalActive(),
+                WorldRenderTarget.temporalFallbackReason());
+        if (!WorldRenderTarget.temporalActive()) {
+            // A machine that cannot run it still has to fall back rather than fail, and the reason has
+            // to be stated. Report it as the observation it is rather than as a failure.
+            System.out.println("       temporal unavailable here: "
+                    + WorldRenderTarget.temporalFallbackReason());
+            RenderScaleSettings.clearSessionChoices();
+            return;
+        }
+        check("the motion resource is sized to the render resolution",
+                SceneMotion.ensureResource(device, world.width, world.height)
+                        && SceneMotion.width() == world.width
+                        && SceneMotion.height() == world.height,
+                SceneMotion.width() + "x" + SceneMotion.height());
+
+        MainTarget main = new MainTarget(NATIVE_WIDTH, NATIVE_HEIGHT);
+        int width = world.width;
+        int height = world.height;
+
+        CameraRenderState camera = new CameraRenderState();
+        camera.viewRotationMatrix = new Matrix4f();
+        camera.pos = new Vec3(0.0, 0.0, 0.0);
+        Matrix4f projection = new Matrix4f().setPerspective(
+                (float) Math.toRadians(70.0), (float) width / (float) height,
+                0.05f, 1000.0f, /*zZeroToOne=*/true);
+
+        // Frame 1: no previous camera, so the producer has nothing to reproject against and must say
+        // so with zero motion and a reset rather than with a guess.
+        temporalFrame(device, world, main, camera, projection, 0.0, 0.0, 0.0);
+        check("the temporal scaler produced a frame",
+                WorldRenderTarget.temporalFrameCount() > 0,
+                WorldRenderTarget.lastUpscaleError());
+        // The effect actually ran and the native target actually holds the frame. MetalFX's header
+        // says the output texture should have private storage and this one is shared - which the
+        // spatial path has always done - so the result is checked rather than the requirement assumed
+        // to be advisory.
+        check("the temporal upscale put the world into the native target",
+                uniform(device, main, 20, 160, 200, 8), "");
+        check("the first frame resets history instead of inventing motion",
+                nearZero(motionField(device, width, height)),
+                "worst |motion| = " + worstMotion(device, width, height));
+
+        // Frame 2: the same camera again. Reconstruction and reprojection must cancel exactly, which
+        // is the round trip that catches an inverse that does not match its forward matrix.
+        temporalFrame(device, world, main, camera, projection, 0.0, 0.0, 0.0);
+        check("a still camera produces no motion at all", nearZero(motionField(device, width, height)),
+                "worst |motion| = " + worstMotion(device, width, height));
+
+        // Frame 3: the camera moves one block on both horizontal axes, with a depth plane between the
+        // near and far planes. The whole field is uniform, non-zero and signed by the convention.
+        temporalFrame(device, world, main, camera, projection, 1.0, 0.0, 0.0);
+        float[] moved = motionField(device, width, height);
+        check("a moving camera produces motion", moved != null && worstOf(moved) > 0.01f,
+                "worst |motion| = " + (moved == null ? "unreadable" : worstOf(moved)));
+        if (moved != null) {
+            float firstX = moved[0];
+            float firstY = moved[1];
+            boolean uniformField = true;
+            for (int i = 0; i < moved.length; i += 2) {
+                if (Math.abs(moved[i] - firstX) > 0.05f || Math.abs(moved[i + 1] - firstY) > 0.05f) {
+                    uniformField = false;
+                    break;
+                }
+            }
+            check("the field is uniform on a flat depth plane", uniformField, "");
+            // A camera that moved right makes the world appear to move left, so the previous image
+            // position is to the right of the current one and the x vector is positive.
+            check("the sign is the one MetalFX documents (previous minus current)",
+                    firstX > 0.0f && Math.abs(firstY) < 0.05f,
+                    "(" + firstX + ", " + firstY + ")");
+        }
+
+        // Frame 4: the camera is still, but the two frames are rendered with different jitter because
+        // the phase advanced. Zero motion here is only possible if the jitter was taken back out.
+        temporalFrame(device, world, main, camera, projection, 1.0, 0.0, 0.0);
+        temporalFrame(device, world, main, camera, projection, 1.0, 0.0, 0.0);
+        check("jitter does not leak into the motion field",
+                nearZero(motionField(device, width, height)),
+                "worst |motion| = " + worstMotion(device, width, height));
+
+        // The reset lifecycle, driven directly so the flag can be observed between frames. A camera cut
+        // has to invalidate history even though nothing else changed; missing it blends two unrelated
+        // scenes for as long as the filter's history lasts.
+        SceneMotion.clearHistory();
+        ProjectionJitter.consumeReset();
+        temporalCutPrepare(world, camera, projection, 0.0, 0.0, 0.0);
+        check("the first frame with a complete camera pair requests a reset",
+                ProjectionJitter.resetPending(), "");
+        ProjectionJitter.consumeReset();
+        temporalCutPrepare(world, camera, projection, 0.0, 0.0, 0.0);
+        check("a continuous camera does not reset", !ProjectionJitter.resetPending(), "");
+        temporalCutPrepare(world, camera, projection, 40.0, 0.0, 0.0);
+        check("a camera cut requests a reset", ProjectionJitter.resetPending(), "");
+        ProjectionJitter.consumeReset();
+
+        // Resizing has to replace the motion resource and the scaler rather than reuse either.
+        long temporalFramesBefore = WorldRenderTarget.temporalFrameCount();
+        WorldRenderTarget.refresh(NATIVE_WIDTH + 100, NATIVE_HEIGHT + 100);
+        WorldRenderTarget.applyPending();
+        WorldRenderTarget.refresh(NATIVE_WIDTH + 100, NATIVE_HEIGHT + 100);
+        WorldRenderTarget.decideScalingForFrame();
+        WorldRenderTarget.beginFrame(true);
+        if (WorldRenderTarget.temporalActive() && WorldRenderTarget.worldTarget() != null) {
+            MainTarget resized = new MainTarget(NATIVE_WIDTH + 100, NATIVE_HEIGHT + 100);
+            temporalFrame(device, WorldRenderTarget.worldTarget(), resized, camera, projection,
+                    40.0, 0.0, 0.0);
+            check("temporal still runs after a resize",
+                    WorldRenderTarget.temporalFrameCount() > temporalFramesBefore,
+                    WorldRenderTarget.lastUpscaleError());
+        } else {
+            check("temporal still runs after a resize", false,
+                    WorldRenderTarget.temporalFallbackReason());
+        }
+
+        SceneMotion.close();
+        RenderScaleSettings.clearSessionChoices();
+    }
+
+    /** One frame exactly as the mixins and the upscale hook would drive it. */
+    private static void temporalFrame(MetalDevice device,
+                                      com.mojang.blaze3d.pipeline.RenderTarget world,
+                                      MainTarget main, CameraRenderState camera, Matrix4f projection,
+                                      double x, double y, double z) {
+        temporalCapture(world, camera, projection, x, y, z);
+        // A known colour and a known depth plane. The depth value matters: at the far plane the
+        // producer is defined to emit zero, which would make a "moving camera produces motion" check
+        // pass for the wrong reason. The colour is what proves the scaler's output reached the native
+        // target rather than only that it returned success.
+        clearTo(device, world, 20, 160, 200);
+        MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
+                ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true, 0.5);
+        MetalNative.queueSynchronize(device.queueHandle());
+        // The upscale hook builds the matrices as part of encoding, exactly as it does in game - which
+        // is also why the harness must not prepare them itself: a second prepare in one frame would
+        // make the previous camera this frame's camera and every motion vector zero.
+        WorldRenderTarget.upscale(main);
+        ProjectionJitter.endFrame();
+    }
+
+    /** Capture the frame's camera pair, as the extraction and level-render hooks would. */
+    private static void temporalCapture(com.mojang.blaze3d.pipeline.RenderTarget world,
+                                        CameraRenderState camera, Matrix4f projection,
+                                        double x, double y, double z) {
+        // The phase advances at the frame boundary, exactly as the extract hook does it, and the
+        // projection the engine hands the device carries the offset the camera mixin added.
+        ProjectionJitter.beginFrame();
+        camera.pos = new Vec3(x, y, z);
+        Matrix4f rendered = new Matrix4f(projection).translate(
+                ProjectionJitter.clipX(world.width), ProjectionJitter.clipY(world.height), 0.0f);
+        SceneMotion.captureProjection(rendered);
+        SceneMotion.captureCamera(camera);
+    }
+
+    /** Capture a frame and build the matrices without encoding, so the reset flag is observable. */
+    private static void temporalCutPrepare(com.mojang.blaze3d.pipeline.RenderTarget world,
+                                           CameraRenderState camera, Matrix4f projection,
+                                           double x, double y, double z) {
+        temporalCapture(world, camera, projection, x, y, z);
+        SceneMotion.prepare(world.width, world.height);
+    }
+
+    /** The motion texture read back as floats, decoded from RG16Float. Null when it cannot be read. */
+    private static float[] motionField(MetalDevice device, int width, int height) {
+        MetalNative.queueSynchronize(device.queueHandle());
+        var texture = net.metalmod.metalfx.SceneMotion.texture();
+        if (texture == null || texture.address() == 0) {
+            return null;
+        }
+        try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+            long rowBytes = (long) width * 4;   // two half floats per pixel
+            java.lang.foreign.MemorySegment out = arena.allocate(rowBytes * height);
+            int status = MetalNative.textureReadRegion(texture, 0, 0, 0, 0, width, height, out,
+                    out.byteSize(), rowBytes);
+            if (status != 0) {
+                return null;
+            }
+            float[] values = new float[width * height * 2];
+            for (int i = 0; i < values.length; i++) {
+                short half = out.get(java.lang.foreign.ValueLayout.JAVA_SHORT, (long) i * 2);
+                values[i] = Float.float16ToFloat(half);
+            }
+            return values;
+        }
+    }
+
+    private static boolean nearZero(float[] field) {
+        return field != null && worstOf(field) < 1e-4f;
+    }
+
+    private static float worstOf(float[] field) {
+        float worst = 0.0f;
+        for (float value : field) {
+            worst = Math.max(worst, Math.abs(value));
+        }
+        return worst;
+    }
+
+    private static String worstMotion(MetalDevice device, int width, int height) {
+        float[] field = motionField(device, width, height);
+        return field == null ? "unreadable" : String.valueOf(worstOf(field));
     }
 
     /**

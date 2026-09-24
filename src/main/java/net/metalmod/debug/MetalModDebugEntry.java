@@ -94,6 +94,27 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                 }
             }
             displayer.addLine(scale.toString());
+            // Phase 7B. The temporal path has three inputs a spatial one does not, and each of them
+            // fails quietly: motion vectors that are not produced, a history that is never reset and a
+            // fallback that silently picked Spatial all look like "temporal is on" from the settings
+            // alone. This line is where the difference is stated.
+            if (net.metalmod.metalfx.WorldRenderTarget.temporalActive()) {
+                displayer.addLine("§6[MetalMod]§r motion §b"
+                        + net.metalmod.metalfx.SceneMotion.summary()
+                        + "§r | temporal frames §b"
+                        + net.metalmod.metalfx.WorldRenderTarget.temporalFrameCount()
+                        + "§r reset §b"
+                        + net.metalmod.metalfx.SceneMotion.resetCount()
+                        + (net.metalmod.metalfx.SceneMotion.resetCount() > 0
+                                && !net.metalmod.metalfx.SceneMotion.lastResetReason().isEmpty()
+                                        ? "§7 (" + net.metalmod.metalfx.SceneMotion.lastResetReason()
+                                                + ")" : ""));
+            } else if (net.metalmod.metalfx.WorldRenderTarget.temporalRequested()
+                    && !net.metalmod.metalfx.WorldRenderTarget.temporalFallbackReason().isEmpty()) {
+                displayer.addLine("§6[MetalMod]§r temporal §cnot running§r §7"
+                        + net.metalmod.metalfx.WorldRenderTarget.temporalFallbackReason()
+                        + " - Spatial is running§r");
+            }
         } else if (metalActive && net.metalmod.metalfx.RenderScaleSettings.active()
                 && !net.metalmod.metalfx.WorldRenderTarget.scalingAvailable()) {
             // Configured but not running: the world is at native resolution and the frame is the

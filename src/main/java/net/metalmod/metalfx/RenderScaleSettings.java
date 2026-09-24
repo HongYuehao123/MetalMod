@@ -99,26 +99,23 @@ public final class RenderScaleSettings {
     /**
      * Whether a temporal effect is actually running, which is what gates projection jitter.
      *
-     * <p>False for every mode the backend can currently run. A temporal scaler reconstructs from
-     * <em>motion</em> - where each pixel was last frame - and the level does not publish that yet, so
-     * temporal upscaling falls back to spatial rather than being fed vectors it does not have. The
-     * native scaler and its history lifecycle exist and are exercised; the producer is the missing
-     * half, and the roadmap's integration contract names it.
-     *
-     * <p>Deliberately one predicate rather than a second setting: jitter and the temporal scaler must
-     * agree about whether the frame is temporal, and two flags that can disagree is how a jittered
-     * projection ends up with no accumulation to justify it.
+     * <p>One predicate rather than a second setting: jitter and the temporal scaler must agree about
+     * whether the frame is temporal, and two flags that can disagree is how a jittered projection ends
+     * up with no accumulation to justify it. The answer comes from the renderer, because whether
+     * temporal can run depends on the device, the depth format and the motion producer - not on what
+     * was asked for.
      */
     public static boolean temporalEnabled() {
-        return false;
+        return WorldRenderTarget.temporalActive();
     }
 
     /**
      * The requested upscaler: {@code "spatial"}, {@code "temporal"} or {@code "off"}.
      *
-     * <p>This is a request, not a promise - {@link MetalFx#available()} and the capability queries
-     * decide what the machine will actually run, and the backend reports the difference. Temporal is
-     * currently resolved to spatial for the reason {@link #temporalEnabled()} gives.
+     * <p>This is a request, not a promise. The capability queries and the frame boundary decide what
+     * the machine will actually run, and {@link WorldRenderTarget#effectName()} reports that; a
+     * request that cannot be honoured falls back to Spatial rather than to no scaling at all, with
+     * the reason on F3 and the settings page.
      */
     public static String upscaler() {
         String resolved = sessionUpscaler;
@@ -130,10 +127,8 @@ public final class RenderScaleSettings {
         }
         if (resolved == null) return MetalFx.SPATIAL;
         resolved = resolved.trim().toLowerCase(java.util.Locale.ROOT);
-        if (resolved.equals(MetalFx.TEMPORAL)) {
-            return MetalFx.SPATIAL;
-        }
-        if (resolved.equals(MetalFx.SPATIAL) || resolved.equals(MetalFx.OFF)) {
+        if (resolved.equals(MetalFx.TEMPORAL) || resolved.equals(MetalFx.SPATIAL)
+                || resolved.equals(MetalFx.OFF)) {
             return resolved;
         }
         System.err.println("[MetalMod] unknown upscaler '" + resolved + "'; using "

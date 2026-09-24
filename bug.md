@@ -8,6 +8,103 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-032 — MetalFX is handed a shared-storage output texture, which it documents as private
+
+**Status:** **OPEN, accepted.** The upscaled pixels are verified correct offscreen; the requirement is
+recorded rather than quietly ignored.
+**Severity:** latent. Nothing observed in a frame, but the API contract is not met.
+
+### Symptom
+
+None on screen. With Metal API validation enabled (`MTL_DEBUG_LAYER=1 ./native/build/metalmod_smoke`)
+the process aborts inside MetalFX:
+
+```
+MetalFXSpatialScalingEffectV1.mm:306: failed assertion `outputTexture must have private storage mode'
+```
+
+### Cause
+
+`MTLFXTemporalScalerBase.outputTexture` is documented as "you are responsible for providing a texture
+with a private `storageMode`", and the spatial effect asserts the same thing. MetalMod creates every
+`MTLTexture` with `MTLStorageModeShared`, which was measured 9% faster than private storage for its
+render targets (see `MetalTexture`), and both the spatial and the temporal upscale write straight into
+the engine's shared main target.
+
+### What is verified
+
+The requirement is not enforced in release builds, and `tools/scaling_check` now asserts the
+*outcome* rather than assuming the shortcut is harmless: with a shared output the temporal upscale
+puts a known flat colour into the native target within a tolerance of 8, and the spatial path passes
+its own pixel checks. So the shortcut works on this OS and this hardware.
+
+### Next step
+
+If a future OS starts enforcing it, the fix is a private intermediate colour target that the scaler
+writes and a blit into the engine's target - one full-resolution copy per frame. That is the cost
+being avoided; it has not been paid because the shortcut currently produces the right pixels.
+
+---
+
+## BUG-031 — The upscale could overwrite a frame that had decided not to scale
+
+**Status:** **FIXED**, offline.
+**Severity:** visible in the exact case it fires - the world would show an older frame.
+
+### Symptom
+
+None observed in game; found by reading the invariant against the code. When a frame's boundary
+decision is "do not scale this frame" - a window resize in flight, or MetalFX becoming unusable while
+a level target still exists - the level draws straight into the engine's own target. `upscale` was
+called unconditionally at the end of `LevelRenderer.render` and only checked that a level target
+existed, so it would take the *stale* small target and write it over the frame that had just been
+rendered natively. The screen would hold the previous frame's world, with this frame's interface
+drawn on top.
+
+### Cause
+
+`WorldRenderTarget.upscale` did not consult `scaleThisFrame`, the flag the frame boundary sets to
+record the one decision the class comment says a frame may make.
+
+### Fix
+
+`upscale` returns without touching the target unless `scaleThisFrame` is set, and records
+"this frame rendered at native resolution" as the reason. The redirect and the upscale now agree
+about which frame they are, which is what the once-per-frame decision exists for.
+
+---
+
+## BUG-030 — Projection jitter was expressed in window pixels, not render pixels
+
+**Status:** **FIXED**, offline.
+**Severity:** degraded the temporal path this phase delivers; invisible while temporal was gated off.
+
+### Symptom
+
+At a render scale below 100%, the projection was offset by a clip-space translation derived from the
+*window's* width and height, while the level renders into a target that is a fraction of that size.
+A clip translation of `2j/W_window` moves an image `W_render` pixels wide by `j * scale` pixels, not
+by `j`. The temporal scaler is told its offset in *input*-texture pixels, so it would have been
+reprojecting a frame that had been jittered by a different amount than it was told - the accumulated
+image soft or vibrating rather than sharper - and the offset sequence would no longer have averaged
+to zero in the unit the scaler works in.
+
+### Cause
+
+`CameraJitterMixin` converted the offset against `Projection.width()` / `height()`, which the engine
+sets up from `Window.getWidth()` / `getHeight()` (the framebuffer size). The render target is
+`round(native * scale)` and the level's viewport is that target, so the conversion had to use it.
+
+### Fix
+
+The clip-space offset is now derived from `RenderScaleSettings.scaledSize(...)`, which is the same
+function that sizes the level target, so the projection and the scaler cannot disagree about what one
+input pixel is. `tools/scaling_check` covers the whole chain: two frames rendered with *different*
+jitter phases and a still camera must produce exactly zero motion, which is only true if the offset is
+removed before the reprojection matrices are built.
+
+---
+
 ## BUG-029 — The sky is brighter and less saturated at a render scale below 100%
 
 **Status:** **FIX ATTEMPTED, awaiting in-game confirmation.** A resource reload after the scale change is
