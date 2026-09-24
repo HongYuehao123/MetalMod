@@ -69,11 +69,52 @@ MMM_MOTION_API const char* mmm_motion_last_error(void);
 /// a top-left fragment coordinate system. An object that moved down and right in the image therefore
 /// carries a negative vector, which is what the scaler expects.
 ///
+/// Any stamps set with mmm_motion_set_stamps() are drawn over the result in the same command buffer,
+/// after the dispatch, so they replace the depth-derived motion where they cover.
+///
 /// Returns 0 on success. The dispatch is committed on its own command buffer, so it lands behind the
 /// passes that wrote the depth in commit order without this side reaching into the engine's encoder.
 MMM_MOTION_API int mmm_motion_run(void* motion, void* queue, void* depthTexture,
                                   const float* currentInverseViewProjection,
                                   const float* previousViewProjection);
+
+/// One screen-space motion stamp: geometry whose motion the depth buffer cannot describe.
+///
+/// The depth reprojection is exact for anything that was where it is now relative to the camera. An
+/// entity, a particle or a pushed block is not: its depth says nothing about where it was, because
+/// the depth buffer holds only the current frame. For those, the caller knows the object's previous
+/// position, so it supplies the answer directly - the screen-space rectangle the object covers, the
+/// pixel motion of its centre, and the clip-depth range it occupies so the stamp cannot overwrite the
+/// motion of terrain in front of it or behind it.
+///
+/// `boxMin`/`boxMax` are in input-texture pixels with the top-left origin Metal's motion convention
+/// uses; `motion` is previous-minus-current in the same pixels; `depthMin`/`depthMax` are clip-space
+/// depth values as stored in the depth buffer, and a pixel is only stamped when the depth read there
+/// falls inside that range.
+typedef struct {
+    float boxMinX;
+    float boxMinY;
+    float boxMaxX;
+    float boxMaxY;
+    float motionX;
+    float motionY;
+    float depthMin;
+    float depthMax;
+} MMMMotionStamp;
+
+/// Replace the stamps used by the next mmm_motion_run().
+///
+/// Copies at most mmm_motion_stamp_capacity() stamps; a larger count is clamped and reported through
+/// the return value, because dropping the far end of the sorted list is a bounded quality loss while
+/// writing past the buffer is not. Returns the number of stamps actually stored, or a negative value
+/// on failure.
+MMM_MOTION_API int mmm_motion_set_stamps(void* motion, const MMMMotionStamp* stamps, int32_t count);
+
+/// How many stamps one run can carry.
+MMM_MOTION_API int32_t mmm_motion_stamp_capacity(void* motion);
+
+/// How many stamps the last run drew, and how many were dropped for want of room. For diagnostics.
+MMM_MOTION_API void mmm_motion_stamp_stats(void* motion, int32_t* outStored, int32_t* outDropped);
 
 /// Whether the depth texture this run was handed was a depth format the kernel can read.
 ///

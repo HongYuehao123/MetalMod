@@ -473,6 +473,73 @@ public final class ScalingCheck {
                 nearZero(motionField(device, width, height)),
                 "worst |motion| = " + worstMotion(device, width, height));
 
+        // Moving geometry. The depth producer cannot describe an entity, a particle or a pushed block
+        // - the depth buffer holds only this frame - so the engine's own previous positions are
+        // stamped over the result. Two things have to hold: the stamp lands where the object is, with
+        // the object's motion, and the depth test keeps it off surfaces that are not the object.
+        //
+        // Everything below is a still camera, so the depth-derived field is exactly zero and anything
+        // non-zero in it is the stamp.
+        SceneMotion.clearHistory();
+        ProjectionJitter.consumeReset();
+
+        // A mob standing five blocks in front of the camera, then half a block to the right. The
+        // first sighting has no previous position, so it must contribute nothing.
+        entityFrame(device, world, main, camera, projection, 0.0, 0.0, -5.0, 0.99);
+        check("an entity with no previous position contributes no motion",
+                nearZero(motionField(device, width, height)),
+                "worst |motion| = " + worstMotion(device, width, height));
+
+        entityFrame(device, world, main, camera, projection, 0.5, 0.0, -5.0, 0.99);
+        float[] withEntity = motionField(device, width, height);
+        float entityMotion = withEntity == null ? 0.0f : sampleEntityMotion(withEntity);
+        // The camera is still, so this is purely the entity's own movement: a rightward step in world
+        // space appears as a rightward step on screen, and the vector points the other way because it
+        // is previous-minus-current.
+        check("an entity's own movement is stamped into the motion field", entityMotion < -2.0f,
+                "motion at the entity = " + entityMotion);
+        // Outside the entity's box the camera's answer must survive untouched.
+        check("the rest of the frame keeps the depth-derived answer",
+                withEntity != null && Math.abs(withEntity[0]) < 1e-3f
+                        && Math.abs(withEntity[1]) < 1e-3f, "");
+
+        // The depth test: the same entity against a surface it is not the front of. A mob behind a
+        // wall must not take the wall's pixels with it.
+        SceneMotion.clearHistory();
+        ProjectionJitter.consumeReset();
+        entityFrame(device, world, main, camera, projection, 0.0, 0.0, -5.0, 0.99);
+        entityFrame(device, world, main, camera, projection, 0.5, 0.0, -5.0, 0.2);
+        check("a stamp the depth buffer contradicts is rejected",
+                nearZero(motionField(device, width, height)),
+                "worst |motion| = " + worstMotion(device, width, height));
+
+        // A particle: no depth write, so the depth answer belongs to whatever is behind it and the
+        // particle's own velocity has to be stamped regardless of how slowly it moves.
+        SceneMotion.clearHistory();
+        ProjectionJitter.consumeReset();
+        particleFrame(device, world, main, camera, projection, 0.0, 0.0);
+        particleFrame(device, world, main, camera, projection, 0.5, 0.0);
+        float[] withParticle = motionField(device, width, height);
+        float particleMotion = withParticle == null
+                ? 0.0f : sampleEntityMotion(withParticle);
+        check("a particle's own movement is stamped", particleMotion < -2.0f,
+                "motion at the particle = " + particleMotion);
+        System.out.println(String.format(java.util.Locale.ROOT,
+                "       entity motion %.2f px, particle motion %.2f px", entityMotion,
+                particleMotion));
+
+        // A pushed block: a full cube whose block position is fixed while the piston's interpolated
+        // offset carries it, which is the same capture shape as an entity with a different identity.
+        SceneMotion.clearHistory();
+        ProjectionJitter.consumeReset();
+        blockFrame(device, world, main, camera, projection, 0.0, 0.99);
+        blockFrame(device, world, main, camera, projection, 0.5, 0.99);
+        float[] withBlock = motionField(device, width, height);
+        check("a pushed block's movement is stamped",
+                withBlock != null && sampleEntityMotion(withBlock) < -2.0f,
+                "motion at the block = "
+                        + (withBlock == null ? "unreadable" : sampleEntityMotion(withBlock)));
+
         // The reset lifecycle, driven directly so the flag can be observed between frames. A camera cut
         // has to invalidate history even though nothing else changed; missing it blends two unrelated
         // scenes for as long as the filter's history lasts.
@@ -552,6 +619,74 @@ public final class ScalingCheck {
                                            double x, double y, double z) {
         temporalCapture(world, camera, projection, x, y, z);
         SceneMotion.prepare(world.width, world.height);
+    }
+
+    /**
+     * One still-camera frame with a single entity in it, recorded the way the entity hook records one.
+     *
+     * @param depthClear the scene depth the entity is tested against, so a test can place it in front
+     *                   of the surface or behind it
+     */
+    private static void entityFrame(MetalDevice device,
+                                    com.mojang.blaze3d.pipeline.RenderTarget world,
+                                    MainTarget main, CameraRenderState camera, Matrix4f projection,
+                                    double entityX, double entityY, double entityZ,
+                                    double depthClear) {
+        temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
+        // Height 1.8, width 0.6: a player-shaped box, so the stamp's depth range and screen box are
+        // both non-trivial.
+        SceneMotion.recordEntity(1, entityX, entityY, entityZ, 0.6f, 1.8f, false);
+        objectFrameTail(device, world, main, depthClear);
+    }
+
+    /** One still-camera frame with a single pushed block, one block in front of the camera. */
+    private static void blockFrame(MetalDevice device,
+                                   com.mojang.blaze3d.pipeline.RenderTarget world,
+                                   MainTarget main, CameraRenderState camera, Matrix4f projection,
+                                   double pistonOffsetX, double depthClear) {
+        temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
+        // The block position is fixed; the piston's offset moves the rendered cube.
+        SceneMotion.recordBlock(0L, pistonOffsetX, 0.0, -5.5, 1.0f);
+        objectFrameTail(device, world, main, depthClear);
+    }
+
+    /** One still-camera frame with a single particle, whose positions are camera-relative. */
+    private static void particleFrame(MetalDevice device,
+                                      com.mojang.blaze3d.pipeline.RenderTarget world,
+                                      MainTarget main, CameraRenderState camera, Matrix4f projection,
+                                      double currentX, double previousX) {
+        temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
+        SceneMotion.recordParticle((float) currentX, 0.9f, -5.0f, 0.2f,
+                (float) previousX, 0.9f, -5.0f);
+        // The far plane, because a particle writes no depth: what is behind it is what the depth
+        // buffer holds, and the stamp has to be accepted in front of that.
+        objectFrameTail(device, world, main, 1.0);
+    }
+
+    private static void objectFrameTail(MetalDevice device,
+                                        com.mojang.blaze3d.pipeline.RenderTarget world,
+                                        MainTarget main, double depthClear) {
+        clearTo(device, world, 20, 160, 200);
+        MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
+                ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true,
+                depthClear);
+        MetalNative.queueSynchronize(device.queueHandle());
+        WorldRenderTarget.upscale(main);
+        ProjectionJitter.endFrame();
+    }
+
+    /** The x component of the largest motion in the field, which is where the stamped object is. */
+    private static float sampleEntityMotion(float[] field) {
+        float best = 0.0f;
+        float bestMagnitude = -1.0f;
+        for (int i = 0; i + 1 < field.length; i += 2) {
+            float magnitude = Math.abs(field[i]) + Math.abs(field[i + 1]);
+            if (magnitude > bestMagnitude) {
+                bestMagnitude = magnitude;
+                best = field[i];
+            }
+        }
+        return best;
     }
 
     /** The motion texture read back as floats, decoded from RG16Float. Null when it cannot be read. */

@@ -828,17 +828,44 @@ public final class WorldRenderTarget {
         temporalScaler = created;
         if (created != null) {
             System.out.println("[MetalMod] MetalFX temporal scaler: " + created.describe()
-                    + " (camera motion only; independently moving geometry is Phase 8C)");
+                    + " (camera reprojection plus per-object stamps)");
         }
         return created;
     }
 
+    /**
+     * Destroy the temporal scaler, once the queue has drained.
+     *
+     * <p><b>Why the drain.</b> Releasing a MetalFX temporal scaler while work encoded with it is still
+     * in flight leaves the process unable to tear down: the JVM aborts at exit with
+     * {@code mutex lock failed: Invalid argument} from a MetalFX-internal thread. It is intermittent,
+     * it happens after every check has passed, and the same release also runs on every resize - which
+     * is exactly the shape of a defect a gate catches and a frame never shows. The scaling check
+     * aborted roughly three runs in five until this was added.
+     *
+     * <p>A spatial scaler does not need it. That asymmetry is observed rather than explained: the
+     * spatial path released scalers at exit for a whole phase without this, and the temporal path
+     * aborts without it whenever the release races the queue.
+     *
+     * <p>The stall is bounded by one frame and only happens when a scaler is actually being replaced -
+     * a resize or a teardown - not per frame.
+     */
     private static void temporalScalerRelease() {
         MetalFxTemporalScaler existing = temporalScaler;
         temporalScaler = null;
-        if (existing != null) {
-            existing.close();
+        if (existing == null) {
+            return;
         }
+        MetalDevice device = MetalDevice.active();
+        if (device != null) {
+            try {
+                MetalNative.queueSynchronize(device.queueHandle());
+            } catch (Throwable t) {
+                System.err.println("[MetalMod] could not drain the queue before releasing the"
+                        + " temporal scaler: " + t);
+            }
+        }
+        existing.close();
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -1539,6 +1539,60 @@ static void test_motion_vectors(void) {
           mmm_motion_run(motion, queue, wrongDepth, inversePerspective, perspective) != 0, "");
     mmm_texture_release(wrongDepth);
 
+    // 6. The overlay: geometry the depth buffer cannot describe, stamped over the dispatch's answer.
+    //
+    // The base case here is a still camera on a flat plane, which the kernel already answers with
+    // zero - so anything non-zero afterwards is the stamp, and anything zero where a stamp covers is
+    // the depth test rejecting it. That separation is the whole point of the check.
+    check("depth clear", mmm_clear_textures(queue, NULL, false, 0, 0, 0, 0, depth, true, 0.5) == 0,
+          "");
+    MMMMotionStamp covering = {0.0f, 0.0f, (float)(W / 2), (float)H, 3.0f, -4.0f, 0.4f, 0.6f};
+    check("a stamp is accepted", mmm_motion_set_stamps(motion, &covering, 1) == 1, "");
+    if (motion_run_and_read(motion, queue, depth, identity, identity, vectors)) {
+        bool allStamped = true;
+        for (int i = 0; i < W * H; i++) {
+            bool inLeftHalf = (i % W) < W / 2;
+            float wantX = inLeftHalf ? 3.0f : 0.0f;
+            float wantY = inLeftHalf ? -4.0f : 0.0f;
+            if (fabsf(vectors[i * 2] - wantX) > 1e-2f
+                    || fabsf(vectors[i * 2 + 1] - wantY) > 1e-2f) {
+                allStamped = false;
+                printf("     pixel %d = (%.3f, %.3f), expected (%.1f, %.1f)\n",
+                       i, vectors[i * 2], vectors[i * 2 + 1], wantX, wantY);
+                break;
+            }
+        }
+        check("a stamp replaces the depth-derived motion exactly inside its box", allStamped, "");
+    }
+
+    // The depth test: a stamp whose range excludes the surface's depth must change nothing, or an
+    // object behind a wall would take the wall's motion with it.
+    MMMMotionStamp hidden = {0.0f, 0.0f, (float)W, (float)H, 9.0f, 9.0f, 0.8f, 1.0f};
+    check("a hidden stamp is accepted", mmm_motion_set_stamps(motion, &hidden, 1) == 1, "");
+    if (motion_run_and_read(motion, queue, depth, identity, identity, vectors)) {
+        bool untouched = true;
+        for (int i = 0; i < W * H * 2; i++) if (fabsf(vectors[i]) > 1e-4f) untouched = false;
+        check("a stamp the depth test rejects changes nothing", untouched, "");
+    }
+
+    // Clearing the stamps must put the depth-derived answer back, so a frame with no moving geometry
+    // pays for the buffer but not for the draw.
+    check("stamps can be cleared", mmm_motion_set_stamps(motion, NULL, 0) == 0, "");
+    int32_t stored = -1, dropped = -1;
+    mmm_motion_stamp_stats(motion, &stored, &dropped);
+    check("cleared stamps report as zero", stored == 0 && dropped == 0, "");
+
+    // A count past the capacity is clamped rather than written past the buffer.
+    int32_t capacity = mmm_motion_stamp_capacity(motion);
+    check("the stamp capacity is positive", capacity > 0, "");
+    static MMMMotionStamp flood[2048];
+    int32_t over = capacity + 17 < 2048 ? capacity + 17 : 2048;
+    check("an oversized stamp set is clamped", mmm_motion_set_stamps(motion, flood, over) == capacity,
+          "");
+    mmm_motion_stamp_stats(motion, &stored, &dropped);
+    check("the dropped stamps are counted", stored == capacity && dropped == over - capacity, "");
+    mmm_motion_set_stamps(motion, NULL, 0);
+
     printf("     %s\n", mmm_motion_describe(motion));
 
     mmm_texture_release(depth);

@@ -68,6 +68,58 @@ static NSString* const kMMMotionKernelSource = @""
     "        }\n"
     "    }\n"
     "    motion.write(float4(vector, 0.0, 0.0), gid);\n"
+    "}\n"
+    "\n"
+    // --- the overlay: geometry the depth buffer cannot describe -------------------------------
+    //
+    // A screen-space rectangle per object, drawn over the dispatch's result. The object's own
+    // previous position gives the motion, and the depth buffer decides whether the object is
+    // actually the surface at that pixel: a mob standing behind a wall must not stamp its motion
+    // onto the wall. The test is a range rather than an equality because the object occupies a range
+    // of depths, and the one comparison keeps the draw affordable.
+    "struct MMMMotionStamp {\n"
+    "    float2 boxMin;\n"
+    "    float2 boxMax;\n"
+    "    float2 motion;\n"
+    "    float2 depthRange;\n"
+    "};\n"
+    "\n"
+    "struct MMMMotionOverlayUniforms {\n"
+    "    float2 targetSize;\n"
+    "    float2 pad;\n"
+    "};\n"
+    "\n"
+    "struct MMMMotionOverlayVertex {\n"
+    "    float4 position [[position]];\n"
+    "    float2 motion;\n"
+    "    float2 depthRange;\n"
+    "};\n"
+    "\n"
+    "vertex MMMMotionOverlayVertex mmm_motion_overlay_vertex(\n"
+    "        uint vertexId [[vertex_id]],\n"
+    "        uint instanceId [[instance_id]],\n"
+    "        constant MMMMotionStamp* stamps [[buffer(0)]],\n"
+    "        constant MMMMotionOverlayUniforms& uniforms [[buffer(1)]]) {\n"
+    "    MMMMotionStamp stamp = stamps[instanceId];\n"
+    "    // A four-vertex triangle strip: the four corners of the box.\n"
+    "    float2 corner = float2((vertexId & 1) ? 1.0 : 0.0, (vertexId & 2) ? 1.0 : 0.0);\n"
+    "    float2 pixel = mix(stamp.boxMin, stamp.boxMax, corner);\n"
+    "    MMMMotionOverlayVertex out;\n"
+    "    out.position = float4(pixel.x / uniforms.targetSize.x * 2.0 - 1.0,\n"
+    "                          1.0 - pixel.y / uniforms.targetSize.y * 2.0,\n"
+    "                          0.0, 1.0);\n"
+    "    out.motion = stamp.motion;\n"
+    "    out.depthRange = stamp.depthRange;\n"
+    "    return out;\n"
+    "}\n"
+    "\n"
+    "fragment float4 mmm_motion_overlay_fragment(MMMMotionOverlayVertex in [[stage_in]],\n"
+    "                                            depth2d<float, access::read> sceneDepth [[texture(0)]]) {\n"
+    "    float scene = sceneDepth.read(uint2(in.position.xy));\n"
+    "    if (scene < in.depthRange.x - 1e-4 || scene > in.depthRange.y + 1e-4) {\n"
+    "        discard_fragment();\n"
+    "    }\n"
+    "    return float4(in.motion, 0.0, 0.0);\n"
     "}\n";
 
 // Laid out to match `struct MMMMotionUniforms` in the kernel exactly. Plain float arrays rather than
@@ -81,6 +133,36 @@ struct MMMMotionUniforms {
     float pad[2];
 } __attribute__((aligned(16)));
 
+// Matches `struct MMMMotionStamp` on both sides: eight floats, 32 bytes, no padding.
+struct MMMMotionStampUniforms {
+    float boxMinX;
+    float boxMinY;
+    float boxMaxX;
+    float boxMaxY;
+    float motionX;
+    float motionY;
+    float depthMin;
+    float depthMax;
+} __attribute__((aligned(8)));
+
+struct MMMMotionOverlayUniforms {
+    float targetSize[2];
+    float pad[2];
+} __attribute__((aligned(8)));
+
+// The public ABI struct and the internal copy must stay identical: the stamp API copies one into the
+// other per element, so a size or layout drift would be a silent misread rather than a compile error.
+static_assert(sizeof(MMMMotionStamp) == sizeof(MMMMotionStampUniforms),
+              "the public stamp and the internal copy must have the same size");
+static_assert(sizeof(MMMMotionStamp) == 8 * sizeof(float), "a stamp is eight floats");
+
+/// Most stamps one frame can carry. Bounded because the whole set is uploaded and drawn per frame.
+/// 2048 covers every visible entity and moving block with room for the particles that matter - a rain
+/// shower is the case that reaches it - and a frame that exceeds it drops the tail rather than
+/// growing without limit. The upload is 64 KB and each stamp draws a handful of pixels, so the cost
+/// that scales is the object count, not the pixel count.
+#define MMM_MOTION_STAMP_CAPACITY 2048
+
 // ---------------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------------
@@ -89,6 +171,11 @@ struct MMMMotion {
     id<MTLTexture> texture;
     int32_t width;
     int32_t height;
+    // The stamp buffer is created with the resource and rewritten in place, so a steady frame does
+    // not allocate. Shared storage, because the CPU writes it and the GPU reads it.
+    id<MTLBuffer> stampBuffer;
+    int32_t stampCount;
+    int32_t stampsDropped;
     // What the last run did, for mmm_motion_describe(). The Java side reports it on F3 rather than
     // reconstructing a story from what it asked for.
     char summary[192];
@@ -107,41 +194,74 @@ const char* mmm_motion_last_error(void) {
     return g_MotionError;
 }
 
-// One compiled pipeline per device. The kernel has no size or format in it, so a resize replaces the
-// texture but not the pipeline; compiling it once keeps a window drag from recompiling shaders every
-// frame. Only ever touched from the render thread.
-static id<MTLComputePipelineState> g_MotionPipeline = nil;
+// One compiled pipeline pair per device. Nothing in either shader depends on the size or the formats
+// of the textures they read - the overlay writes the same RG16Float the dispatch does - so a resize
+// replaces the texture but not the pipelines, and compiling them once keeps a window drag from
+// recompiling shaders every frame. Only ever touched from the render thread.
+//
+// Held as `void*` with a deliberate +1 rather than as ARC-managed globals. A strong global is
+// released from a static destructor at image unload, which for a JVM process happens after the
+// Objective-C runtime has begun tearing down - and that is an abort at exit, after every check has
+// already passed. These objects live for the process by construction, so leaking them is the correct
+// lifetime, not a workaround.
+static void* g_MotionPipeline = NULL;
+static void* g_MotionOverlayPipeline = NULL;
 static void* g_MotionPipelineDevice = NULL;
 
-static id<MTLComputePipelineState> mmm_motion_pipeline(id<MTLDevice> metalDevice) {
-    if (g_MotionPipeline != nil && g_MotionPipelineDevice == (__bridge void*)metalDevice) {
-        return g_MotionPipeline;
+static bool mmm_motion_build_pipelines(id<MTLDevice> metalDevice) {
+    if (g_MotionPipeline != NULL && g_MotionOverlayPipeline != NULL
+            && g_MotionPipelineDevice == (__bridge void*)metalDevice) {
+        return true;
     }
     NSError* error = nil;
     id<MTLLibrary> library = [metalDevice newLibraryWithSource:kMMMotionKernelSource
                                                        options:nil
                                                          error:&error];
     if (library == nil) {
-        mmm_motion_set_error([NSString stringWithFormat:@"motion kernel did not compile: %@",
+        mmm_motion_set_error([NSString stringWithFormat:@"motion shaders did not compile: %@",
                               error.localizedDescription]);
-        return nil;
+        return false;
     }
-    id<MTLFunction> function = [library newFunctionWithName:@"mmm_motion_reproject"];
-    if (function == nil) {
-        mmm_motion_set_error(@"motion kernel entry point mmm_motion_reproject is missing");
-        return nil;
+    id<MTLFunction> reproject = [library newFunctionWithName:@"mmm_motion_reproject"];
+    if (reproject == nil) {
+        mmm_motion_set_error(@"motion entry point mmm_motion_reproject is missing");
+        return false;
     }
-    id<MTLComputePipelineState> pipeline =
-            [metalDevice newComputePipelineStateWithFunction:function error:&error];
-    if (pipeline == nil) {
-        mmm_motion_set_error([NSString stringWithFormat:@"motion pipeline did not build: %@",
+    id<MTLComputePipelineState> compute =
+            [metalDevice newComputePipelineStateWithFunction:reproject error:&error];
+    if (compute == nil) {
+        mmm_motion_set_error([NSString stringWithFormat:@"motion kernel did not build: %@",
                               error.localizedDescription]);
-        return nil;
+        return false;
     }
-    g_MotionPipeline = pipeline;
+
+    id<MTLFunction> vertex = [library newFunctionWithName:@"mmm_motion_overlay_vertex"];
+    id<MTLFunction> fragment = [library newFunctionWithName:@"mmm_motion_overlay_fragment"];
+    if (vertex == nil || fragment == nil) {
+        mmm_motion_set_error(@"motion overlay entry points are missing");
+        return false;
+    }
+    MTLRenderPipelineDescriptor* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    descriptor.label = @"MetalMod motion overlay";
+    descriptor.vertexFunction = vertex;
+    descriptor.fragmentFunction = fragment;
+    descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
+    // The overlay replaces the dispatch's answer inside the shape, so it must not blend with it.
+    descriptor.colorAttachments[0].blendingEnabled = NO;
+    id<MTLRenderPipelineState> overlay =
+            [metalDevice newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    if (overlay == nil) {
+        mmm_motion_set_error([NSString stringWithFormat:@"motion overlay did not build: %@",
+                              error.localizedDescription]);
+        return false;
+    }
+
+    g_MotionPipeline = (__bridge_retained void*)compute;
+    g_MotionOverlayPipeline = (__bridge_retained void*)overlay;
     g_MotionPipelineDevice = (__bridge void*)metalDevice;
-    return g_MotionPipeline;
+    return true;
 }
+
 
 // ---------------------------------------------------------------------------------------------
 // Lifecycle
@@ -158,7 +278,7 @@ void* mmm_motion_create(void* device, int32_t width, int32_t height) {
         mmm_motion_set_error([NSString stringWithFormat:@"invalid motion size %dx%d", width, height]);
         return NULL;
     }
-    if (mmm_motion_pipeline(metalDevice) == nil) {
+    if (!mmm_motion_build_pipelines(metalDevice)) {
         return NULL;
     }
 
@@ -169,9 +289,11 @@ void* mmm_motion_create(void* device, int32_t width, int32_t height) {
                                                                    height:(NSUInteger)height
                                                                 mipmapped:NO];
         // Shader read is what the temporal scaler's motionTextureUsage requires; shader write is what
-        // the kernel needs. Shared storage keeps the texture readable from this process, which is how
-        // the offline check verifies the vectors rather than only their presence.
-        descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        // the reprojection kernel needs; render target is what lets the overlay draw over the result.
+        // Shared storage keeps the texture readable from this process, which is how the offline check
+        // verifies the vectors rather than only their presence.
+        descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite
+                | MTLTextureUsageRenderTarget;
         descriptor.storageMode = MTLStorageModeShared;
 
         id<MTLTexture> texture = [metalDevice newTextureWithDescriptor:descriptor];
@@ -182,10 +304,22 @@ void* mmm_motion_create(void* device, int32_t width, int32_t height) {
         }
         texture.label = @"MetalMod motion vectors";
 
+        id<MTLBuffer> stamps = [metalDevice newBufferWithLength:
+                        (NSUInteger)(MMM_MOTION_STAMP_CAPACITY * sizeof(MMMMotionStampUniforms))
+                                                       options:MTLResourceStorageModeShared];
+        if (stamps == nil) {
+            mmm_motion_set_error(@"could not allocate the motion stamp buffer");
+            return NULL;
+        }
+        stamps.label = @"MetalMod motion stamps";
+
         MMMMotion* handle = new MMMMotion();
         handle->texture = texture;
         handle->width = width;
         handle->height = height;
+        handle->stampBuffer = stamps;
+        handle->stampCount = 0;
+        handle->stampsDropped = 0;
         snprintf(handle->summary, sizeof(handle->summary), "motion %dx%d, not run yet", width, height);
         return handle;
     }
@@ -235,6 +369,35 @@ const char* mmm_motion_describe(void* motion) {
     return handle->summary;
 }
 
+int32_t mmm_motion_stamp_capacity(void* motion) {
+    return motion == NULL ? 0 : MMM_MOTION_STAMP_CAPACITY;
+}
+
+int mmm_motion_set_stamps(void* motion, const MMMMotionStamp* stamps, int32_t count) {
+    MMMMotion* handle = (MMMMotion*)motion;
+    if (handle == NULL || handle->stampBuffer == nil) return -1;
+    if (count < 0) return -2;
+    if (stamps == NULL || count == 0) {
+        handle->stampCount = 0;
+        handle->stampsDropped = 0;
+        return 0;
+    }
+    int32_t stored = count > MMM_MOTION_STAMP_CAPACITY ? MMM_MOTION_STAMP_CAPACITY : count;
+    memcpy(handle->stampBuffer.contents, stamps,
+           (size_t)stored * sizeof(MMMMotionStampUniforms));
+    handle->stampCount = stored;
+    handle->stampsDropped = count - stored;
+    return stored;
+}
+
+void mmm_motion_stamp_stats(void* motion, int32_t* outStored, int32_t* outDropped) {
+    MMMMotion* handle = (MMMMotion*)motion;
+    int32_t stored = handle == NULL ? 0 : handle->stampCount;
+    int32_t dropped = handle == NULL ? 0 : handle->stampsDropped;
+    if (outStored != NULL) *outStored = stored;
+    if (outDropped != NULL) *outDropped = dropped;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The run
 // ---------------------------------------------------------------------------------------------
@@ -259,8 +422,9 @@ int mmm_motion_run(void* motion, void* queue, void* depthTexture,
         return -5;
     }
 
-    id<MTLComputePipelineState> pipeline = g_MotionPipeline;
-    if (pipeline == nil) return -6;
+    if (g_MotionPipeline == NULL) return -6;
+    id<MTLComputePipelineState> pipeline =
+            (__bridge id<MTLComputePipelineState>)g_MotionPipeline;
 
     MMMMotionUniforms uniforms;
     memcpy(uniforms.currentInverseViewProjection, currentInverseViewProjection,
@@ -271,6 +435,12 @@ int mmm_motion_run(void* motion, void* queue, void* depthTexture,
     uniforms.inputSize[1] = (float)handle->height;
     uniforms.pad[0] = 0.0f;
     uniforms.pad[1] = 0.0f;
+
+    MMMMotionOverlayUniforms overlayUniforms;
+    overlayUniforms.targetSize[0] = (float)handle->width;
+    overlayUniforms.targetSize[1] = (float)handle->height;
+    overlayUniforms.pad[0] = 0.0f;
+    overlayUniforms.pad[1] = 0.0f;
 
     @autoreleasepool {
         id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
@@ -291,12 +461,38 @@ int mmm_motion_run(void* motion, void* queue, void* depthTexture,
                                      ((NSUInteger)handle->height + high - 1) / high, 1);
         [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threadsPerGroup];
         [encoder endEncoding];
+
+        // The overlay, in the same command buffer and therefore ordered after the dispatch: what the
+        // depth could not describe is drawn over what it could. Load rather than clear, or the
+        // dispatch's whole result would be discarded.
+        if (handle->stampCount > 0 && g_MotionOverlayPipeline != NULL) {
+            MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = handle->texture;
+            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            id<MTLRenderCommandEncoder> overlay =
+                    [commandBuffer renderCommandEncoderWithDescriptor:pass];
+            overlay.label = @"MetalMod motion overlay";
+            [overlay setRenderPipelineState:
+                    (__bridge id<MTLRenderPipelineState>)g_MotionOverlayPipeline];
+            [overlay setVertexBuffer:handle->stampBuffer offset:0 atIndex:0];
+            [overlay setVertexBytes:&overlayUniforms length:sizeof(overlayUniforms) atIndex:1];
+            [overlay setFragmentTexture:depth atIndex:0];
+            // The box is given as two corners, so a four-vertex triangle strip covers it.
+            [overlay drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                        vertexStart:0
+                        vertexCount:4
+                      instanceCount:(NSUInteger)handle->stampCount];
+            [overlay endEncoding];
+        }
         [commandBuffer commit];
 
         snprintf(handle->summary, sizeof(handle->summary),
-                 "motion %dx%d dispatched (%lux%lu groups)",
+                 "motion %dx%d dispatched (%lux%lu groups), %d stamps%s",
                  handle->width, handle->height,
-                 (unsigned long)groups.width, (unsigned long)groups.height);
+                 (unsigned long)groups.width, (unsigned long)groups.height,
+                 handle->stampCount,
+                 handle->stampsDropped > 0 ? " (some dropped)" : "");
     }
     return 0;
 }

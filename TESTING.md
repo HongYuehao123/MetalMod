@@ -38,8 +38,8 @@ Run all five; they are the cheap, deterministic checks.
 | `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
 | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 assertions) |
-| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (63 checks) |
-| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (62 checks) |
+| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (86 assertions) |
+| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
 The standalone runner needs the client classpath; `build_mod.sh` prints the exact command. The
@@ -51,10 +51,12 @@ The last two were added in Phase 7 and are worth knowing about:
 - **`scaling_check`** drives Phase 7's real machinery offscreen: the engine's own `MainTarget` and
   `FrameGraphBuilder`, the redirect's two states, the MetalFX upscale over a real draw, the resize
   path, the release when the scale returns to 1.0, and the jitter sequence's centring. It is the only
-  offline gate that would catch a break in the *shape* of the scaling frame. Fifteen of its checks
+  offline gate that would catch a break in the *shape* of the scaling frame. Twenty-one of its assertions
   are Phase 7B: the scene contract, the motion field's exact values and conventions (a still camera
   must produce zero motion; different jitter phases with a still camera must still produce zero; a
-  moved camera must produce uniform motion with MetalFX's sign), and the reset lifecycle.
+  moved camera must produce uniform motion with MetalFX's sign), the per-object stamps (an entity's
+  movement and none of its neighbours', a stamp the depth buffer contradicts being rejected, particles
+  and pushed blocks), and the reset lifecycle.
 - **`mixin_check`** resolves every mixin's target class, `@Inject`/`@Redirect` method, `@Shadow` member
   and `@At` descriptor against the real client jar, without launching. `defaultRequire: 0` means a hook
   that names a method the client no longer has fails *quietly* - the feature it drives simply does
@@ -779,20 +781,30 @@ expected results are specific:
 3. **Turning on the spot must not ghost the terrain.** Rotate 180° slowly, then quickly. A quick turn
    is a camera cut by the reset heuristic; a slow one has to expand across the screen without leaving
    duplicate edges.
-4. **Moving geometry will ghost.** Watch a mob walk past, or break a block and watch the particles.
-   They are expected to trail: their velocity is not in the field. This is the named gap, not a
-   regression - record what it looks like, with the mob type and distance, because that is the
-   evidence Phase 8C's producer is judged against.
-5. **A dimension change must not blend the two worlds.** Use a portal or `/execute in`. The frames
+4. **A mob must not trail.** Watch an animal walk past, then a fast one - an arrow, a thrown item, a
+   minecart. Each is stamped with its own velocity inside its bounding box, and the depth test keeps
+   the stamp off the terrain in front of and behind it. What to look for is the *box*: if the mob's
+   own pixels are crisp but a rectangle of terrain around it loses its antialiasing, the box is too
+   generous; if the mob's silhouette has a residual fringe, it is too tight. Record the mob type and
+   distance either way.
+5. **Particles must not trail.** Break a block, light a fire, stand in rain. A particle writes no
+   depth, so its pixels are stamped with the particle's own small quad - a rain shower is the case
+   that reaches the stamp budget, and F3's motion line reports a dropped count if it does. A short
+   trail is a regression here, not the expected result.
+6. **A firing piston must not smear its block.** Push a block with a piston and watch it travel. The
+   pushed block is stamped for the two ticks the animation lasts; a one-block trail behind it is the
+   failure this covers.
+7. **A dimension change must not blend the two worlds.** Use a portal or `/execute in`. The frames
    either side have the same camera coordinates, so only the explicit reset stops the two being
    blended; a visible cross-fade through the old dimension means the reset did not reach the encode.
-6. **The HUD stays native and sharp**, exactly as at 100% - the same check as §6.B.
-7. **Resize at 50% temporal.** The scaler and the motion resource both have to be rebuilt for the new
+8. **The HUD stays native and sharp**, exactly as at 100% - the same check as §6.B.
+9. **Resize at 50% temporal.** The scaler and the motion resource both have to be rebuilt for the new
    size. The world must not stretch, freeze, or show the pre-resize frame.
-8. **Compare the three modes at one spot.** Native, Spatial and Temporal at the same camera position,
-   with F10 flipping between them: note edge quality, texture detail, stability, and the F3 `frame`
-   line's cost. The motion pass is a full-resolution read of the depth buffer and its cost has never
-   been measured; the number is the point of the comparison.
+10. **Compare the three modes at one spot.** Native, Spatial and Temporal at the same camera position,
+    with F10 flipping between them: note edge quality, texture detail, stability, and the F3 `frame`
+    line's cost. The motion pass is a full-resolution read of the depth buffer plus one instanced draw
+    per moving object, and neither has been timed in a scene; the number is the point of the
+    comparison.
 
 ### D. The measured comparison
 

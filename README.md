@@ -46,17 +46,17 @@ parked in [bug.md](bug.md).
 > render check - but **no in-game session has confirmed it yet**. The six observations that close it
 > are in [docs/phase7-plan.md](docs/phase7-plan.md) §2.4.
 >
-> **Temporal upscaling (7B) is implemented with a camera motion producer.** A native kernel
-> reconstructs each pixel's world position from the level depth and reprojects it through the previous
-> frame's view-projection, so the temporal scaler accumulates a moving camera and static geometry
-> correctly. The current/previous-transform contract (`metalfx/SceneMotion`) is shared with Phase 8C,
-> and history is reset on camera cuts, world changes and resizes. **Geometry that moves independently
-> of the camera still ghosts** - a mob, a particle or an animated block reprojects as if it were
-> static - because its per-object velocity is Phase 8C's contract. When temporal cannot run, the frame
-> falls back to Spatial and says why on F3 and the settings page. **Frame generation (7C) is not
-> implemented** - it needs those same per-object motion vectors plus frame-loop pacing. Nothing here
-> is a stub that does nothing: the retired MoltenVK-interop scalers are deleted, and every control on
-> the Upscaling screen configures the path that runs.
+> **Temporal upscaling (7B) is implemented, with motion for the camera and for moving objects.**
+> A native kernel reconstructs each pixel's world position from the level depth and reprojects it
+> through the previous frame's view-projection, which covers a moving camera and static geometry; a
+> second native pass stamps entities, particles and pushed blocks with their own previous positions,
+> which the engine already interpolates every frame. The current/previous-transform contract
+> (`metalfx/SceneMotion`) is shared with Phase 8C, and history is reset on camera cuts, world changes
+> and resizes. Geometry whose change is not a position - a texture animation - keeps the camera's
+> answer. When temporal cannot run, the frame falls back to Spatial and says why on F3 and the
+> settings page. **Frame generation (7C) is not implemented** - it needs frame-loop pacing on top of
+> this motion. Nothing here is a stub that does nothing: the retired MoltenVK-interop scalers are
+> deleted, and every control on the Upscaling screen configures the path that runs.
 
 ---
 
@@ -166,13 +166,11 @@ These are the reasons the mod is not a drop-in replacement yet.
    heavy underground one. Before that, utility submission batching cut the chunk-mesh upload path's
    cost by 95% per frame, and private storage for render targets measured 9% *slower* and is off by
    default. See [TESTING.md](TESTING.md) for the numbers and the procedure.
-3. **MetalFX frame generation is not implemented (Phase 7C), and temporal upscaling has no motion for
-   independently moving geometry.** Temporal upscaling (7B) is implemented against a native camera
-   reprojection producer, so a moving camera and static geometry accumulate correctly, but a mob, a
-   particle or an animated block carries the terrain's velocity and ghosts; that per-object velocity
-   is Phase 8C's contract, which frame generation also needs. Frame generation additionally needs a
-   display-link pacer so two drawables land on different refreshes. See
-   [docs/phase7-plan.md](docs/phase7-plan.md).
+3. **MetalFX frame generation is not implemented (Phase 7C), and temporal upscaling is unconfirmed in
+   game.** Temporal upscaling (7B) is implemented with a native camera-reprojection producer plus a
+   per-object overlay for entities, particles and pushed blocks, all verified offline; no session has
+   looked at it yet. Frame generation needs a display-link pacer so two drawables land on different
+   refreshes, on top of that motion. See [docs/phase7-plan.md](docs/phase7-plan.md).
 4. **Render-resolution scaling is not confirmed in game, and its quality/performance comparison is
    not measured.** It is implemented against the level's own target - which is what keeps the GUI
    intact, the failure that reverted the pre-Phase-5 attempt - and verified offline, but a session
@@ -350,7 +348,7 @@ MetalMod/
   `-Dmetalmod.upscaler=spatial|temporal|off`, or the Upscaling page, or `renderScale` / `upscaler` in
   `config/metalmod.properties`. The scale is the fraction of the window the world renders at (100%,
   85%, 75%, 67%, 50%); the upscaler is MetalFX spatial, MetalFX temporal, or off (which renders at
-  native resolution). Temporal produces its motion vectors with a camera reprojection pass, so it
-  resolves detail across frames for a moving camera and static geometry; independently moving
-  geometry is not in the field yet. If the machine or the dylib cannot run the requested effect, the
-  frame falls back to Spatial and F3 and the settings page state the reason.
+  native resolution). Temporal produces its motion vectors with a camera reprojection pass plus a
+  per-object overlay for entities, particles and pushed blocks, so it resolves detail across frames
+  for both a moving camera and moving objects. If the machine or the dylib cannot run the requested
+  effect, the frame falls back to Spatial and F3 and the settings page state the reason.

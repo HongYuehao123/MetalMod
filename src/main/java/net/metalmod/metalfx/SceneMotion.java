@@ -5,10 +5,13 @@ import net.metalmod.backend.MetalNative;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
+import org.joml.Vector4f;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * The shared current/previous-frame scene contract a temporal scaler needs, and the motion-vector
@@ -19,13 +22,18 @@ import java.lang.foreign.ValueLayout;
  * documentation is explicit that depth reprojection on its own describes camera motion but not
  * independently moving objects. So the backend has to publish motion.
  *
- * <p><b>What this publishes.</b> The camera half of that field. Each pixel's depth is turned back
- * into a camera-relative world position and reprojected through the previous frame's
- * view-projection, which is exact for static geometry under any camera motion. Geometry that moves
- * independently - a mob, a particle, an animated block - still reprojects as if it were static, and
- * those pixels are the gap Phase 8C's previous-transform contract fills. That limit is stated here
- * rather than hidden: the backend reports this as a camera-only producer, and the settings screen
- * says so.
+ * <p><b>What this publishes.</b> Both halves of that field, from the two sources that can supply
+ * them. The camera half comes from depth: each pixel's depth is turned back into a camera-relative
+ * world position and reprojected through the previous frame's view-projection, which is exact for
+ * static geometry under any camera motion. The object half comes from the engine's own rendered
+ * positions: entities, particles and pushed blocks are interpolated every frame, so their previous
+ * positions are known exactly, and the native overlay stamps their motion over the dispatch's answer
+ * inside a screen-space box that a depth test keeps off surfaces the object is not in front of.
+ *
+ * <p>What is left uncovered is geometry the engine does not describe as an object: a block that
+ * changes shape in place, or a surface whose change is a texture animation rather than a position.
+ * Those pixels keep the camera's answer, and their motion is genuinely zero, so they reproject
+ * correctly - nothing here guesses at a velocity it was not given.
  *
  * <p><b>Why a shared contract.</b> The matrices are the same ones Phase 8C needs for ray visibility
  * and ray-traced shadows: the current and previous view-projection, the camera's own displacement,
@@ -122,6 +130,75 @@ public final class SceneMotion {
     private static String lastFailure = "";
     private static String lastResetReason = "";
 
+    // ---------------------------------------------------------------------------------------------
+    // Moving geometry, for the screen-space overlay
+    // ---------------------------------------------------------------------------------------------
+    //
+    // The dispatch above describes anything that was where it is now relative to the camera. It
+    // cannot describe an entity, a particle or a pushed block, because the depth buffer only holds
+    // this frame: those surfaces reproject as if they had never moved. Their own previous rendered
+    // positions are known - the engine interpolates them every frame - so they are captured here and
+    // handed to the native overlay as screen-space stamps.
+
+    /**
+     * Visible entities one frame can describe. Well above any normal scene; a scene past it loses the
+     * tail rather than the frame, and the count is reported.
+     */
+    private static final int ENTITY_CAPACITY = 512;
+
+    /** x, y, z as world coordinates, width, height, previous x/y/z, and a has-previous flag. */
+    private static final int ENTITY_STRIDE = 9;
+
+    private static final float[] entitySamples = new float[ENTITY_CAPACITY * ENTITY_STRIDE];
+    private static int entityCount;
+    private static Map<Integer, float[]> entityHistory = new HashMap<>();
+    private static Map<Integer, float[]> entityHistoryNext = new HashMap<>();
+
+    /**
+     * Moving blocks - a piston's pushed block, which is a block entity whose rendered position is its
+     * block position plus an interpolated offset.
+     *
+     * <p>Keyed by packed block position rather than by entity id, and a separate table because the two
+     * id spaces overlap: a packed position can be any long, and the two must not be able to alias.
+     */
+    private static Map<Long, float[]> blockHistory = new HashMap<>();
+    private static Map<Long, float[]> blockHistoryNext = new HashMap<>();
+
+    /** The particle budget. A rain shower is the case that reaches it. */
+    private static final int PARTICLE_CAPACITY = 2048;
+
+    /**
+     * x, y, z and the quad size, then the previous camera-relative position.
+     *
+     * <p>Camera-relative rather than world, because that is the form the particle extractor already
+     * has and converting it here would mean re-deriving the interpolation it just did. The frame's
+     * camera displacement is subtracted when the stamp is built, which is the same correction the
+     * matrices apply to everything else.
+     */
+    private static final int PARTICLE_STRIDE = 7;
+
+    private static final float[] particleSamples = new float[PARTICLE_CAPACITY * PARTICLE_STRIDE];
+    private static int particleCount;
+
+    /** Eight floats per stamp, matching {@code MMMMotionStamp}. */
+    private static final int STAMP_FLOATS = 8;
+
+    private static float[] stampValues = new float[STAMP_FLOATS * 64];
+    private static MemorySegment stampSegment;
+    private static int stampCount;
+    private static int stampsDropped;
+    private static long stampsDrawn;
+    private static long objectsSkipped;
+    private static final Vector4f projected = new Vector4f();
+    private static final Vector4f currentPixel = new Vector4f();
+    private static final Vector4f previousPixel = new Vector4f();
+
+    /**
+     * Below this the object's own motion is smaller than the jitter, and the camera's answer is
+     * already better than a constant stamp would be.
+     */
+    private static final float MIN_OBJECT_MOTION_PIXELS = 0.35f;
+
     private SceneMotion() {
     }
 
@@ -139,6 +216,8 @@ public final class SceneMotion {
         projectionCaptured = false;
         cameraCaptured = false;
         matricesReady = false;
+        entityCount = 0;
+        particleCount = 0;
     }
 
     /**
@@ -190,8 +269,10 @@ public final class SceneMotion {
     public static void prepare(int renderWidth, int renderHeight) {
         matricesReady = false;
         if (!captured() || renderWidth <= 0 || renderHeight <= 0) {
-            // No trustworthy pairing, so the scaler must not accumulate across the gap.
+            // No trustworthy pairing, so the scaler must not accumulate across the gap - and with no
+            // matrices there is nothing to project an object with either.
             havePrevious = false;
+            clearStamps();
             return;
         }
 
@@ -215,9 +296,12 @@ public final class SceneMotion {
             requestReset("the first frame with a complete camera pair");
             // Nothing is known about where anything was, and a zero matrix would reproject the whole
             // image to the origin. Using this frame's own forward matrix makes the first frame's
-            // motion exactly zero, which is the honest answer.
+            // motion exactly zero, which is the honest answer - and with no previous camera there is
+            // no object motion to draw either, so the stamps are cleared rather than guessed.
             currentViewProjection.get(previousForwardValues);
             matricesReady = true;
+            clearStamps();
+            advanceMotionHistory();
             rememberFrame();
             return;
         }
@@ -237,6 +321,10 @@ public final class SceneMotion {
                 .translate((float) deltaX, (float) deltaY, (float) deltaZ);
         previousViewProjection.get(previousForwardValues);
         matricesReady = true;
+        // Before rememberFrame, which overwrites the camera and would leave the stamps no camera
+        // displacement to correct the particles with.
+        buildStamps(renderWidth, renderHeight);
+        advanceMotionHistory();
         rememberFrame();
     }
 
@@ -286,6 +374,315 @@ public final class SceneMotion {
     /** Whether this frame's matrices were built. */
     public static boolean ready() {
         return matricesReady;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Capture: the moving geometry the depth buffer cannot describe
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Record one visible entity's rendered position, as the engine interpolated it this frame.
+     *
+     * <p>Called from the extraction hook with the entity's own identity, so the previous frame's
+     * position is an exact lookup rather than a guess at which entity is which.
+     */
+    public static void recordEntity(int id, double x, double y, double z,
+                                    float width, float height, boolean invisible) {
+        if (invisible) {
+            return;
+        }
+        recordBox(entityHistory, entityHistoryNext, id, x, y, z, width, height);
+    }
+
+    /**
+     * Record one moving block's rendered position.
+     *
+     * <p>A pushed block is a full cube whose block position does not change while it moves, so the
+     * identity is the block position and the movement is carried entirely by the piston's interpolated
+     * offset - which is exactly the pair this captures.
+     */
+    public static void recordBlock(long packedBlockPos, double minX, double minY, double minZ,
+                                   float size) {
+        recordBox(blockHistory, blockHistoryNext, packedBlockPos,
+                minX + size * 0.5, minY, minZ + size * 0.5, size, size);
+    }
+
+    /**
+     * Append one axis-aligned box, with the previous frame's centre looked up by identity.
+     *
+     * <p>The stored form is the box's centre on x and z and its minimum on y, with a width and a
+     * height, which is what both an entity's bounding box and a moving block are once the sizes are
+     * filled in. The history table is rebuilt every frame and swapped, so an object that despawns
+     * costs nothing and the table never grows past one frame's set.
+     */
+    private static <K> void recordBox(Map<K, float[]> history, Map<K, float[]> next,
+                                      K key, double x, double y, double z,
+                                      float width, float height) {
+        if (entityCount >= ENTITY_CAPACITY) {
+            return;
+        }
+        int base = entityCount * ENTITY_STRIDE;
+        entitySamples[base] = (float) x;
+        entitySamples[base + 1] = (float) y;
+        entitySamples[base + 2] = (float) z;
+        entitySamples[base + 3] = width;
+        entitySamples[base + 4] = height;
+        float[] previous = history.get(key);
+        entitySamples[base + 8] = previous == null ? 0.0f : 1.0f;
+        if (previous != null) {
+            entitySamples[base + 5] = previous[0];
+            entitySamples[base + 6] = previous[1];
+            entitySamples[base + 7] = previous[2];
+        }
+        float[] stored = next.get(key);
+        if (stored == null) {
+            stored = new float[3];
+            next.put(key, stored);
+        }
+        stored[0] = (float) x;
+        stored[1] = (float) y;
+        stored[2] = (float) z;
+        entityCount++;
+    }
+
+    /**
+     * Record one particle's camera-relative rendered position and the one before it.
+     *
+     * <p>Particles are recorded as a camera-relative pair rather than a world position because the
+     * extractor has already produced that form; the frame's camera displacement is applied when the
+     * stamp is built, which is the same correction the matrices carry for everything else.
+     */
+    public static void recordParticle(float x, float y, float z, float size,
+                                      float previousX, float previousY, float previousZ) {
+        if (particleCount >= PARTICLE_CAPACITY) {
+            return;
+        }
+        int base = particleCount * PARTICLE_STRIDE;
+        particleSamples[base] = x;
+        particleSamples[base + 1] = y;
+        particleSamples[base + 2] = z;
+        particleSamples[base + 3] = size;
+        particleSamples[base + 4] = previousX;
+        particleSamples[base + 5] = previousY;
+        particleSamples[base + 6] = previousZ;
+        particleCount++;
+    }
+
+    private static void advanceMotionHistory() {
+        Map<Integer, float[]> previousEntities = entityHistory;
+        entityHistory = entityHistoryNext;
+        entityHistoryNext = previousEntities;
+        entityHistoryNext.clear();
+        Map<Long, float[]> previousBlocks = blockHistory;
+        blockHistory = blockHistoryNext;
+        blockHistoryNext = previousBlocks;
+        blockHistoryNext.clear();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Building the stamps
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Turn this frame's captured objects into screen-space stamps and hand them to the native side.
+     *
+     * <p>An entity's depth <em>is</em> in the depth buffer, so its stamp only has to correct the
+     * difference between where it is and where it was, and a stamp below the jitter is not worth
+     * drawing. A particle's is not: particles do not write depth, so the depth-derived motion at a
+     * particle's pixels belongs to whatever is behind it and is wrong for the particle by however much
+     * their depths differ - which means every particle gets a stamp, including a stationary one.
+     */
+    private static void buildStamps(int width, int height) {
+        stampCount = 0;
+        stampsDropped = 0;
+        if (!matricesReady || motion.address() == 0 || width <= 0 || height <= 0) {
+            clearStamps();
+            return;
+        }
+        int capacity = MetalNative.motionStampCapacity(motion);
+        if (capacity <= 0) {
+            clearStamps();
+            return;
+        }
+        if (stampValues.length < capacity * STAMP_FLOATS) {
+            stampValues = new float[capacity * STAMP_FLOATS];
+        }
+
+        float cameraX = (float) frameCameraX;
+        float cameraY = (float) frameCameraY;
+        float cameraZ = (float) frameCameraZ;
+        float cameraDeltaX = (float) (frameCameraX - previousCameraX);
+        float cameraDeltaY = (float) (frameCameraY - previousCameraY);
+        float cameraDeltaZ = (float) (frameCameraZ - previousCameraZ);
+        // The projection's own y scale, taken from the unjittered matrix: M1 is P * V, so its m11
+        // mixes the camera's rotation into the term that answers "how many pixels is a world unit at
+        // this depth", and using it would make a particle's size depend on where the player is
+        // looking.
+        float pixelsPerUnitY = 0.5f * height * frameUnjittered.m11();
+
+        for (int index = 0; index < entityCount; index++) {
+            int base = index * ENTITY_STRIDE;
+            if (entitySamples[base + 8] < 0.5f) {
+                objectsSkipped++;
+                continue;
+            }
+            float halfWidth = entitySamples[base + 3] * 0.5f;
+            float boxHeight = entitySamples[base + 4];
+            float relativeX = entitySamples[base] - cameraX;
+            float relativeY = entitySamples[base + 1] - cameraY;
+            float relativeZ = entitySamples[base + 2] - cameraZ;
+
+            float minX = Float.MAX_VALUE;
+            float maxX = -Float.MAX_VALUE;
+            float minY = Float.MAX_VALUE;
+            float maxY = -Float.MAX_VALUE;
+            float minDepth = Float.MAX_VALUE;
+            float maxDepth = -Float.MAX_VALUE;
+            boolean projectedAll = true;
+            for (int corner = 0; corner < 8; corner++) {
+                float cornerX = relativeX + ((corner & 1) == 0 ? -halfWidth : halfWidth);
+                float cornerY = relativeY + ((corner & 2) == 0 ? 0.0f : boxHeight);
+                float cornerZ = relativeZ + ((corner & 4) == 0 ? -halfWidth : halfWidth);
+                if (!projectPixel(currentViewProjection, cornerX, cornerY, cornerZ, width, height,
+                        projected)) {
+                    projectedAll = false;
+                    break;
+                }
+                minX = Math.min(minX, projected.x);
+                maxX = Math.max(maxX, projected.x);
+                minY = Math.min(minY, projected.y);
+                maxY = Math.max(maxY, projected.y);
+                minDepth = Math.min(minDepth, projected.z);
+                maxDepth = Math.max(maxDepth, projected.z);
+            }
+            if (!projectedAll) {
+                // Partly behind the camera: no box describes it, so it keeps the depth-derived
+                // answer rather than a guess.
+                objectsSkipped++;
+                continue;
+            }
+            if (maxX < 0.0f || minX > width || maxY < 0.0f || minY > height) {
+                continue;
+            }
+            if (!projectPixel(currentViewProjection, relativeX, relativeY + boxHeight * 0.5f,
+                    relativeZ, width, height, currentPixel)) {
+                continue;
+            }
+            if (!projectPixel(previousViewProjection,
+                    entitySamples[base + 5] - cameraX,
+                    entitySamples[base + 6] - cameraY,
+                    entitySamples[base + 7] - cameraZ, width, height, previousPixel)) {
+                objectsSkipped++;
+                continue;
+            }
+            float motionX = previousPixel.x - currentPixel.x;
+            float motionY = previousPixel.y - currentPixel.y;
+            if (Math.abs(motionX) < MIN_OBJECT_MOTION_PIXELS
+                    && Math.abs(motionY) < MIN_OBJECT_MOTION_PIXELS) {
+                continue;
+            }
+            emitStamp(minX, minY, maxX, maxY, motionX, motionY, minDepth, maxDepth, capacity);
+        }
+
+        for (int index = 0; index < particleCount; index++) {
+            int base = index * PARTICLE_STRIDE;
+            float relativeX = particleSamples[base];
+            float relativeY = particleSamples[base + 1];
+            float relativeZ = particleSamples[base + 2];
+            float size = particleSamples[base + 3];
+            if (!projectPixel(currentViewProjection, relativeX, relativeY, relativeZ,
+                    width, height, currentPixel)) {
+                continue;
+            }
+            float viewDepth = currentPixel.w;
+            if (viewDepth <= 1e-4f) {
+                continue;
+            }
+            // The stored previous position is relative to the previous camera, so the frame's own
+            // displacement is taken out before it is projected.
+            if (!projectPixel(previousViewProjection,
+                    particleSamples[base + 4] - cameraDeltaX,
+                    particleSamples[base + 5] - cameraDeltaY,
+                    particleSamples[base + 6] - cameraDeltaZ, width, height, previousPixel)) {
+                continue;
+            }
+            float motionX = previousPixel.x - currentPixel.x;
+            float motionY = previousPixel.y - currentPixel.y;
+            // Generous: the quad faces the camera and this is a screen-axis box around it, so
+            // covering a little more than the quad is safer than leaving an edge behind. The depth
+            // test keeps the extra area from taking the particle's motion off a nearer surface.
+            float half = Math.max(1.0f, size * pixelsPerUnitY / viewDepth * 0.75f);
+            emitStamp(currentPixel.x - half, currentPixel.y - half,
+                    currentPixel.x + half, currentPixel.y + half,
+                    motionX, motionY, currentPixel.z - 0.002f, 1.0f, capacity);
+        }
+
+        uploadStamps();
+    }
+
+    private static boolean projectPixel(Matrix4f matrix, float x, float y, float z,
+                                        int width, int height, Vector4f out) {
+        out.set(x, y, z, 1.0f);
+        matrix.transform(out);
+        if (out.w <= 1e-6f) {
+            return false;
+        }
+        float inverse = 1.0f / out.w;
+        float ndcX = out.x * inverse;
+        float ndcY = out.y * inverse;
+        float ndcZ = out.z * inverse;
+        out.set((ndcX * 0.5f + 0.5f) * width, (0.5f - ndcY * 0.5f) * height, ndcZ, out.w);
+        return true;
+    }
+
+    private static void emitStamp(float minX, float minY, float maxX, float maxY,
+                                  float motionX, float motionY,
+                                  float depthMin, float depthMax, int capacity) {
+        if (stampCount >= capacity) {
+            stampsDropped++;
+            return;
+        }
+        int base = stampCount * STAMP_FLOATS;
+        stampValues[base] = Math.max(0.0f, minX);
+        stampValues[base + 1] = Math.max(0.0f, minY);
+        stampValues[base + 2] = maxX;
+        stampValues[base + 3] = maxY;
+        stampValues[base + 4] = motionX;
+        stampValues[base + 5] = motionY;
+        stampValues[base + 6] = Math.max(0.0f, Math.min(1.0f, depthMin));
+        stampValues[base + 7] = Math.max(0.0f, Math.min(1.0f, depthMax));
+        stampCount++;
+    }
+
+    private static void uploadStamps() {
+        if (motion.address() == 0) {
+            return;
+        }
+        if (stampCount == 0) {
+            clearStamps();
+            return;
+        }
+        if (stampSegment == null || stampSegment.byteSize() < (long) stampCount * STAMP_FLOATS * 4L) {
+            stampSegment = arena.allocate(ValueLayout.JAVA_FLOAT, stampCount * STAMP_FLOATS);
+        }
+        MemorySegment.copy(stampValues, 0, stampSegment, ValueLayout.JAVA_FLOAT, 0,
+                stampCount * STAMP_FLOATS);
+        MetalNative.motionSetStamps(motion, stampSegment, stampCount);
+        stampsDrawn += stampCount;
+    }
+
+    private static void clearStamps() {
+        stampCount = 0;
+        stampsDropped = 0;
+        if (motion.address() != 0) {
+            MetalNative.motionSetStamps(motion, MemorySegment.NULL, 0);
+        }
+    }
+
+    /** Objects captured this frame, and how many stamps reached the GPU (plus any dropped). */
+    public static String objectSummary() {
+        return "objects " + entityCount + " entities, " + particleCount + " particles, "
+                + stampCount + " stamps" + (stampsDropped > 0 ? " (" + stampsDropped + " dropped)" : "");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -403,6 +800,12 @@ public final class SceneMotion {
     public static synchronized void clearHistory() {
         havePrevious = false;
         matricesReady = false;
+        entityHistory.clear();
+        entityHistoryNext.clear();
+        blockHistory.clear();
+        blockHistoryNext.clear();
+        entityCount = 0;
+        particleCount = 0;
         lastResetReason = "the world or device changed";
         ProjectionJitter.requestReset();
     }
@@ -415,9 +818,18 @@ public final class SceneMotion {
             arena = null;
             currentInverseSegment = null;
             previousForwardSegment = null;
+            stampSegment = null;
         }
         havePrevious = false;
         matricesReady = false;
+        entityHistory.clear();
+        entityHistoryNext.clear();
+        blockHistory.clear();
+        blockHistoryNext.clear();
+        entityCount = 0;
+        particleCount = 0;
+        stampCount = 0;
+        stampsDropped = 0;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -457,8 +869,8 @@ public final class SceneMotion {
         if (motion.address() == 0) {
             return "motion: none" + (lastFailure.isEmpty() ? "" : " (" + lastFailure + ")");
         }
-        return "motion " + motionWidth + "x" + motionHeight + " camera-only, dispatched "
-                + framesDispatched + ", resets " + resets
+        return "motion " + motionWidth + "x" + motionHeight + " camera+objects, dispatched "
+                + framesDispatched + ", " + objectSummary() + ", resets " + resets
                 + (failures > 0 ? ", failed " + failures : "")
                 + (lastFailure.isEmpty() ? "" : " (" + lastFailure + ")");
     }

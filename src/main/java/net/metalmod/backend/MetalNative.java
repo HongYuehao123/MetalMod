@@ -67,7 +67,8 @@ public final class MetalNative {
     // Phase 7B motion vectors. Also optional, for the same reason: a dylib without them leaves the
     // backend able to render and to run Spatial, it just cannot run Temporal.
     private static MethodHandle mhMotionCreate, mhMotionRelease, mhMotionTexture, mhMotionWidth,
-            mhMotionHeight, mhMotionLastError, mhMotionRun, mhMotionFormatSupported, mhMotionDescribe;
+            mhMotionHeight, mhMotionLastError, mhMotionRun, mhMotionFormatSupported, mhMotionDescribe,
+            mhMotionSetStamps, mhMotionStampCapacity, mhMotionStampStats;
 
     static {
         try {
@@ -233,6 +234,12 @@ public final class MetalNative {
         mhMotionFormatSupported = optional(lookup, linker, "mmm_motion_depth_format_supported",
                 FunctionDescriptor.of(B, A, L));
         mhMotionDescribe = optional(lookup, linker, "mmm_motion_describe", FunctionDescriptor.of(A, A));
+        mhMotionSetStamps = optional(lookup, linker, "mmm_motion_set_stamps",
+                FunctionDescriptor.of(I, A, A, I));
+        mhMotionStampCapacity = optional(lookup, linker, "mmm_motion_stamp_capacity",
+                FunctionDescriptor.of(I, A));
+        mhMotionStampStats = optional(lookup, linker, "mmm_motion_stamp_stats",
+                FunctionDescriptor.ofVoid(A, A, A));
     }
 
     private static MethodHandle optional(SymbolLookup lookup, Linker linker, String name,
@@ -1102,6 +1109,45 @@ public final class MetalNative {
                     currentInverseViewProjection, previousViewProjection);
         } catch (Throwable t) {
             throw ffiFailure(t);
+        }
+    }
+
+    /**
+     * Replace the screen-space stamps the next run draws over its depth-derived result.
+     *
+     * <p>The segment holds {@code count} stamps of eight floats each: box min x/y, box max x/y,
+     * motion x/y, clip-depth min/max. Zero and NULL both clear.
+     */
+    public static int motionSetStamps(MemorySegment motion, MemorySegment stamps, int count) {
+        if (mhMotionSetStamps == null) return -1;
+        ffiCalls++;
+        try {
+            return (int) mhMotionSetStamps.invokeExact(motion, stamps, count);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    public static int motionStampCapacity(MemorySegment motion) {
+        if (mhMotionStampCapacity == null || isNull(motion)) return 0;
+        try {
+            return (int) mhMotionStampCapacity.invokeExact(motion);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** {stored, dropped} for the last run, or null when the surface is absent. */
+    public static int[] motionStampStats(MemorySegment motion) {
+        if (mhMotionStampStats == null || isNull(motion)) return null;
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment stored = a.allocate(ValueLayout.JAVA_INT);
+            MemorySegment dropped = a.allocate(ValueLayout.JAVA_INT);
+            mhMotionStampStats.invokeExact(motion, stored, dropped);
+            return new int[]{stored.get(ValueLayout.JAVA_INT, 0),
+                    dropped.get(ValueLayout.JAVA_INT, 0)};
+        } catch (Throwable t) {
+            return null;
         }
     }
 }

@@ -51,22 +51,24 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | **7A done** (verified offline, awaiting one in-game session); **7B implemented** (camera motion producer, live encode, resets; verified offline, moving geometry is the named gap); 7C not started |
+| 7 — MetalFX | **7A done** (verified offline, awaiting one in-game session); **7B implemented** (camera reprojection **plus per-object stamps for entities, particles and pushed blocks**, live encode, resets; verified offline); 7C not started |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
 ## Agreed next priority
 
-**Evaluate Temporal in game, then add per-object motion.** 7B now runs end to end: a native
-camera-reprojection kernel produces render-resolution motion vectors, `SceneMotion` publishes the
-current/previous view-projection contract shared with Phase 8C, and the temporal scaler is encoded on
-the device queue behind the level's passes and ahead of the interface, with history resets on camera
-cuts, world changes and resizes. What it does not have is motion for geometry that moves
-independently of the camera - a mob, a particle, an animated block - which reprojects as if it were
-static and ghosts. That is the next implementation step, and it is the same contract 8C needs.
-Separate AA remains optional afterward. See [the corrected AA plan](docs/antialiasing-plan.md) and
-[the Phase 7 record](docs/phase7-plan.md). This is a planning decision, not a verification result.
+**Evaluate Temporal in game.** 7B now runs end to end with both halves of the motion field: a native
+camera-reprojection kernel over the level depth, and a per-object overlay that stamps entities,
+particles and pushed blocks with their own previous positions (the engine interpolates all three every
+frame, so the information was already there). `SceneMotion` publishes the current/previous
+view-projection contract shared with Phase 8C, the temporal scaler is encoded on the device queue
+behind the level's passes and ahead of the interface, and history resets on camera cuts, world changes
+and resizes. What remains is a session: how tight an entity's bounding box is around its silhouette,
+how the modes compare in quality and cost, and whether anything in ordinary play still trails. That
+comparison procedure is [TESTING.md](TESTING.md) §6.D. Separate AA remains optional afterward. See
+[the corrected AA plan](docs/antialiasing-plan.md) and [the Phase 7 record](docs/phase7-plan.md).
+This is a planning decision, not a verification result.
 
 ## Phase 5 close-out and next step
 
@@ -81,16 +83,16 @@ builds on. `TESTING.md` §5.6 is the final-test checklist.
 
 Phase 7 (MetalFX) is **7A done, 7B implemented, 7C not started**; see
 [docs/phase7-plan.md](docs/phase7-plan.md) for the per-increment record, the integration contract,
-the six defects the work found, and the six in-game observations that close 7A. What that means in
+the seven defects the work found, and the six in-game observations that close 7A. What that means in
 a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale and cycles the
 upscaler through **off / MetalFX spatial / MetalFX temporal**, shows the live sizes and which effect
 actually ran, and raises a toast in world when a change lands. The world renders at that fraction
 into its own target and MetalFX returns it to native, while the HUD, menus and tooltips keep drawing
-at native resolution. Temporal adds a native camera-reprojection motion pass over the level's depth;
-it is exact for a moving camera and static geometry, and **geometry that moves on its own still
-ghosts** because its per-object velocity is Phase 8C's contract. When temporal cannot run - an older
-device, no motion producer, a depth format the kernel cannot read - the frame falls back to Spatial
-and F3 and the settings page say why. **No in-game run has happened yet** - the design's central claim
+at native resolution. Temporal adds a native camera-reprojection pass over the level's depth **and a
+per-object overlay** that stamps entities, particles and pushed blocks with their own previous
+positions, so geometry that moves on its own no longer reprojects as if it were static. When temporal
+cannot run - an older device, no motion producer, a depth format the kernel cannot read - the frame
+falls back to Spatial and F3 and the settings page say why. **No in-game run has happened yet** - the design's central claim
 is verified offscreen against the engine's own `MainTarget` and `FrameGraphBuilder`, not on screen.
 [TESTING.md](TESTING.md) §6.E is the five-minute pass that closes 7A; the one observation that decides
 it is the HUD at 50%, which must be as sharp as at 100%.

@@ -8,6 +8,55 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-033 — Releasing the temporal scaler while its work is in flight aborts the process at exit
+
+**Status:** **FIXED**, verified over repeated runs.
+**Severity:** high for the gate, latent in game. It aborts the JVM after every check has passed, and
+the same release runs on every resize.
+
+### Symptom
+
+`tools/scaling_check/run.sh` printed `SCALING CHECK PASSED` and then died:
+
+```
+SCALING CHECK PASSED
+libc++abi: terminating due to uncaught exception of type std::__1::system_error:
+mutex lock failed: Invalid argument
+Abort trap: 6
+```
+
+Intermittent: three runs in five aborted, two exited cleanly. `echo $?` through a pipe had hidden it -
+`$?` was the pipe's exit status, not the script's - which is why Gate 6 looked green.
+
+### What ruled other causes out
+
+- **Not pre-existing at Phase 7A.** Built at `f441a20` and ran the same check three times: exit 0
+  every time. The committed Phase 7B work introduced it.
+- **Not the motion kernels.** Holding the compiled compute and overlay pipelines as ARC-strong
+  globals meant they were released from a static destructor at image unload, which is the classic
+  shape of this abort. Releasing them deliberately (`__bridge_retained` into a `void*`, never
+  released) is correct for a process-lifetime cache and is part of the fix - but it only reduced the
+  rate, to roughly three in five from every run.
+- **Not the motion resources or the device.** With the temporal scaler intentionally leaked, five
+  runs in five were clean while the motion texture, stamp buffer, spatial scaler and device were all
+  still destroyed normally.
+
+### Cause
+
+`WorldRenderTarget.temporalScalerRelease()` destroyed the `MTLFXTemporalScaler` immediately, and the
+last frame's encode can still be in flight at that moment. Draining the queue first turned five runs
+in five green, which is the whole of the evidence. The spatial scaler shows no such behaviour: Phase
+7A released one at exit for a whole phase without this. The asymmetry is observed, not explained.
+
+### Fix
+
+`temporalScalerRelease()` synchronises the device queue before destroying the scaler. The stall is
+bounded by one frame and only happens when a scaler is actually being replaced - a resize or a
+teardown - not per frame. The pipeline cache was moved to a deliberate process-lifetime retain at the
+same time.
+
+---
+
 ## BUG-032 — MetalFX is handed a shared-storage output texture, which it documents as private
 
 **Status:** **OPEN, accepted.** The upscaled pixels are verified correct offscreen; the requirement is

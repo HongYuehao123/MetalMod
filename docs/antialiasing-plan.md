@@ -32,10 +32,10 @@ and the reset lifecycle are in `metalfx/SceneMotion`, `metalfx/WorldRenderTarget
 | Piece | State |
 |---|---|
 | Camera motion | **Done.** Depth is reprojected through the previous frame's view-projection; the conventions (camera-relative space, Metal's zero-to-one depth, unjittered matrices, pixel-space vectors) are each verified offline in the native smoke test and `tools/scaling_check` |
-| Moving geometry | **Remaining work.** Publish previous transforms and the previous animated/deformed positions needed for entities, particles and moving geometry. A camera-only field covers the camera and static geometry, not a complete solution; this is Phase 8C's contract |
+| Moving geometry | **Done for what the engine extracts.** Entities, particles and pushed blocks are stamped with their own previous positions by a native screen-space overlay, over a depth test that keeps a stamp off surfaces the object is not in front of. Geometry whose change is not a position - a texture animation - keeps the camera's answer, which for it is correct |
 | Live temporal path | **Done.** Compatible depth/motion/output resources, scaler ownership, command ordering and fallback are wired into world rendering |
 | Jitter and history | **Done.** The helpers reach a real encode; resets fire on resize, world/dimension changes and camera cuts, and the scaling check asserts the flag is delivered exactly once |
-| Transparency | **Remaining work.** Water, particles and cutouts have not been looked at under accumulation. A reactive mask is optional; using it requires producing and binding a real mask, not only enabling its descriptor option - and no producer exists, so the option stays off |
+| Transparency | **Partly addressed, still unlooked at.** Particles carried a real velocity rather than a reactive mask, because their previous position is known and a mask only says "ignore history". Water and cutouts have not been examined under accumulation; an in-game pass is what settles them |
 | Acceptance | **Remaining work.** Compare native, Spatial and Temporal at matching scenes and scales, stationary and moving. Check ghosting, disocclusion, shimmer, detail, HUD sharpness and frame cost. [TESTING.md](../TESTING.md) §6.D is the procedure |
 
 Bring forward the current/previous-frame scene contract shared with Phase 8C. Completing all of

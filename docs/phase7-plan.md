@@ -142,13 +142,14 @@ Until those are done, the honest statement is *"implemented and verified offline
 | Piece | State |
 |---|---|
 | Native temporal scaler | **Done and exercised.** `mmm_fx_temporal_*`, created for the backend's real formats - `RGBA8` colour, `Depth32Float` depth, `RG16Float` motion, `RGBA8` output - with `depthReversed = false` matching Minecraft's near-0/far-1 projection, and the reactive-mask and dynamic-resolution descriptor options available. Dynamic resolution is reported as unsupported on this machine and is left off. |
-| Camera motion producer | **Done and verified.** `native/src/metalmod_motion.mm` plus the `mmm_motion_*` surface: one Metal compute kernel that reconstructs each pixel's camera-relative world position from the level depth and reprojects it through the previous frame's view-projection, writing an `RG16Float` motion texture at the render resolution. |
-| The scene contract | **Done.** `metalfx/SceneMotion` captures the current and previous finished projection matrix, the camera's view rotation and position, and the frame's jitter, and folds the frame-to-frame camera translation into the previous matrix. Shared with Phase 8C. |
-| Live temporal path | **Done.** `WorldRenderTarget.upscaleTemporal` creates the motion resource, builds the matrices, dispatches the motion pass and encodes the scaler on the device queue, in that order, between the level's passes and the interface. |
+| Camera motion (depth reprojection) | **Done and verified.** `native/src/metalmod_motion.mm` plus the `mmm_motion_*` surface: one Metal compute kernel that reconstructs each pixel's camera-relative world position from the level depth and reprojects it through the previous frame's view-projection, writing an `RG16Float` motion texture at the render resolution. |
+| Object motion (screen-space overlay) | **Done and verified.** The same resource also carries a set of screen-space stamps - a box, a pixel motion and a clip-depth range each - drawn over the dispatch's result by a second native pass. Entities, particles and pushed blocks supply them, because the depth buffer holds only the current frame and cannot say where they were. |
+| The scene contract | **Done.** `metalfx/SceneMotion` captures the current and previous finished projection matrix, the camera's view rotation and position, the frame's jitter, and the moving objects the engine extracts. Shared with Phase 8C. |
+| Live temporal path | **Done.** `WorldRenderTarget.upscaleTemporal` creates the motion resource, builds the matrices and the stamps, dispatches the motion pass and encodes the scaler on the device queue, in that order, between the level's passes and the interface. |
 | Projection jitter | **Done, and corrected.** The mean-centred Halton (2,3) sequence advances per temporal frame. The clip-space conversion now uses the *render* target's size rather than the window's, which is [BUG-030](../bug.md). |
 | History lifecycle | **Done.** `requestReset`/`consumeReset` reach a real encode; resets are wired to camera cuts, world/dimension changes and every target rebuild or resize. |
-| Transparency / reactive mask | **Not implemented.** No producer exists, so the descriptor option stays off rather than being enabled without a mask. |
-| Moving geometry | **Not implemented.** Pixels that move independently of the camera reproject as if they were static. This is the named remainder, and it is what Phase 8C's previous-transform contract supplies. |
+| Transparency / reactive mask | **Not used, and no longer needed for the case that asked for it.** Particles were the reason a reactive mask was on the table - they write no depth, so the depth producer gives their pixels the background's motion. Their own previous position is available, so they carry a real velocity instead, which is strictly better than telling the scaler to ignore history there. A mask remains the tool for a future surface whose motion genuinely cannot be known. |
+| Moving geometry | **Done for the moving geometry the engine extracts.** Entities (via `EntityRenderDispatcher.extractEntity`), particles (via `SingleQuadParticle.extractRotatedQuad`) and pushed blocks (via `PistonHeadRenderer.extractRenderState`) are stamped with their own previous positions. What is not covered is geometry whose change is not a position - a texture animation, or a block that changes shape in place - and those keep the camera's answer, which for them is correct. |
 
 ### 3.2 How the motion is produced, and what it deliberately does not claim
 
@@ -172,13 +173,36 @@ Three conventions are load-bearing, and each has a check:
   clip-space z directly and a depth of exactly 1.0 is the far plane, which is given zero motion rather
   than an arbitrary reprojection of a point at infinity.
 
+The object half is a different mechanism, because the information is a different kind. Depth cannot
+say where a mob was; the engine can, because it interpolates every rendered position between two
+ticks. So the objects the engine extracts are captured at their extraction hooks and drawn over the
+depth-derived field:
+
+- **An entity** carries a bounding box and a world position, and its identity is its entity id, so the
+  previous frame's position is an exact lookup. Its depth *is* in the depth buffer, so the stamp only
+  has to correct the difference between where it is and where it was, and a stamp below the jitter is
+  skipped.
+- **A particle** is the opposite case: drawn with a depth test and no depth write, so the
+  depth-derived motion at its pixels belongs to whatever is behind it and is wrong for the particle
+  even when the particle is standing still. Every particle is therefore stamped, and the previous
+  position is kept on the particle itself by the extraction hook rather than re-derived from its tick
+  fields - a tick lands between two rendered frames one frame in three at sixty frames per second.
+- **A pushed block** is a full cube whose block position never changes while the piston's interpolated
+  offset carries it, which makes the identity and the movement exact and separate.
+
+The stamps are drawn as instanced screen-space quads with the depth buffer bound to the fragment
+stage, and a pixel is only overwritten when the depth read there falls inside the object's own clip
+depth range. That is what keeps a mob standing behind a wall from taking the wall's pixels with it,
+and it is checked directly: the scaling harness stamps an entity whose depth range contradicts the
+scene depth and asserts that the frame is untouched.
+
 ### 3.3 What was verified
 
 | Gate | Command | Result |
 |---|---|---|
-| Native motion kernel | `./scripts/run_smoke.sh` | `ALL CHECKS PASSED`, including ten new motion assertions: an exact convention check (a one-NDC-unit shift is exactly half the texture in pixels, with y down), an unmoved camera producing zero motion on a perspective projection, uniform motion on a flat depth plane scaling as one over view depth with the documented sign, zero motion at the far plane, and a mismatched depth size being refused. |
-| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (now 63 checks), of which fifteen are temporal: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, a first frame and a camera cut each request a reset while a continuous camera does not, and a resize keeps the path running. |
-| Mixin injection points | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (62 checks), including the new `GameRendererProjectionMixin` and its `ProjectionMatrixBuffer.getBuffer` target. |
+| Native motion kernel and overlay | `./scripts/run_smoke.sh` | `ALL CHECKS PASSED`, including twenty motion assertions: an exact convention check (a one-NDC-unit shift is exactly half the texture in pixels, with y down), an unmoved camera producing zero motion on a perspective projection, uniform motion on a flat depth plane scaling as one over view depth with the documented sign, zero motion at the far plane, a mismatched depth size being refused, a stamp replacing the depth-derived motion exactly inside its box, a stamp the depth test rejects changing nothing, and the stamp table being clamped and counted rather than overrun. |
+| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (86 assertions), of which twenty-one are temporal: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, an entity with no previous position contributing nothing, an entity's own movement being stamped while the rest of the frame keeps the depth-derived answer, **a stamp the depth buffer contradicts being rejected**, particles and pushed blocks being stamped, a first frame and a camera cut each requesting a reset while a continuous camera does not, and a resize keeping the path running. |
+| Mixin injection points | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks), including `GameRendererProjectionMixin`, `EntityMotionMixin`, `ParticleMotionMixin` and `PistonMotionMixin` with their exact targets and descriptors. |
 | Build, shaders, render check, standalone suite | `./scripts/build_mod.sh`, `./tools/shader_inventory/run.sh`, `./tools/render_check/run.sh`, `StandaloneTestRunner` | all green. |
 
 ### 3.4 What is not verified, and what remains
@@ -187,11 +211,10 @@ Three conventions are load-bearing, and each has a check:
    that exist, not for behaviour at runtime. A session has to confirm that a moving camera produces a
    stable image, that turning the camera does not smear, that a dimension change does not blend two
    worlds, and that the frame cost is what it is.
-2. **Moving geometry ghosts.** The motion field describes the camera, so a mob, a particle or an
-   animated block carries the motion of the terrain behind it and accumulates into a trailing image.
-   This is not a small remainder: Phase 8C's previous-transform contract exists to supply exactly this,
-   and until it does the honest description of this mode is "temporal upscaling and antialiasing for a
-   static world and a moving camera".
+2. **No in-game confirmation of the object path either.** The stamps are verified against synthetic
+   positions in the harness and their mixins are verified to resolve; whether a real mob's silhouette
+   is covered tightly enough by its bounding box, and whether a piston's two moving halves are both
+   inside one stamp, are observations only a session can make.
 3. **No reactive mask.** The scaler can be told per pixel to favour the current frame where its motion
    is unreliable, but the mask needs a producer - per-object identity or coverage - and the render
    state this engine exposes has no such identifier. Enabling the descriptor option without the mask
