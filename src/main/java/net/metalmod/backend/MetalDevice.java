@@ -96,12 +96,12 @@ public final class MetalDevice implements GpuDeviceBackend {
     private static int privateTextureLogCount;
 
     static synchronized void notePrivateTexture(String label, Object format, int width, int height,
-                                                int depthOrLayers) {
+                                                int depthOrLayers, int usage) {
         privateTextureCount++;
         if (privateTextureLogCount < 12) {
             privateTextureLogCount++;
             System.err.println("[MetalMod] private storage: '" + label + "' " + format + " "
-                    + width + "x" + height + "x" + depthOrLayers);
+                    + width + "x" + height + "x" + depthOrLayers + " usage=" + usage);
         }
     }
 

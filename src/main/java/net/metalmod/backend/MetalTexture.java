@@ -40,9 +40,13 @@ public final class MetalTexture extends GpuTexture {
      * flags. Classifying on them claimed nothing at all (a real session reported
      * {@code privateTextures=0} while every render target stayed shared).
      *
-     * <p>What does discriminate is that a render target is rendered into rather than uploaded into.
-     * The textures the engine uploads - atlases, dynamic textures, the lightmap, the texel-buffer
-     * emulation - are not render attachments, so they stay shared and their uploads keep working.
+     * <p>The render-attachment bit is a truthful signal, checked against the engine rather than
+     * assumed: {@code TextureAtlas} builds the sprite sheet with {@code ANIMATE_SPRITE_BLIT} render
+     * passes into the atlas mip views (usage 15), {@code Lightmap} renders its 16x16 texture with a
+     * render pass (usage 13), and the textures the engine actually uploads from the CPU - plain
+     * textures, dynamic textures and the cloud texel buffers - declare usage 5
+     * ({@code COPY_DST | TEXTURE_BINDING}) and never the render-attachment bit. So atlases and
+     * lightmaps being claimed here is correct, and the uploads that do happen are not.
      *
      * <p>Separate from {@link #usesSharedStorage} so the rule can be tested without depending on how
      * the process was launched.
@@ -90,7 +94,7 @@ public final class MetalTexture extends GpuTexture {
             MetalDevice.reportResourceFailure("texture '" + label + "' format=" + format
                     + " size=" + width + "x" + height + "x" + depthOrLayers + " mips=" + mipLevels);
         } else if (!shared) {
-            MetalDevice.notePrivateTexture(label, format, width, height, depthOrLayers);
+            MetalDevice.notePrivateTexture(label, format, width, height, depthOrLayers, usage);
         }
     }
 

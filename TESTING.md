@@ -163,11 +163,22 @@ texture with a copy flag shared and consequently claimed **nothing at all**: a r
 `privateTextures=0` while every render target stayed shared, and the startup log had no
 `private storage:` lines. That is the thing to check first if the change appears to do nothing.
 
-What discriminates is that a render target is *rendered into* rather than *uploaded into*. The
-textures the engine does upload - atlases, dynamic textures, the lightmap, the texel-buffer
-emulation - are not render attachments, so they stay shared and their uploads keep working.
+What discriminates is that a render target is *rendered into* rather than *uploaded into*, and in
+26.2 that line falls where the flags say it does. Bytecode-verified for each case:
 
-The rule is a claim about engine behaviour, so it is checked rather than trusted:
+| texture | usage | how the engine fills it |
+|---|---|---|
+| `Main / Color`, `Main / Depth`, `Entity Outline` | 15 | render passes |
+| `minecraft:textures/atlas/*.png` | 15 | render passes (`ANIMATE_SPRITE_BLIT` into the atlas mip views) |
+| `Lightmap` (16x16) | 13 = `COPY_DST\|BINDING\|RENDER_ATTACHMENT` | a render pass |
+| plain textures, dynamic textures, cloud texel buffers | 5 = `COPY_DST\|BINDING` | CPU upload (`writeToTexture`) |
+
+So the atlases and the lightmap really are render targets - Minecraft builds the sprite sheet and the
+lightmap on the GPU - and they take no CPU upload. The textures that *are* uploaded stay shared, which
+is why `privateCpuAccess` is zero: those are also the ~2 uploads per frame the F8 capture counts.
+Seeing `private storage:` lines for atlases is expected, not a fault.
+
+The rule is still a claim about engine behaviour, so it is checked rather than trusted:
 
 - An upload (`writeToTexture`, `copyBufferToTexture`) aimed at a private texture **cannot work** -
   the bytes are in GPU-private memory - so it is refused and counted. `privateCpuAccess` in the
