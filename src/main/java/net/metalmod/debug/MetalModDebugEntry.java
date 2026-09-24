@@ -69,6 +69,11 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                 + net.metalmod.backend.MetalDevice.lastFences() + " fences)§r");
         }
         displayer.addLine("§6[MetalMod]§r " + PerformanceCapture.status());
+        if (net.metalmod.debug.CaptureRouteRecorder.isActive()) {
+            displayer.addLine("§6[MetalMod]§r §cREC§r route: "
+                    + net.metalmod.debug.CaptureRouteRecorder.sampleCount()
+                    + " samples §7(F7 stops; F8 replays a recorded route)§r");
+        }
 
         // The backend's health counters. These are the numbers that explain a black or missing
         // object: a shader sampling something nothing bound, an attribute dropped from the vertex

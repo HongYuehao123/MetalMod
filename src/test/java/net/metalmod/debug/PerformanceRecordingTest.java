@@ -34,9 +34,12 @@ public final class PerformanceRecordingTest {
             checkColumn(PerformanceRecording.COL_GC_COLLECTIONS, "gc_collections");
             checkColumn(PerformanceRecording.COL_GC_REPORTED_MS, "gc_reported_ms");
             checkColumn(PerformanceRecording.COL_CENSUS_ACTIVE, "census_active");
+            checkColumn(PerformanceRecording.COL_ROUTE_STAGE, "route_stage");
             check(PerformanceRecording.COL_FIRST_NATIVE == PerformanceRecording.BASE_COLUMNS.size()
-                    && PerformanceRecording.COL_FIRST_NATIVE == PerformanceRecording.COL_CENSUS_ACTIVE + 1,
+                    && PerformanceRecording.COL_FIRST_NATIVE == PerformanceRecording.COL_ROUTE_STAGE + 1,
                     "native columns start immediately after the last base column");
+            check(PerformanceRecording.COL_ROUTE_STAGE > PerformanceRecording.COL_CENSUS_ACTIVE,
+                    "route_stage is appended, so earlier column indices do not move");
             PerformanceRecording data = new PerformanceRecording(5, List.of("submissions"));
             sample(data, 10_000_000, 0, 0, 1);
             sample(data, 20_000_000, 0, 0, 1);
@@ -44,18 +47,18 @@ public final class PerformanceRecordingTest {
             sample(data, 800_000_000, 0, 1, 1);
             sample(data, 700_000_000, 0, 0, 0);
             check(data.full(), "sample capacity must bound memory");
-            String summary = data.summary("Backend: Vulkan", "test");
+            String summary = data.summary("Backend: Vulkan", "test", null);
             check(summary.contains("Gameplay frames: 2"), "exclude paused/menu/unfocused intervals");
             check(summary.contains("Average: 15.000 ms"), "average must exclude menu stalls and use a dot");
             check(summary.contains("p99: 20.000 ms"), "nearest-rank percentile");
             check(summary.contains("Worst: 20.000 ms"), "worst gameplay frame");
             check(Double.isNaN(PerformanceRecording.percentile(new long[0], .99)), "empty percentile");
             PerformanceRecording empty = new PerformanceRecording(1, List.of());
-            check(empty.summary("", "test").contains("No uninterrupted gameplay"), "empty report");
+            check(empty.summary("", "test", null).contains("No uninterrupted gameplay"), "empty report");
 
             Path root = Files.createTempDirectory("metalmod-capture-test-");
             try {
-                Path output = data.write(root, "test", "Backend: Vulkan", "test");
+                Path output = data.write(root, "test", "Backend: Vulkan", "test", null);
                 List<String> csv = Files.readAllLines(output.resolve("frames.csv"));
                 check(csv.size() == 6, "CSV preserves all samples including excluded ones");
                 check(csv.get(0).startsWith("frame,elapsed_ns,frame_ns,"), "column header");

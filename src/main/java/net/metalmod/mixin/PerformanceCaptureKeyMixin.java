@@ -1,5 +1,6 @@
 package net.metalmod.mixin;
 
+import net.metalmod.debug.CaptureRouteRecorder;
 import net.metalmod.debug.PerformanceCapture;
 import net.minecraft.client.KeyboardHandler;
 import net.minecraft.client.Minecraft;
@@ -15,11 +16,18 @@ public class PerformanceCaptureKeyMixin {
     @Inject(method = "keyPress", at = @At("HEAD"), cancellable = true)
     private void metalmod$captureKey(long window, int action, KeyEvent event, CallbackInfo ci) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (event.key() == GLFW.GLFW_KEY_F8 && event.modifiers() == 0
-                && window == minecraft.getWindow().handle() && minecraft.gui.screen() == null
-                && minecraft.level != null && minecraft.isWindowActive()) {
+        if (window != minecraft.getWindow().handle() || minecraft.gui.screen() != null
+                || minecraft.level == null || !minecraft.isWindowActive() || event.modifiers() != 0) {
+            return;
+        }
+        // F8 records performance; F7 records the route a capture should replay. Both cancel the
+        // event, so a repeat or release cannot start a second one or leak a held key.
+        if (event.key() == GLFW.GLFW_KEY_F8) {
             if (action == GLFW.GLFW_PRESS) PerformanceCapture.toggle(minecraft);
-            ci.cancel(); // Repeat/release cannot start a second capture or leak a held key.
+            ci.cancel();
+        } else if (event.key() == GLFW.GLFW_KEY_F7) {
+            if (action == GLFW.GLFW_PRESS) CaptureRouteRecorder.toggle(minecraft);
+            ci.cancel();
         }
     }
 }

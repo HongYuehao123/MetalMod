@@ -27,6 +27,7 @@ public class StandaloneTestRunner {
         failures += net.metalmod.backend.MetalFormatTest.runTests();
         failures += net.metalmod.backend.MetalTextureStorageTest.runTests();
         failures += net.metalmod.debug.PerformanceRecordingTest.runTests();
+        failures += net.metalmod.debug.CaptureRouteTest.runTests();
 
         UnifiedMemoryTest.runTests();
 

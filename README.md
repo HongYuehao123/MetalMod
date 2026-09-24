@@ -77,7 +77,11 @@ Press **F8** in a world to record 60 seconds after a five-second countdown (pres
 MetalMod saves a readable summary and per-frame CSV under the game's `debug/metalmod/` folder.
 It captures hitches, uploads, allocations, submissions and waits on Metal, and basic frame times
 on Vulkan/OpenGL for comparison. A capture button is also available in Mod Menu → MetalMod.
-See [TESTING.md](TESTING.md) for the simple comparison procedure.
+
+Press **F7** first to record a **route**: stand where you want a measurement, move on, stand again,
+and press F7 to stop. F8 then teleports along that route and holds each spot for the recorded time, so
+two captures differ only in the dimension and the backend, and `summary.txt` breaks the capture down
+waypoint by waypoint. See [TESTING.md](TESTING.md) for both procedures.
 
 ### Apple Silicon unified-memory telemetry
 Physical RAM, available/compressed memory, swap, process footprint, Metal allocated bytes and the

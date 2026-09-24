@@ -33,6 +33,8 @@ public final class PerformanceCapture {
     private static volatile boolean saving;
     private static Thread writerThread;
     private static boolean frameHookSeen;
+    private static CaptureRoute route;
+    private static CaptureRoutePlayer routePlayer;
     private static volatile String status = "F8: record performance (60s)";
 
     private PerformanceCapture() {}
@@ -57,6 +59,10 @@ public final class PerformanceCapture {
             notify(minecraft, "Load a world before recording performance.");
             return;
         }
+        if (CaptureRouteRecorder.isActive()) {
+            notify(minecraft, "A route is being recorded; F7 stops it first.");
+            return;
+        }
         try {
             // Allocate before the countdown so this setup does not become a measured hitch.
             recording = new PerformanceRecording(36_000, MetalNative.CAPTURE_METRICS);
@@ -70,6 +76,9 @@ public final class PerformanceCapture {
             }
             prefix = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))
                     + "-" + backend.replaceAll("[^A-Za-z0-9_-]", "_");
+            route = CaptureRouteStore.load(minecraft);
+            routePlayer = route == null ? null : new CaptureRoutePlayer(route);
+            boolean prep = !"false".equalsIgnoreCase(System.getProperty("metalmod.capturePrep", "true"));
             metadata = "Backend: " + backend + "\nNative metrics: " + nativeEnabled
                     + "\nMinecraft: " + minecraft.getLaunchedVersion()
                     + "\nOS: " + System.getProperty("os.name") + " " + System.getProperty("os.version")
@@ -78,13 +87,27 @@ public final class PerformanceCapture {
                     + "\nRender distance: " + minecraft.options.renderDistance().get()
                     + "\nVsync: " + minecraft.options.enableVsync().get()
                     + "\nFPS limit: " + minecraft.options.framerateLimit().get()
+                    + "\nDimension: " + CaptureRouteStore.dimension(minecraft)
+                    + "\nRoute: " + (route == null
+                            ? "none for this dimension (F7 records one); move manually"
+                            : route.describe())
+                    + "\nWorld prep: " + (route == null ? "n/a" : prep ? "on" : "off")
+                    + (route == null ? "" : "\nKnown routes: " + CaptureRouteStore.describeAvailable(minecraft))
                     + "\nCapture limit: 60 seconds or 36000 frames"
                     + "\nBoundary: after GpuSurface.present(), on any backend. First partial interval discarded."
                     + "\nCensus diagnostics at start: " + (nativeEnabled && MetalDevice.censusEnabled());
             startedAt = lastFrame = 0;
             lastSeconds = -1;
             readyAt = System.nanoTime() + COUNTDOWN;
-            status = "Capture starts in 5s; F8 stops";
+            if (routePlayer != null) {
+                // Prepare the world and move to the first waypoint while the countdown runs, so the
+                // first measured stage is already settled instead of measuring its own arrival.
+                if (prep) CaptureRoutePlayer.prepare(minecraft);
+                routePlayer.arm(minecraft);
+                status = "Capture starts in 5s at waypoint 1/" + route.stageCount() + "; F8 stops";
+            } else {
+                status = "Capture starts in 5s; F8 stops";
+            }
             notify(minecraft, status);
         } catch (RuntimeException error) {
             fail(minecraft, error);
@@ -94,13 +117,16 @@ public final class PerformanceCapture {
     /** Runs at the surface presentation boundary, including submission of the final present pass. */
     public static void framePresented(Minecraft minecraft) {
         frameHookSeen = true;
+        long now = System.nanoTime();
+        // Route recording samples here too, so a route is sampled on exactly the frames a capture
+        // would see rather than on some independent timer.
+        CaptureRouteRecorder.sample(minecraft, now);
         if (recording == null) return;
         try {
             if (minecraft.level == null || minecraft.player == null) {
                 finish(minecraft, "world closed", false);
                 return;
             }
-            long now = System.nanoTime();
             if (now < readyAt) {
                 updateStatus(minecraft, "Capture starts in ", (int) Math.ceil((readyAt - now) / 1e9));
                 return;
@@ -113,6 +139,9 @@ public final class PerformanceCapture {
                 lastGcCount = gcTotal(false);
                 lastGcMillis = gcTotal(true);
                 rememberContext(minecraft);
+                // Start the first waypoint's dwell clock at the first measured frame. The teleport
+                // itself already happened during the countdown.
+                if (routePlayer != null) routePlayer.startAt(now);
                 updateStatus(minecraft, "Recording performance: ", 60);
                 return;
             }
@@ -148,13 +177,21 @@ public final class PerformanceCapture {
             recording.put(PerformanceRecording.COL_GC_REPORTED_MS, delta(gcMillis, lastGcMillis));
             lastGcCount = gcCount;
             lastGcMillis = gcMillis;
+            if (routePlayer != null) {
+                routePlayer.tick(minecraft, now);
+                recording.put(PerformanceRecording.COL_ROUTE_STAGE, routePlayer.stage());
+            } else {
+                recording.put(PerformanceRecording.COL_ROUTE_STAGE, CaptureRoute.NO_STAGE);
+            }
             rememberContext(minecraft);
             recording.commitFrame();
             lastFrame = now;
             if (now - startedAt >= DURATION || recording.full()) {
                 finish(minecraft, recording.full() ? "36000-frame capacity reached" : "60 seconds elapsed", false);
             } else {
-                updateStatus(minecraft, "Recording performance: ", (int) Math.ceil((DURATION - now + startedAt) / 1e9));
+                updateStatus(minecraft, routePlayer == null ? "Recording performance: "
+                        : "Recording " + routePlayer.status() + ": ",
+                        (int) Math.ceil((DURATION - now + startedAt) / 1e9));
             }
         } catch (RuntimeException error) {
             fail(minecraft, error);
@@ -194,6 +231,7 @@ public final class PerformanceCapture {
 
     public static void close(Minecraft minecraft) {
         try {
+            CaptureRouteRecorder.close();
             if (recording != null) finish(minecraft, "game closing", true);
             // Minecraft may explicitly exit the JVM after close(), even with a non-daemon writer.
             if (writerThread != null) writerThread.join(5000);
@@ -256,12 +294,16 @@ public final class PerformanceCapture {
         // Ownership transfers once. No frame can mutate this recording while it is being written.
         String completedMetadata = metadata, completedPrefix = prefix;
         Path completedRoot = outputRoot;
+        CaptureRoute completedRoute = route;
+        route = null;
+        routePlayer = null;
         saving = true;
         status = "Saving performance capture...";
         Runnable writer = () -> {
             String message;
             try {
-                Path directory = completed.write(completedRoot, completedPrefix, completedMetadata, reason);
+                Path directory = completed.write(completedRoot, completedPrefix, completedMetadata, reason,
+                        completedRoute);
                 message = "Capture saved: " + directory.toAbsolutePath();
                 status = "Capture saved in debug/metalmod; F8 records again";
             } catch (Exception error) {

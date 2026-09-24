@@ -68,6 +68,57 @@ Launch with the backend on, load a world, press **F3**, and let it run at least 
    the same resolution, render distance, FPS limit and vsync. Metal-specific CSV fields are `-1`
    (unavailable) on other backends, rather than misleading zeroes.
 
+### Automated routes (F7 records, F8 replays)
+
+Step 3 above is the weak part of a comparison: two people, or the same person twice, will not walk
+the same path at the same speed, and the scene differs by more than the backends do. A **route**
+replaces it with a fixed list of places to stand, so a capture differs only in the dimension and the
+backend.
+
+1. Go to the dimension, press **F7**, then play the route: stand still where you want a measurement,
+   move to the next spot, stand still again. Press **F7** to stop. Standing still is what produces a
+   measurement - the recorder collapses each stationary stretch into one waypoint whose dwell is
+   however long you stayed. Flying continuously gives one waypoint per sample, which replays
+   faithfully but is rarely what you want.
+2. The route is saved as `debug/metalmod/routes/<dimension>.json` (for example
+   `minecraft.overworld.json`). It is plain JSON: positions, rotation and dwell per waypoint, and it
+   is safe to hand-edit.
+3. Press **F8** as usual. The capture now normalises the world, teleports to each waypoint and holds
+   it for its recorded dwell, then holds at the last one for whatever remains of the 60 seconds.
+   Nothing else changes: the same F8 flow, summary and CSV.
+4. To compare, run the same F8 in the same world on the other backend, or with
+   `-Dmetalmod.privateTextures=false`. Every waypoint is in the same place in both captures.
+
+What the capture adds for a route:
+
+- **`route_stage`** in the CSV: the waypoint index a frame belongs to, `-1` with no route. Frames
+  sharing a stage index across two captures are the same place doing the same thing.
+- **A per-waypoint table** in `summary.txt`: frames, mean/median/p95/worst frame time and the mean
+  player position for each waypoint. The mean position sits next to the waypoint's own coordinates on
+  purpose - teleports run with output suppressed, so a bad coordinate or dimension fails quietly, and
+  a stage whose mean position is nowhere near its waypoint is the visible symptom.
+
+**World prep** runs before the route, to remove the randomness that spoiled the earlier pairs:
+`doDaylightCycle false`, `time set noon`, `weather clear`, `doMobSpawning false`,
+`randomTickSpeed 0`, `kill @e[type=!player,type=!ender_dragon,type=!wither]`, `gamemode spectator`.
+The dragon and the wither are left alive because killing them changes those scenes; an End or wither
+fight is therefore not reproducible and the summary says so. Prep is on by default and switchable off
+with `-Dmetalmod.capturePrep=false`, which is worth doing when you want the world left as it is.
+
+Teleports go through the integrated server's command dispatcher, so routes work in a singleplayer
+world **without cheats**. On a real server the client command path is used instead, which needs
+operator rights. Two settings, both launch-time:
+
+| property | default | meaning |
+|---|---|---|
+| `-Dmetalmod.routeName=<name>` | the dimension id | use a second route in the same dimension |
+| `-Dmetalmod.routeSampleMs=<ms>` | 500 | how often the recorder samples (clamped to 100-5000) |
+
+Keep waypoints within chunks that are already loaded, or within the same X/Z at a different height.
+A teleport into unloaded chunks raises the loading screen, and those frames are excluded from
+gameplay statistics as menu frames - the summary's `Frames saved` versus `Gameplay frames` line shows
+if that happened.
+
 The capture records every interval between surface presentations. It keeps samples in bounded
 memory (maximum 36000 frames, about 11 MiB), then formats/writes them on a background thread after
 recording stops. There is no per-frame disk I/O. Positions are block coordinates, all data stays on
