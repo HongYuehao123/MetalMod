@@ -86,10 +86,20 @@ public class MetalModDebugEntry implements DebugScreenEntry {
             // The two live numbers the scaling pass reads while flying a scene: what extraction costs
             // and what it uploads. The rest lives in the F8 capture, where it is recorded per frame.
             var cost = net.metalmod.backend.MetalDevice.lightingStats();
-            displayer.addLine("§6[MetalMod]§r light cost §b"
-                    + oneDecimal((float) (cost.extractNanos() / 1_000_000.0)) + " ms§r extract | §b"
+            // Sub-millisecond extraction is the normal case at low light counts, and one decimal
+            // rounds it to "0.0 ms" - uninformative in exactly the scaling pass this line exists for.
+            // The capture keeps nanoseconds; this is the live glance.
+            double extractMs = cost.extractNanos() / 1_000_000.0;
+            String extract = extractMs < 1.0
+                    ? String.format(java.util.Locale.ROOT, "%.3f", extractMs) + " ms"
+                    : oneDecimal((float) extractMs) + " ms";
+            // The clustered flag belongs on this line: cluster builds can only be non-zero when
+            // clustering is on, and reading the two from different places is how a page ends up
+            // appearing to contradict itself.
+            displayer.addLine("§6[MetalMod]§r light cost §b" + extract + "§r extract | §b"
                     + (cost.uploadBytes() / 1024) + "§r KiB up | §b"
-                    + cost.clusterBuilds() + "§r cluster builds");
+                    + cost.clusterBuilds() + "§r cluster builds §7(clustered "
+                    + (cost.clustered() ? "on" : "off") + ")§r");
             // Cluster occupancy is how the scaling gate is read off: how full the lists got, and how
             // many sources could not be represented in the cell they reached.
             if (live != null ? live.clusteredLightsEnabled()

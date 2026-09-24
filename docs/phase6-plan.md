@@ -395,7 +395,12 @@ Implemented:
   interpolated rain and thunder levels. It is a versioned value a consumer can check, not a shader
   semantic: the sky remains vanilla's, and nothing here adds a second ambient term.
 - **F3 diagnostics.** The debug section reports the light count, the static index's emitter/section/
-  scan/eviction counters, and the environment summary.
+  scan/eviction counters, the environment summary, and the extraction/upload/cluster cost of the last
+  frame. Note what the index counters do *not* mean today: every vanilla emitter is flagged baked and
+  skipped, and nothing consumes `emitters()` yet, so the index is published for a consumer that does
+  not exist and produces no illumination. Its cost is small - sections are read on demand with a
+  palette prefilter, a handful per frame at most - but `block sources 297 in 512 sections` is not
+  evidence of anything lighting the world.
 
 ### In-game settings page (added 2026-09-24)
 
