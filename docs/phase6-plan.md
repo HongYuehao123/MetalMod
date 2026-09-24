@@ -224,10 +224,6 @@ refill after a teleport rather than a steady per-frame cost - but one sample doe
 so extraction is now measured in three parts and F3 names the largest, which is what will attribute
 it if it returns (see the diagnostics bullet in §6).
 
-Closing the gaps, cheapest first: a wall scene and an in-game lifecycle pass cost a session each; the
-scaling and performance gates need the capture route and, for honest numbers, true GPU timing; the
-consumer gate is a new slice.
-
 **On the two bounds.** They limit different things and should not be quoted as one number:
 
 - the **snapshot capacity** (64) is how many sources exist at once, gathered within 32 blocks of the
