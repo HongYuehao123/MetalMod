@@ -36,7 +36,7 @@ later phases; **dynamic lighting** is Phase 6 and is in progress — see
 >
 > ## ⚠️ MetalFX is not implemented yet
 >
-> MetalFX upscaling and frame interpolation return in Phase 8, against the backend's own textures.
+> MetalFX upscaling and frame interpolation return in Phase 7, against the backend's own textures.
 > The retired MoltenVK-interop scalers have been deleted, and the config screen no longer exposes
 > scaling/frame-generation settings that did nothing.
 
@@ -123,7 +123,7 @@ These are the reasons the mod is not a drop-in replacement yet.
    heavy underground one. Before that, utility submission batching cut the chunk-mesh upload path's
    cost by 95% per frame, and private storage for render targets measured 9% *slower* and is off by
    default. See [TESTING.md](TESTING.md) for the numbers and the procedure.
-3. **MetalFX / frame generation are not implemented (Phase 8).** They return against the backend's
+3. **MetalFX / frame generation are not implemented (Phase 7).** They return against the backend's
    own textures, and frame generation additionally needs a display-link pacer so two drawables land
    on different refreshes.
 4. **Internal resolution scaling is not implemented.** Shrinking the main render target breaks the
@@ -270,4 +270,4 @@ MetalMod/
   active dynamic-light snapshot count, the static block-source index counters, the environment
   summary when enabled, and the `unbound/missingAttr/failed` health counters.
 - **Config screen**: the Metal backend toggle and the UMA memory option. MetalFX/scaling controls are
-  gone until Phase 8 — they configured a pipeline that no longer exists.
+  gone until Phase 7 — they configured a pipeline that no longer exists.

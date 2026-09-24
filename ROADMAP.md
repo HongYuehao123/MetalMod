@@ -115,9 +115,9 @@ our own textures, and ray tracing becomes possible at all.
 |---|---|
 | `VulkanFrameManager` | Superseded: no VkImage plumbing needed once we own the device. |
 | `MetalBridge` Vulkan interop (`metalmod_register_vulkan_device`, `metalmod_process_frame`) | Superseded by backend-owned textures. |
-| `metalmod_pacer.mm`, `metalmod_compositor.mm`, spatial/temporal/interpolator wrappers | MetalFX returns in Phase 8, against our own textures, with no interop or pacing hacks. |
+| `metalmod_pacer.mm`, `metalmod_compositor.mm`, spatial/temporal/interpolator wrappers | MetalFX returns in Phase 7, against our own textures, with no interop or pacing hacks. |
 | `RenderTargetMixin` | Already removed — scaling the main render target breaks the GUI (`Scissor ... out of bounds for render area`) and froze input. |
-| `JitterHelper` | Returns in Phase 8 with temporal upscaling. |
+| `JitterHelper` | Returns in Phase 7 with temporal upscaling. |
 | `MetalMemoryAllocator` | **Removed.** LWJGL 3.4 requires native function pointers (`getMalloc`, `getAlignedFree`, …) for its fast allocation path; a Java pool cannot supply them honestly, and mixing libc- and pool-allocated pointers behind one `free()` risks corruption. It was also a measured pessimisation. |
 
 **Retirement is done (Phase 5).** `VulkanFrameManager` and `JitterHelper` are deleted, along with
@@ -127,7 +127,7 @@ frame entry points; and the native library no longer builds `metalmod_bridge.mm`
 dylib now exports only the Metal backend (`mmm_*`) and the UMA/memory pool (`metalmod_uma_*`,
 `metalmod_get_memory_telemetry`, `metalmod_memory_pressure_init`). The F3 MetalFX line and the
 config screen's scaling/preset/frame-gen controls went with them, since they configured a pipeline
-that no longer exists. MetalFX returns in Phase 8 against our own textures.
+that no longer exists. MetalFX returns in Phase 7 against our own textures.
 
 ---
 
@@ -269,7 +269,7 @@ BUG-004.
 
 **Risk:** MC's `ShaderType` has only `VERTEX` and `FRAGMENT`. Any pack needing compute or geometry
 shaders — common in modern shaderpacks — requires extending the pipeline beyond what the vanilla
-abstraction models. Plan for that in Phase 7.
+abstraction models. Plan for that in Phase 8.
 
 ### Phase 5 — Vanilla render parity  · **L–XL**  ✅ **DONE**
 
@@ -295,7 +295,7 @@ remaining known gap (the Nether has a route but no paired run) are in
 **Compatibility risk (decision: not pursued).** Sodium replaces terrain rendering, and it was named
 here as Phase 5's main compatibility risk. The call is now to **not** port or test Sodium: it sits on
 Blaze3D's abstraction in modern versions, so it should follow without backend work, and it does not
-make Phase 7's shaderpack work easier. Iris is a separate Phase 7 dependency. If a Metal+Sodium
+make Phase 8's shaderpack work easier. Iris is a separate Phase 8 dependency. If a Metal+Sodium
 combination is ever attempted, the relevant backend gap is the indirect/multi-draw-indirect path,
 which is still a documented no-op (see §6).
 
@@ -336,7 +336,7 @@ The census also drove the opposite conclusion for blending. Vanilla uses ten dis
 functions, and the harness exercised exactly one of them, so all eight factors vanilla actually
 blends with rested on an SDK-header table and nothing else - the same kind of evidence that let
 BUG-006 hide. Every one of the ten is now rendered and compared against the blend equation evaluated
-on the CPU, along with the five factors BUG-006 corrected that vanilla never uses but Phase 7's
+on the CPU, along with the five factors BUG-006 corrected that vanilla never uses but Phase 8's
 shaderpacks will. The CPU model rounds its inputs to 8 bits first, so the expectation matches the
 attachment exactly rather than within a tolerance that could hide an off-by-one; breaking any single
 factor mapping now fails precisely the cases that use it.
@@ -384,7 +384,7 @@ explicit ownership modes and a shader consumer remain deferred — see
 
 Vanilla lighting is baked: one block-light and one sky-light value per block, updated on the CPU.
 That gives a shader or a path tracer nothing to work with except a lightmap texture, and nothing that
-moves. Both shaderpacks (Phase 7) and ray tracing (Phase 9) need a real light model, so it is its
+moves. Both shaderpacks (Phase 8) and ray tracing (Phase 9) need a real light model, so it is its
 own phase rather than a detail of either.
 
 - **A light-source model.** Point/spot/area lights with colour and intensity, emitted by blocks,
@@ -401,40 +401,67 @@ own phase rather than a detail of either.
 the light set instead of reconstructing lighting from the vanilla lightmap alone.
 
 **Dependencies:** needs Phase 3 (draw calls) plus the lightmap and post-processing passes from
-Phase 5. It is a prerequisite for good shaderpack lighting (Phase 7) and for any ray-traced lighting
+Phase 5. It is a prerequisite for good shaderpack lighting (Phase 8) and for any ray-traced lighting
 (Phase 9).
 
 **Risks:** many lights is a performance problem before it is a correctness problem — keep the light
 buffer bounded and cull aggressively. Vanilla's own lighting must keep working unchanged, and the
 feature stays user-toggleable so a pack that brings its own lighting is not double-lit.
 
-### Phase 7 — Shaderpacks  · **L**
+### Phase 7 — MetalFX, natively  · **M–L**
+
+MetalMod owns the device, textures and swapchain, so MetalFX can operate on our own resources
+without interop or presentation conflicts. Shaderpack support is not a prerequisite: validate the
+integration against the vanilla rendering path first, then extend it to packs in Phase 8.
+
+Deliver in three increments:
+
+- **7A — Spatial upscaling.** Add render-resolution controls and spatial upscaling, keep the HUD at
+  native resolution, handle window resizing, and measure image quality and performance against
+  native-resolution rendering.
+- **7B — Temporal upscaling.** Add projection jitter, motion information and temporal-history
+  lifecycle management, including resets on camera cuts, world changes and resolution changes.
+  Depth reprojection can describe camera motion but is not sufficient for independently moving
+  objects. Validate entities, particles, water and camera movement for ghosting and instability.
+- **7C — Frame generation.** A separate milestone for interpolation and presentation pacing via
+  `CAMetalDisplayLink`. Validate delivery of interpolated frames, hardware/OS capability fallback,
+  frame pacing and input latency; treat latency as a measured tradeoff, not a free performance win.
+
+**Integration contract:** define the scene-colour, depth and motion inputs, their resolution and
+coordinate conventions, and temporal-history ownership. Specify where upscaling/interpolation sits
+relative to post-processing and HUD composition so Phase 8 can integrate shaderpack output against
+this contract.
+
+**Done when:** spatial and temporal modes render correctly through resizing and history resets,
+with measured quality and performance; frame generation passes its separate pacing and latency
+checks on supported hardware. Unsupported modes fall back cleanly, and the feature-off path retains
+native-resolution rendering.
+
+**Dependencies:** builds on Phase 5's rendering and presentation foundations. Complete Phase 6's
+existing gates before starting this phase; shaderpack compatibility follows in Phase 8.
+
+**Risks:** owning presentation removes the old interoperability obstacle, but motion correctness,
+temporal reconstruction and frame generation remain substantial work. Validate each increment
+independently rather than treating all three as a small scaler integration.
+
+### Phase 8 — Shaderpacks  · **L**
 
 - A shaderpack-aware `ShaderSource` (packs ship GLSL, so the Phase 4 path applies).
 - Injecting pack-declared passes (shadow, deferred, composite) into the frame graph.
 - Extending beyond vertex/fragment for packs that use compute — likely a backend-specific extension to `RenderPipeline`.
 - Pack-provided uniforms, samplers, custom textures, and buffer formats.
+- Integrating pack output with Phase 7's MetalFX input and composition contract, with explicit
+  capability checks and fallback when a pack cannot supply the inputs a selected mode requires.
 
 **Done when:** a representative set of popular packs loads without errors and produces correct
-output. Feature coverage, not a single pack, is the milestone.
-
-### Phase 8 — MetalFX, natively  · **S–M**
-
-Now straightforward, because MetalMod owns the device and the swapchain:
-
-- Temporal/spatial upscaling over our own textures — no `VK_EXT_metal_objects`, no format
-  reconciliation, no presentation fight.
-- Temporal upscaling needs motion vectors, which vanilla does not produce: either the render graph
-  exposes them or we add a depth-reprojection pass.
-- Frame generation via `CAMetalDisplayLink` pacing, presenting the interpolated frame on its own
-  refresh. This costs about one refresh of input latency (~8 ms at 120 Hz) — a deliberate trade, not
-  a free win.
+output. Feature coverage, not a single pack, is the milestone. Supported MetalFX combinations are
+validated, and unsupported combinations fall back explicitly.
 
 ### Phase 9 — Ray tracing  · **XL (research)**
 
 - Build BLAS/TLAS from chunk meshes; rebuild strategy for chunk edits.
 - Hybrid raster + RT: shadows, reflections, ambient occlusion first; full path tracing later.
-- Denoising and temporal accumulation on top of Phase 8's machinery.
+- Denoising and temporal accumulation on top of Phase 7's machinery.
 
 Apple silicon M3 and later have hardware ray tracing; this is the objective that most justifies a
 native Metal backend, since MoltenVK cannot express it at all.
@@ -453,7 +480,7 @@ native Metal backend, since MoltenVK cannot express it at all.
   and theirs does not. Budget ongoing maintenance.
 - **Feature gaps.** Apple GPUs differ from the Vulkan feature set MC targets; some assumptions will
   need `DeviceFeatures` negotiation rather than hardcoding.
-- **Ecosystem.** Iris must work for shaderpacks (Phase 7). Sodium compatibility is explicitly not
+- **Ecosystem.** Iris must work for shaderpacks (Phase 8). Sodium compatibility is explicitly not
   pursued: it sits on Blaze3D's abstraction, and porting it does not make shaderpack work easier. If
   it is ever attempted, the indirect-draw path is the known gap.
 

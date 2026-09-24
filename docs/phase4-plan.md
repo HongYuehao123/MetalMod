@@ -180,7 +180,7 @@ Arrays of samplers, and a sampler bound at an index different from its texture, 
 ### 4.4 Stage types beyond vertex/fragment
 
 `ShaderType` has only `VERTEX` and `FRAGMENT`. Compute and geometry shaders cannot be expressed, which
-blocks Phase 7 for any pack that uses them. Out of scope for Phase 4 proper; noted so the pipeline
+blocks Phase 8 for any pack that uses them. Out of scope for Phase 4 proper; noted so the pipeline
 abstraction is not designed in a way that forecloses it.
 
 ### 4.5 In-game verification

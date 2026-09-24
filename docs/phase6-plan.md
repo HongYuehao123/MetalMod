@@ -73,7 +73,7 @@ Keep the roadmap's broader light model, but deliver it in explicit increments:
 3. **6C: bounded scaling and coverage.** Cluster lists, overflow policy, entities, cutouts,
    translucent terrain/water, particles where appropriate, regression scenes and performance gates.
 4. **6D: downstream contract.** Incremental static block-source indexing, environment metadata,
-   a versioned GPU representation and a diagnostic shader consumer. Phase 7 integrates actual packs.
+   a versioned GPU representation and a diagnostic shader consumer. Phase 8 integrates actual packs.
 
 Point lights are the first implemented type. Reserve type/flags/version fields for spot and area
 lights, but do not advertise those types as supported before their evaluators exist. The sky is an
@@ -186,7 +186,7 @@ values or save data.
   three paired repetitions; record settings/build/thermal drift. Add true GPU timing before drawing
   GPU-specific conclusions, or label wall-time evidence as such.
 - **Consumer:** a diagnostic shader reads the published light records, ABI version and shadow flags;
-  external ownership disables built-in evaluation. Actual shaderpack compatibility remains Phase 7.
+  external ownership disables built-in evaluation. Actual shaderpack compatibility remains Phase 8.
 
 ### Current verdict against those gates (2026-09-24)
 
@@ -420,7 +420,7 @@ Not implemented, and not claimed:
 
 - **No diagnostic *shader* consumer.** The light records, the ABI version and the cluster table are
   published and unit-tested, but no shipped shader reads them as a consumer yet; the offscreen render
-  check is the only consumer. Phase 7 integrates actual packs.
+  check is the only consumer. Phase 8 integrates actual packs.
 - **No explicit ownership modes.** There is no "vanilla only / MetalMod / external pack" selector and
   no pack-facing API. `-Dmetalmod.dynamicLights=false` is the current way to get the vanilla path.
 - **No block-state-change invalidation.** A section is rescanned when it is (re)loaded or evicted, not

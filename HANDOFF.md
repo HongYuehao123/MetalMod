@@ -51,7 +51,9 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **in progress**; 6A/6B/6C implemented and verified offline, 6D partial |
-| 7+ — shaderpacks, MetalFX, ray tracing | not started |
+| 7 — MetalFX | not started |
+| 8 — shaderpacks | not started |
+| 9 — ray tracing | not started |
 
 ## Phase 5 close-out and next step
 
@@ -202,7 +204,7 @@ $HOME/Documents/.minecraft/versions/MetalMod_Test_26.2
 
 Mods present: Fabric API, Mod Menu, Placeholder API, and the built MetalMod jar.
 **Sodium is deliberately not installed** — compatibility with it is not pursued (it sits on
-Blaze3D's abstraction, and porting it does not simplify the shaderpack work). Iris is a Phase 7
+Blaze3D's abstraction, and porting it does not simplify the shaderpack work). Iris is a Phase 8
 dependency and lives in the separate `26.2-Fabric` instance.
 
 Override the build target with `METALMOD_MC_INSTANCE`.
@@ -216,4 +218,4 @@ Override the build target with `METALMOD_MC_INSTANCE`.
 | Remove main-render-target scaling | It broke the GUI and froze input |
 | Remove the LWJGL allocator interception | LWJGL 3.4 needs native function pointers for its fast path; mixing allocator ownership risks corruption. Also a measured pessimisation. |
 | Delete the MoltenVK-interop / MetalFX leftovers | Inert: a per-frame hook and native scalers that could never present, plus config that controlled nothing |
-| Do not pursue Sodium compatibility | It follows Blaze3D and does not ease shaderpack work (Phase 7) |
+| Do not pursue Sodium compatibility | It follows Blaze3D and does not ease shaderpack work (Phase 8) |
