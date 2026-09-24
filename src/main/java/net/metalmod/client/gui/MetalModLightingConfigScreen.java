@@ -128,7 +128,8 @@ public class MetalModLightingConfigScreen extends Screen {
                     + " overrides it from now on and is saved for the next launch.");
         }
         text.append(" Dynamic lighting lights terrain and particles from held or dropped "
-                + "light-emitting items, up to 32 unshadowed sources. Placed blocks are "
+                + "light-emitting items, up to " + net.metalmod.lighting.LightSnapshot.CAPACITY
+                + " unshadowed sources. Placed blocks are "
                 + "not added on top of vanilla's baked lightmap, and entities are not covered yet. "
                 + "Clustered lists evaluate only the lights near each 16-block cell, which is what "
                 + "keeps a large set affordable.");

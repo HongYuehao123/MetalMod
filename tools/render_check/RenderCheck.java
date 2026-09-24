@@ -643,8 +643,11 @@ public final class RenderCheck {
 
             // A full set: the shader's loop bound is the declared array, so all eight contribute.
             java.util.List<net.metalmod.lighting.PointLight> full = new java.util.ArrayList<>();
+            // Intensity derived from the capacity so the set's total is exactly one light's worth,
+            // whatever the capacity is. The literal this replaced only summed to 1 at eight lights.
+            float share = 1.0f / net.metalmod.lighting.LightSnapshot.CAPACITY;
             for (int i = 0; i < net.metalmod.lighting.LightSnapshot.CAPACITY; i++) {
-                full.add(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.125f));
+                full.add(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, share));
             }
             net.metalmod.lighting.LightCollector.publish(
                     new net.metalmod.lighting.LightSnapshot(0, 0, 0, full));

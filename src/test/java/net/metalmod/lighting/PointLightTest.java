@@ -41,6 +41,16 @@ public final class PointLightTest {
                     "second record starts at 16 + 32 and is camera-relative too");
             rejected(() -> new LightSnapshot(0, 0, 0, java.util.Collections.nCopies(
                     LightSnapshot.CAPACITY + 1, new PointLight(0, 0, 0, 1, 1, 1, 1, 1))));
+            // The published bound, pinned here so a change to it is a decision rather than a slip, and
+            // so the derived sizes that follow from it are checked to stay in range.
+            require(LightSnapshot.CAPACITY == 64, "published light capacity");
+            require(LightSnapshot.BYTES == 16 + LightSnapshot.CAPACITY * 32,
+                    "the light set buffer follows the capacity");
+            require(LightClusterGrid.recordTexel(LightSnapshot.CAPACITY - 1) + 2
+                            <= LightClusterGrid.TEXELS,
+                    "the cluster table has room for a full light set");
+            require(LightClusterGrid.TEXELS <= 16384, "the cluster table stays one texture row");
+            require(LightClusterGrid.ENTRIES_PER_CELL == 16, "published per-cell bound");
             System.out.println("PASS point-light ABI, large origins and invalid input rejection");
             return 0;
         } catch (AssertionError error) {

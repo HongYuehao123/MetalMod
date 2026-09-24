@@ -256,7 +256,7 @@ MetalMod/
   `config/metalmod.properties`, or `-Dmetalmod.metalBackend=true`.
 - **Dynamic light preview**: add `-Dmetalmod.dynamicLights=true` to JVM arguments with the Metal
   backend enabled. This experimental path lights terrain and particles from held/dropped
-  light-emitting block items, up to 32 unshadowed sources, and only through the
+  light-emitting block items, up to 64 unshadowed sources, and only through the
   recognized vanilla terrain, particle, entity, item and moving-block shaders. Emissive entity passes
   are excluded, and the inventory is left alone by the same rule that fills only vanilla's remaining
   lightmap headroom. A source buried in or sealed by opaque blocks is dropped, so it cannot light

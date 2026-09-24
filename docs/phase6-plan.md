@@ -2,7 +2,7 @@
 
 Status: **6A, 6B and 6C are implemented and verified; 6D is partly implemented. Phase 6 is NOT
 complete** - the lifecycle, scaling-measurement, performance and consumer gates in §5 are unmet, and
-the implemented cap is 32 lights rather than the proposed 256. The feature is usable and the wiring is
+the published capacity is 64 lights rather than the proposed 256. The feature is usable and the wiring is
 confirmed in game. Updated 2026-09-24.
 Baseline reviewed: `bdcd5c0`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro.
 
@@ -197,7 +197,7 @@ values or save data.
 | Image correctness | **Met offline, partly confirmed in game.** The render check covers falloff at centre/radius/outside, two coloured lights, large world and camera coordinates, fog order, cutout, translucency, entities, items and moving blocks, all with explicit composition assertions. Not covered: the offhand specifically, and a literal chunk-boundary crossing (the large-origin case exercises the same arithmetic). |
 | Lifecycle | **Not met.** Pickup, despawn, dimension switch, disconnect/reconnect and resize have no recorded evidence, in game or offline. Buffer churn is covered by the four-rotation fence test, and interpolation by the fractional-camera case, but that is not the gate. |
 | Scope honesty | **Met except the wall scene.** GUI, emissive and glint paths are excluded and asserted; placed torches are indexed but never added on top of their baked light. A wall scene demonstrating the remaining leakage has not been captured. |
-| Scaling | **Not met.** Deterministic scenes have not been run, and the implemented bounds are 32 active lights and 16 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
+| Scaling | **Not met.** Deterministic scenes have not been run, and the implemented bounds are 64 active lights and 16 entries per cell rather than the proposed 256 and 32. Counters for selected/dropped/occupancy exist on F3; extraction and culling time, upload bytes and allocation rate are not recorded. |
 | Performance | **Not met.** No measurement of any kind. The interleaved off/on/off/on route captures and the 10% budget are untouched. |
 | Consumer | **Not met.** No diagnostic shader consumer and no ownership modes. The records, ABI version and cluster table are published and unit-tested, but nothing shipped reads them as a consumer. |
 
@@ -207,7 +207,7 @@ consumer gate is a new slice.
 
 **On the two bounds.** They limit different things and should not be quoted as one number:
 
-- the **snapshot capacity** (32) is how many sources exist at once, gathered within 32 blocks of the
+- the **snapshot capacity** (64) is how many sources exist at once, gathered within 32 blocks of the
   camera and kept by contribution. It bounds coverage across that window, not the cost of a pixel, and
   a scene with hundreds of lights spread over hundreds of blocks does not stress it - only density
   within the search radius does, which is what F3's `dropped` counter reports.
@@ -279,7 +279,7 @@ vanilla terrain shaders and the M4 Pro validated in offline tests. No config-men
 - **Bounded shader loop.** The fragment stage evaluates at most `ENTRIES_PER_CELL` lights from its
   own cell, each index clamped to the published count, so an exhausted or corrupted table can only
   produce a dimmer pixel, never an out-of-bounds read.
-- **Raised cap.** The flat light set is now 32 records (was 8); the clustered variant still publishes
+- **Raised cap.** The flat light set is now 64 records (was 8); the clustered variant still publishes
   the same set, so the two representations are directly comparable.
 
 **Particle coverage added (2026-09-24), from an in-game report that particles stay dark.** Particles

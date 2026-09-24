@@ -11,7 +11,17 @@ public record LightSnapshot(double cameraX, double cameraY, double cameraZ,
     public static final String UNIFORM = "MetalModLightSet";
     /** Published record version, so a consumer can tell which layout it is reading. */
     public static final int ABI_VERSION = 1;
-    public static final int CAPACITY = 32;
+    /**
+     * How many sources one frame may publish.
+     *
+     * <p>This is the bound on lights that <em>exist</em> at once, not on lights that light one place:
+     * the collector gathers sources within {@link LightCollector#SEARCH_RADIUS} of the camera and keeps
+     * the strongest this many, and the cluster grid then decides which of them reach any given cell.
+     * The two bounds are independent - the cell capacity is what limits per-pixel work - so raising
+     * this costs coverage sorting and upload size rather than shader iterations, except in the flat
+     * path, whose fragment loop does run once per published light.
+     */
+    public static final int CAPACITY = 64;
     public static final int BYTES = 16 + CAPACITY * PointLight.BYTES;
 
     public LightSnapshot {
