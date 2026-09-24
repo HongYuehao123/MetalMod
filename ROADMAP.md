@@ -271,7 +271,7 @@ BUG-004.
 shaders — common in modern shaderpacks — requires extending the pipeline beyond what the vanilla
 abstraction models. Plan for that in Phase 7.
 
-### Phase 5 — Vanilla render parity  · **L–XL**
+### Phase 5 — Vanilla render parity  · **L–XL**  ✅ **DONE**
 
 The bulk of the work, and where "it compiles" becomes "it plays".
 
@@ -282,6 +282,15 @@ The bulk of the work, and where "it compiles" becomes "it plays".
 
 **Done when:** a normal session is visually indistinguishable from Vulkan/MoltenVK, at comparable
 frame rate.
+
+**Met (2026-09-23).** Visual parity: all 25 defects fixed and the last fourteen confirmed in game -
+menus and the inventory, sky and clouds, lighting, terrain and entities, selection and chunk-border
+lines, depth behaviour, and the F3 health counters at zero (`bug.md` records what was checked for
+each). Frame rate: three captures of one recorded Overworld route in a single sitting, Metal 81.1 FPS
+average against Vulkan's 69.2 with a better tail (p95 19.2 ms against 25.0 ms) - 3% behind on the light
+above-ground stage, 29% ahead on the heavy underground one. The route recording, the numbers and the
+remaining known gap (the Nether has a route but no paired run) are in
+[TESTING.md](TESTING.md) §4 and §5.
 
 **Compatibility risk (decision: not pursued).** Sodium replaces terrain rendering, and it was named
 here as Phase 5's main compatibility risk. The call is now to **not** port or test Sodium: it sits on

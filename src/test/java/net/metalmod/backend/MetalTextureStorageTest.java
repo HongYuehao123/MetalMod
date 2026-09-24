@@ -77,6 +77,19 @@ public final class MetalTextureStorageTest {
                 MetalTexture.usesSharedStorage(render) != enabled,
                 "privateTextures=" + enabled);
 
+        // The switch is off by default because private storage measured 9% slower, so an
+        // unrecognised value has to fail safe rather than silently turning it on.
+        check("the switch is off unless explicitly enabled",
+                !MetalTexture.enablePrivateTextures("false")
+                        && !MetalTexture.enablePrivateTextures("no")
+                        && !MetalTexture.enablePrivateTextures("")
+                        && !MetalTexture.enablePrivateTextures("ture"), "");
+        check("the switch turns on for all and true",
+                MetalTexture.enablePrivateTextures("all") && MetalTexture.enablePrivateTextures("true")
+                        && MetalTexture.enablePrivateTextures("TRUE") && MetalTexture.enablePrivateTextures("All"),
+                "");
+        check("the default is off", !enabled, "privateTextures defaulted to on");
+
         System.out.println(failures == 0 ? "[TEST] storage mode rule OK" : "[TEST] " + failures + " FAILED");
         return failures;
     }

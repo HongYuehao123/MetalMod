@@ -9,12 +9,11 @@ import java.lang.foreign.MemorySegment;
  * A real MTLTexture. Phase 2 replaces the Phase 1 placeholder: creation now allocates GPU storage
  * with the mapped pixel format, texture type (2D / array / cube), mip level count and usage.
  *
- * <p><b>Storage mode.</b> A render attachment is created with {@code MTLStorageModePrivate}; every
- * other texture stays {@code MTLStorageModeShared} because it is uploaded into from the CPU (see
- * {@link #privateEligible}). Private storage is what lets the GPU keep a render target in tile
- * memory and, on Apple silicon, compress it; shared storage is CPU-coherent memory that the GPU
- * reads and writes through the same path. Colour targets and depth buffers are the resources that
- * matter here - the game is GPU-bound with several screen-sized attachments live at once.
+ * <p><b>Storage mode.</b> Every texture is created with {@code MTLStorageModeShared}, which is the
+ * measured-faster configuration (see {@link #privateTexturesEnabled}). Private storage for render
+ * attachments is behind a switch, off by default. Shared storage is CPU-coherent memory the GPU reads
+ * and writes through the same path; private storage is what would let the GPU keep a render target in
+ * tile memory and compress it, and it did not pay for itself here.
  *
  * <p>The decision is a claim about engine behaviour, so it is checked rather than assumed. An upload
  * aimed at a private texture cannot work - the bytes are in GPU-private memory - so it is refused
@@ -26,9 +25,26 @@ import java.lang.foreign.MemorySegment;
  */
 public final class MetalTexture extends GpuTexture {
 
-    /** {@code -Dmetalmod.privateTextures=false} forces every texture back to shared storage. */
+    /**
+     * Private storage for render attachments. <b>Off by default, because it measured slower.</b>
+     *
+     * <p>An A/B on one route in one world, both runs on Metal minutes apart, put private storage 9%
+     * behind on both stages: above ground 9.72 ms against 8.91 ms, and in the heavy underground stage
+     * 16.40 ms against 15.06 ms. The later run was the faster one, so drift works against that result
+     * rather than for it. Whatever tile-memory or compression benefit was expected did not appear on
+     * this hardware, and the cost of a private render target that later passes sample is real. The
+     * switch stays for a machine or a driver where the answer could differ.
+     *
+     * <p>Set {@code -Dmetalmod.privateTextures=all} to enable it, or {@code true} for the same thing.
+     * Any other value, including a typo, leaves it off.
+     */
     private static final boolean PRIVATE_TEXTURES =
-            !"false".equalsIgnoreCase(System.getProperty("metalmod.privateTextures", "true"));
+            enablePrivateTextures(System.getProperty("metalmod.privateTextures", "false"));
+
+    /** Only {@code all} and {@code true} enable it, so an unrecognised value fails safe. */
+    static boolean enablePrivateTextures(String value) {
+        return "all".equalsIgnoreCase(value) || "true".equalsIgnoreCase(value);
+    }
 
     /**
      * Whether a texture with this usage is a candidate for private storage.

@@ -197,25 +197,37 @@ Every counter must stay at zero. There must be no `@Mixin target ... was not fou
 
 ### Texture storage modes
 
-A texture created with `USAGE_RENDER_ATTACHMENT` gets `MTLStorageModePrivate`; everything else stays
-`MTLStorageModeShared`. Shared storage is CPU-coherent memory that the GPU reads and writes through
-the same path; private storage lets the GPU keep a render target in tile memory and compress it.
-Colour targets and depth buffers are the whole point, and the startup log names the first twelve
-textures claimed:
+**Every texture is created `MTLStorageModeShared`. That is the measured-faster configuration**, and it
+is also the default. A switch can make render attachments private instead, and it is off because an
+A/B said so.
 
-```
-[MetalMod] private storage: 'terrain depth' D32_FLOAT 5120x2664x1
-```
+The switch, when enabled, creates a texture with `USAGE_RENDER_ATTACHMENT` as
+`MTLStorageModePrivate` and leaves everything else shared. The reasoning was that private storage lets
+the GPU keep a render target in tile memory and compress it. It did not pay for itself:
 
-**The copy flags cannot be used for this.** `RenderTarget` creates *both* its depth and its colour
+| Overworld route, same world, Metal both runs | private (run 1) | shared (run 2) |
+|---|---|---|
+| stage 0, above ground (6.6k draws) | 9.72 ms | **8.91 ms** |
+| stage 13, underground (19.2k draws) | 16.40 ms | **15.06 ms** |
+| overall average | 13.454 ms (74.3 FPS) | **12.331 ms (81.1 FPS)** |
+| p95 | 24.912 ms | **19.230 ms** |
+
+Private storage is about **9% slower on both stages**. The private run took the *earlier*, cooler
+slot and the shared run the later one, so drift works against the result rather than for it. Whatever
+compression benefit was expected does not appear on this hardware, while the cost of a private render
+target that later passes sample does. Enable it with `-Dmetalmod.privateTextures=all` (or `true`) if
+you want to re-test on another GPU; any unrecognised value leaves it off.
+
+Captures record which setting was used, because that was otherwise only recoverable from the game
+logs: `Render target storage: shared (default; ...)` in `summary.txt`.
+
+The classification rule, kept because it is what the switch uses and what a re-test would need. Note
+that the copy flags cannot be used for it: `RenderTarget` creates *both* its depth and its colour
 texture with the constant **15** - `COPY_DST | COPY_SRC | TEXTURE_BINDING | RENDER_ATTACHMENT` - so
-every render target in the game declares both copy flags. An earlier version of this rule kept any
-texture with a copy flag shared and consequently claimed **nothing at all**: a real session reported
-`privateTextures=0` while every render target stayed shared, and the startup log had no
-`private storage:` lines. That is the thing to check first if the change appears to do nothing.
-
-What discriminates is that a render target is *rendered into* rather than *uploaded into*, and in
-26.2 that line falls where the flags say it does. Bytecode-verified for each case:
+every render target in the game declares both copy flags. Classifying on them claimed **nothing at
+all** in a real session (`privateTextures=0`, no `private storage:` lines). What discriminates is that
+a render target is *rendered into* rather than *uploaded into*, and in 26.2 that line falls where the
+flags say it does. Bytecode-verified for each case:
 
 | texture | usage | how the engine fills it |
 |---|---|---|
@@ -239,7 +251,7 @@ The rule is still a claim about engine behaviour, so it is checked rather than t
   texture first, so reading a private colour or depth target works whether or not `USAGE_COPY_SRC`
   was declared. That is what lets `render_check` read back its private targets.
 
-`-Dmetalmod.privateTextures=false` forces every texture back to shared storage, to A/B the change.
+`-Dmetalmod.privateTextures=all` turns private storage on, to re-test it; the default is off.
 
 ## 4. Comparing performance
 
@@ -331,6 +343,35 @@ apart: same world, same coordinates, let meshes settle, then compare the settled
 literally true instead of approximately true, and the visual pass that confirms the fixes still marked
 unconfirmed in [bug.md](bug.md).
 
+### What the routed comparison measured
+
+Three captures of the same recorded Overworld route, same world, 5120x2664, render distance 32, vsync
+off, in one sitting, minutes apart. This is the comparison the earlier pairs failed to produce: every
+frame is labelled with its waypoint, so these are the same two places doing the same thing.
+
+| | Metal, shared (default) | Metal, private | Vulkan |
+|---|---|---|---|
+| stage 0, above ground, 6.6k draws | 8.91 ms | 9.72 ms | **8.65 ms** |
+| stage 13, underground, 19.2k draws | **15.06 ms** | 16.40 ms | 21.09 ms |
+| overall average | **12.331 ms (81.1 FPS)** | 13.454 ms (74.3 FPS) | 14.449 ms (69.2 FPS) |
+| p95 | **19.230 ms** | 24.912 ms | 25.036 ms |
+| frames over 33 ms | **81** | 105 | 81 |
+
+Three conclusions:
+
+1. **Private storage for render targets is a 9% regression**, on both stages, with the private run in
+   the earlier and cooler slot. It is now off by default; see the storage-mode section.
+2. **Parity is met and exceeded.** Metal is 3% behind Vulkan on the light above-ground stage and 29%
+   ahead on the heavy underground one, and its tail is better (p95 19.2 against 25.0 ms). Phase 5's
+   "comparable frame rate" is no longer the open question.
+3. **The underground stage is the heavy one**, 19.2k draws against 6.6k, which is why the route puts
+   the long dwell there. The draw count column is what confirms that; without it a waypoint teleported
+   inside solid rock would look like a fast frame time instead of an empty scene.
+
+The Metal Nether capture from the same session (`20260923-210444`, private storage on) is a separate
+scene - 11.3k draws in its settled stage, 119.7 FPS average - and has no matching pair, so it says
+nothing about the backends. It is a recorded route ready to run if a third dimension is wanted.
+
 ## 5. Phase 5 sign-off procedure
 
 Phase 5's exit criterion is *"a normal session is visually indistinguishable from Vulkan/MoltenVK, at
@@ -383,13 +424,14 @@ Reload the world before each one, let it settle 30 s, then **F8** and wait for i
 
 | run | backend | extra JVM argument |
 |---|---|---|
-| 1 | Metal | *(none)* |
-| 2 | Metal | `-Dmetalmod.privateTextures=false` |
+| 1 | Metal | *(none - shared storage, the default)* |
+| 2 | Metal | `-Dmetalmod.privateTextures=all` |
 | 3 | Vulkan | *(none)* |
 
-Put the argument in the launcher's JVM arguments, not the game directory. Run 2 exists to answer one
-question: does private storage for render targets actually help? If run 2 is *faster* than run 1, the
-answer is no and `-Dmetalmod.privateTextures=false` should become the default.
+Put the argument in the launcher's JVM arguments, not the game directory. Run 2 is the private-storage
+variant; it has already been measured once and came out about 9% slower (see the storage-mode section
+above), so it is only worth repeating on different hardware. The `Render target storage:` line in each
+`summary.txt` says which setting a capture used.
 
 ### 5.4 Read the result
 

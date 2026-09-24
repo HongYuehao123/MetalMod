@@ -99,10 +99,11 @@ working-set cap, plus the macOS kernel memory-pressure level, shown on the F3 ov
 reaches it through Panama FFI (`java.lang.foreign`). A standalone native smoke test
 (`native/tests/metal_smoke.mm`) exercises device, clear, resources, pipelines and a triangle draw.
 
-Render targets and depth buffers are created with private storage (they are what the frame spends its
-bandwidth on); a texture the engine uploads into is not a render attachment and stays shared. Uploads
-and buffer copies share one command buffer per frame instead of committing one each, which is what
-the underground chunk-mesh path needed. Both are described under [TESTING.md](TESTING.md).
+Render targets and depth buffers are created with shared storage, which is the measured-faster
+configuration: private storage for them came out about 9% slower in an A/B on one route, so it sits
+behind `-Dmetalmod.privateTextures=all` and is off. Uploads and buffer copies share one command buffer
+per frame instead of committing one each, which is what the underground chunk-mesh path needed. Both
+are described under [TESTING.md](TESTING.md).
 
 ---
 
@@ -116,13 +117,12 @@ These are the reasons the mod is not a drop-in replacement yet.
    behaviour, and the F3 health counters at zero. The frame-rate half of the exit criterion has not
    been measured cleanly yet - the two existing capture pairs disagree - so what remains is the
    controlled comparison in [TESTING.md](TESTING.md) §5, not more code.
-2. **Performance: the CPU-side upload hitches are gone; parity now hinges on GPU work.** A paired
-   capture put Metal at 106 FPS against Vulkan's 133, and the gap turned out to be a tail of hitches
-   from the chunk-mesh upload path — 53.5 per-frame uploads underground, each creating its own command
-   buffer. Utility submission batching cut that path's cost by 95% per frame and the same workload
-   ran 21% faster, with the remaining slow frames all GPU-bound (drawable waits). Cross-backend
-   numbers still disagree between runs, so a drift-controlled A/B comparison is owed. See
-   [TESTING.md](TESTING.md) for the numbers and the procedure.
+2. **Performance: phase 5's criterion is met on the routed comparison.** Three captures of one recorded
+   Overworld route in one sitting put Metal at 81.1 FPS average against Vulkan's 69.2, with a better
+   tail (p95 19.2 ms against 25.0 ms): 3% behind on the light above-ground stage and 29% ahead on the
+   heavy underground one. Before that, utility submission batching cut the chunk-mesh upload path's
+   cost by 95% per frame, and private storage for render targets measured 9% *slower* and is off by
+   default. See [TESTING.md](TESTING.md) for the numbers and the procedure.
 3. **MetalFX / frame generation are not implemented (Phase 8).** They return against the backend's
    own textures, and frame generation additionally needs a display-link pacer so two drawables land
    on different refreshes.

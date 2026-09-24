@@ -3,6 +3,7 @@ package net.metalmod.debug;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.metalmod.backend.MetalDevice;
 import net.metalmod.backend.MetalNative;
+import net.metalmod.backend.MetalTexture;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
@@ -87,6 +88,11 @@ public final class PerformanceCapture {
                     + "\nRender distance: " + minecraft.options.renderDistance().get()
                     + "\nVsync: " + minecraft.options.enableVsync().get()
                     + "\nFPS limit: " + minecraft.options.framerateLimit().get()
+                    // Recorded because it is a launch setting that changes what is measured, and
+                    // identifying which run had it on otherwise means digging through the game logs.
+                    + "\nRender target storage: " + (MetalTexture.privateTexturesEnabled()
+                            ? "private (" + MetalDevice.privateTextureCount() + " textures claimed)"
+                            : "shared (default; -Dmetalmod.privateTextures=all enables private)")
                     + "\nDimension: " + CaptureRouteStore.dimension(minecraft)
                     + "\nRoute: " + (route == null
                             ? "none for this dimension (F7 records one); move manually"
