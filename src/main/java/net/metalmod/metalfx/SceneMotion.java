@@ -683,6 +683,19 @@ public final class SceneMotion {
         }
     }
 
+    /**
+     * The shortest honest form of {@link #objectSummary()}, for a line that must not be clipped.
+     *
+     * <p>F3 does not wrap: it stops at the right edge of the screen, so a diagnostic appended to an
+     * already-long line is a diagnostic nobody can read. This exists so the counts fit.
+     */
+    public static String compactSummary() {
+        if (motion.address() == 0) {
+            return "none";
+        }
+        return entityCount + " ent + " + particleCount + " part, " + stampCount + " stamps";
+    }
+
     /** Objects captured this frame, and how many stamps reached the GPU (plus any dropped). */
     public static String objectSummary() {
         return "objects " + entityCount + " entities, " + particleCount + " particles, "

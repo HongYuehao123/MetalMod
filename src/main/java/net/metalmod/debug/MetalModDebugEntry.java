@@ -99,24 +99,24 @@ public class MetalModDebugEntry implements DebugScreenEntry {
             // fallback that silently picked Spatial all look like "temporal is on" from the settings
             // alone. This line is where the difference is stated.
             if (net.metalmod.metalfx.WorldRenderTarget.temporalActive()) {
+                // Two short lines rather than one long one. F3 clips at the screen edge instead of
+                // wrapping, and the first version of this appended the GPU numbers to the end of a line
+                // that already carried the sizes, the object counts and the reset reason - so the one
+                // number the line existed for was the one that fell off the edge.
                 displayer.addLine("§6[MetalMod]§r motion §b"
-                        + net.metalmod.metalfx.SceneMotion.summary()
-                        + "§r | temporal frames §b"
-                        + net.metalmod.metalfx.WorldRenderTarget.temporalFrameCount()
-                        // What the two passes of the temporal path actually cost on the GPU, read from
-                        // their own command buffers. Without this the frame time can only say that
-                        // temporal is slower, not which half of it is.
-                        + "§r gpu §bmotion " + oneDecimal(
-                                (float) net.metalmod.backend.MetalNative.motionLastGpuMs())
-                        + " ms§r + scaler " + oneDecimal(
-                                (float) net.metalmod.backend.MetalNative.temporalLastGpuMs())
-                        + " ms"
-                        + "§r reset §b"
-                        + net.metalmod.metalfx.SceneMotion.resetCount()
-                        + (net.metalmod.metalfx.SceneMotion.resetCount() > 0
-                                && !net.metalmod.metalfx.SceneMotion.lastResetReason().isEmpty()
-                                        ? "§7 (" + net.metalmod.metalfx.SceneMotion.lastResetReason()
-                                                + ")" : ""));
+                        + net.metalmod.metalfx.SceneMotion.width() + "x"
+                        + net.metalmod.metalfx.SceneMotion.height()
+                        + "§r " + net.metalmod.metalfx.SceneMotion.compactSummary()
+                        + "§r, resets §b" + net.metalmod.metalfx.SceneMotion.resetCount());
+                // What the two passes of the temporal path cost on the GPU, read from their own command
+                // buffers, against the frame they are part of. Without the split the frame time can only
+                // say that temporal is slower, not which half of it is.
+                displayer.addLine("§6[MetalMod]§r temporal gpu §bmotion "
+                        + oneDecimal((float) net.metalmod.backend.MetalNative.motionLastGpuMs())
+                        + "§r + scaler §b"
+                        + oneDecimal((float) net.metalmod.backend.MetalNative.temporalLastGpuMs())
+                        + "§r ms of §b"
+                        + oneDecimal(net.metalmod.backend.MetalDevice.lastFrameMs()) + "§r ms");
             } else if (net.metalmod.metalfx.WorldRenderTarget.temporalRequested()
                     && !net.metalmod.metalfx.WorldRenderTarget.temporalFallbackReason().isEmpty()) {
                 displayer.addLine("§6[MetalMod]§r temporal §cnot running§r §7"
