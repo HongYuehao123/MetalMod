@@ -49,18 +49,44 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 2 — resource layer | done |
 | 3 — pipelines and draw calls | done |
 | 4 — shaders (87/87, post 9/9) | done |
-| 5 — vanilla render parity | **verification close-out** (see below) |
-| 6+ — dynamic lighting, shaderpacks, MetalFX, ray tracing | not started |
+| 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
+| 6 — dynamic lighting | **in progress**; 6A/6B/6C implemented and verified offline, 6D partial |
+| 7+ — shaderpacks, MetalFX, ray tracing | not started |
 
-## What is left in Phase 5
+## Phase 5 close-out and next step
 
-1. **Confirm the last GUI fixes in game.** Select World: the first entry should have its background
-   panel and an unsquashed name line (BUG-001). Survival inventory: item icons present and the
-   player preview the right way up (BUG-025). Both are scissor / Y-flip rules in
-   `MetalRenderPassBackend` and `MetalCommandEncoderBackend`, and both have offline assertions.
-2. **Measure frame-rate parity against Vulkan/MoltenVK in normal play.** The only numbers so far were
-   taken with a menu open and the world not ticking (below), so they are a lower bound on the GPU
-   share, not a parity result.
+Phase 5 is complete for the tested vanilla 26.2/M4 Pro scope. All fourteen visual checks were
+confirmed in game; the routed Overworld comparison meets the comparable-performance criterion.
+The final review reran all five offline gates successfully.
+
+Phase 6 (dynamic lighting) is opt-in and in progress; see
+[docs/phase6-plan.md](docs/phase6-plan.md) for the full status, evidence and limits.
+
+| Switch | Effect |
+|---|---|
+| `-Dmetalmod.pointLightProof=true` | one synthetic camera-centred amber light, terrain only |
+| `-Dmetalmod.dynamicLights=true` | the real moving-source set: held and dropped block items |
+| `-Dmetalmod.clusteredLights=true` | with `dynamicLights`: evaluate through the 16-block cluster grid |
+
+All three are also **in-game now**: **Options -> MetalMod... -> Lighting** (or Mod Menu -> MetalMod),
+persisted to `config/metalmod.properties`, applied at the next frame boundary without a restart. An
+in-game choice beats a `-D` launch flag, which in turn beats the saved file, so a flag seeds a session
+without ever freezing a setting (`MetalMod_Test_26.2` launches with `-Dmetalmod.dynamicLights=true`).
+
+The lit variants cover the three terrain pipelines, the two particle pipelines, the non-emissive
+entity pipelines and the two item pipelines (held and dropped items). Each is a separate shader pair,
+which is why terrain could be lit while the dust, the mobs and the item in your hand stayed dark.
+Emissive entity passes are excluded by policy, and the inventory is excluded by the headroom rule
+rather than by pipeline - see `docs/phase6-plan.md`. Sources that are buried in, or sealed by, opaque
+blocks are dropped; everything else about an unshadowed evaluator still applies. Glow squids are not
+a source at all - vanilla entities emit no light, and their glow is an emissive texture. The startup log names the switches each session and logs every
+variant it applies, so a log alone says which path ran.
+
+The sources were lost before they were committed and were reconstructed from the compiled classes and
+the interrupted `git add`'s dangling blobs; the recovery found and fixed a wrong test offset and an
+upload that only refreshed on the first light-using draw. **No in-game run of the Phase 6 jar has been
+recorded**, so Mixin application, item lifecycle and in-world appearance are still unsigned, and the
+clustered path has no performance measurement at all.
 
 ## Retired architecture (deleted in Phase 5)
 
@@ -90,7 +116,7 @@ Run all five before trusting a change:
 | `./scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
 | `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence, `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics from any pipeline |
-| `./tools/render_check/run.sh` | pixel assertions over the mechanisms the Phase 5 bugs implicated, `RENDER CHECK PASSED` |
+| `./tools/render_check/run.sh` | 165 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths and the runtime toggle, `RENDER CHECK PASSED` |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets, UMA ownership |
 
 A green check is only evidence if it can fail: the scissor assertion is a case in point — it passed
@@ -98,33 +124,19 @@ for a long time against the very flip it should have caught.
 
 ## Performance
 
-In game, 5120×2664, render distance 32, Apple M4 Pro. F3 reports the frame time and the time the
-render thread spent blocked in `nextDrawable` (`GPU wait`), which is the CPU/GPU split: wait ≈ 0
-means CPU-bound, wait ≈ frame means GPU-bound.
+The latest routed comparison uses 5120×2664, render distance 32, vsync off, on Apple M4 Pro:
 
-Measured before the first CPU pass:
+| scene | Metal shared | Vulkan |
+|---|---:|---:|
+| above ground | 8.91 ms | 8.65 ms |
+| underground | 15.06 ms | 21.09 ms |
+| overall mean | 12.331 ms | 14.449 ms |
+| p95 | 19.230 ms | 25.036 ms |
 
-| scene | draws | frame | GPU wait | read as |
-|---|---|---|---|---|
-| above ground | 6 400 | 17.5 ms | 2–3 ms | CPU-bound |
-| underground (spectator) | 17 965 | 42.4 ms | ~0 ms | CPU-bound |
-
-And after the CPU passes (`071bdb0` cached per-pipeline facts and a skip-redundant-bind shadow;
-`b615256` moved every hot native call to `invokeExact` and binds only names that changed; the
-per-section vertex-buffer rebind is now dropped as well):
-
-| scene | frame | fps | native calls/frame | read as |
-|---|---|---|---|---|
-| above ground | 6–10 ms (peak ~14) | ~100–167 | ~27 000 | between mixed and CPU-bound |
-| underground (spectator) | ~17 ms | ~59 | ~70 000 | still CPU-bound |
-
-That is roughly 4 native calls per draw (70 000 / 17 965), which is the floor for this architecture:
-one for the per-section uniform block, one for the draw, plus pipeline/texture work amortised.
-
-**The MoltenVK comparison is above ground only.** MoltenVK reaches 120–200 fps above ground; on that
-basis MetalMod is within ~1.2–1.5×, not the 2–4× the earlier note implied. **Underground has no
-MoltenVK baseline yet** — measuring it (switch `preferMetalBackend` off) is the next step before
-treating 17 ms as a deficit.
+This meets the Phase 5 criterion for this scene/hardware, not a universal performance claim.
+`TESTING.md` records the route and storage experiment; `docs/phase6-plan.md` records the final
+review. The Nether remains unpaired. F3 drawable wait is a CPU wait/pacing measurement, not GPU
+execution time or a precise CPU/GPU split.
 
 Worth not re-investigating: the terrain path is structurally identical on both backends.
 `ChunkSectionsToRender.renderGroup` binds the pipeline once per layer and calls `drawMultipleIndexed`,
@@ -135,12 +147,13 @@ engine caller at all**. So there is no batching deficit to close by implementing
 Earlier numbers taken by resizing the window with a menu open (world not ticking) are superseded -
 they measured resolution scaling only, and the CPU floor they implied was optimistic.
 
-### Queued, not done
+### Completed optimizations and remaining opportunities
 
 - **Batch utility submissions.** *Done.* `mmm_write_buffer_bytes`, `mmm_copy_buffer_to_buffer` and
   `mmm_copy_texture_to_texture` share one pending command buffer with a single blit encoder, and
   uploads go into a per-frame staging ring. It cut the underground upload path's cost by 95%.
-- **Storage-mode split.** *Textures done, buffers not.* `MetalTexture` creates private storage for
+- **Storage-mode experiment.** *Implemented, off by default after a measured regression.* With
+  `-Dmetalmod.privateTextures=all`, `MetalTexture` creates private storage for
   anything with `USAGE_RENDER_ATTACHMENT`; depth buffers and colour targets are what that claims, and
   the startup log names them. The rule keys on the render-attachment bit rather than the copy flags,
   because `RenderTarget` declares the constant 15 (`COPY_DST|COPY_SRC|TEXTURE_BINDING|
@@ -156,6 +169,10 @@ they measured resolution scaling only, and the CPU floor they implied was optimi
   that the next pass clears. Relaxing that to `DontCare` needs lookahead - the encoder is already
   ended by the time the next pass begins - so it needs either engine cooperation or an encoder the
   backend holds open across the frame.
+- **Publish table-shaped data as a texture.** The 6C cluster table first shipped as an indexed
+  `ivec4` array inside a uniform block: its header reached the shader while every indexed element read
+  as zero, on a device where an identical flat array worked. It now ships as an RGBA32F texture read
+  with `texelFetch`. Treat an indexed array inside a uniform block as unproven on this backend.
 - **Real GPU timing.** `GPU wait` is a proxy. A per-frame GPU execution time needs
   `MTLCounterSampleBuffer` timestamps; summing command-buffer `GPUStartTime`/`GPUEndTime` spans does
   not work (command buffers on one queue overlap execution). This is now the main measurement gap:

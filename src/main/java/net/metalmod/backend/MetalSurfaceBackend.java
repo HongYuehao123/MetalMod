@@ -95,7 +95,12 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             return;
         }
         // Frame boundary: publishes the frame interval, the GPU time accumulated since the previous
-        // present and the draw count for F3, then resets the counters.
+        // present and the draw count for F3, then resets the counters. The light ring is closed
+        // here too, so a published light set is fenced once per presented frame.
+        // Adopt a lighting setting changed in the settings screen here: the frame's passes are all
+        // submitted, so dropping the compiled pipelines cannot strand a pass that still refers to one.
+        this.device.applyPendingLightingSettings();
+        this.device.endDynamicLightFrame();
         MetalDevice.endFrame();
         float[] color = this.clearColor;
         int rc;

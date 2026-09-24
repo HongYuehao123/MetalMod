@@ -10,6 +10,11 @@ import com.mojang.blaze3d.shaders.ShaderType;
 import com.mojang.blaze3d.shaders.UniformType;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormatElement;
+import net.metalmod.lighting.BlockLightVariant;
+import net.metalmod.lighting.EntityLightVariant;
+import net.metalmod.lighting.ItemLightVariant;
+import net.metalmod.lighting.ParticleLightVariant;
+import net.metalmod.lighting.TerrainLightVariant;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
@@ -59,6 +64,11 @@ public final class MetalRenderPipeline {
     // draws a frame that is tens of thousands of short-lived strings.
     private final String name;
     private final boolean screenquad;
+    // Which shader variant this pipeline was built from. The render pass binds the matching light
+    // buffer from these flags rather than re-deriving them from the pipeline name per draw.
+    private final boolean pointLight;
+    private final boolean dynamicLights;
+    private final boolean clusteredLights;
     private boolean closed;
 
     private MetalRenderPipeline(MemorySegment handle, MemorySegment vertexLibrary, MemorySegment fragmentLibrary,
@@ -66,7 +76,8 @@ public final class MetalRenderPipeline {
                                 Map<String, Integer> vertexTextures, Map<String, Integer> fragmentTextures,
                                 Map<String, Integer> vertexSamplers, Map<String, Integer> fragmentSamplers,
                                 int topology, Map<String, TexelBuffer> texelBuffers,
-                                String name, boolean screenquad) {
+                                String name, boolean screenquad, boolean pointLight, boolean dynamicLights,
+                                boolean clusteredLights) {
         this.handle = handle;
         this.vertexLibrary = vertexLibrary;
         this.fragmentLibrary = fragmentLibrary;
@@ -83,6 +94,9 @@ public final class MetalRenderPipeline {
         this.texelBuffers = texelBuffers;
         this.name = name;
         this.screenquad = screenquad;
+        this.pointLight = pointLight;
+        this.dynamicLights = dynamicLights;
+        this.clusteredLights = clusteredLights;
     }
 
     private static java.util.Set<String> union(Map<String, Integer> a, Map<String, Integer> b) {
@@ -108,15 +122,37 @@ public final class MetalRenderPipeline {
             // Inject the pipeline's own shader defines on top of the source the ShaderManager
             // produced. Without these, defines like PORTAL_LAYERS are undefined, and worse, a
             // vertex and fragment stage can end up with different defines and therefore different
-            // varyings. Both are supplied lazily so a shader-pair cache hit skips them entirely.
+            // varyings.
+            //
+            // The sources are fetched eagerly rather than lazily, because a lighting variant rewrites
+            // them and the pair cache is keyed on the text (see PairKey). The fetch is a map lookup
+            // the ShaderManager has already paid for.
+            String vertex = source.get(pipeline.getVertexShader(), ShaderType.VERTEX);
+            String fragment = source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT);
+            String variant = "vanilla";
+            if (device.pointLightProofEnabled() || device.dynamicLightsEnabled()) {
+                Adapted adapted = adaptForLighting(device, pipeline, vertex, fragment);
+                if (adapted != null) {
+                    vertex = adapted.vertex();
+                    fragment = adapted.fragment();
+                    variant = adapted.variant();
+                    device.noteLightingVariant(variant, pipeline.getLocation().toString());
+                } else if (TerrainLightVariant.eligible(pipeline) || ParticleLightVariant.eligible(pipeline)
+                        || EntityLightVariant.eligible(pipeline) || ItemLightVariant.eligible(pipeline)
+                        || BlockLightVariant.eligible(pipeline)) {
+                    // A pipeline this backend could have lit, whose sources are not the verified
+                    // vanilla pair (a shaderpack, or a different game version). It keeps its own
+                    // shaders and is reported once, so the fallback is visible rather than silent.
+                    device.reportPointLightFallback(pipeline.getLocation().toString());
+                }
+            }
             MetalShaderCompiler.CompiledPair pair = compiler.compilePair(
                     pipeline.getVertexShader(), pipeline.getFragmentShader(), pipeline.getShaderDefines(),
-                    () -> com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
-                            source.get(pipeline.getVertexShader(), ShaderType.VERTEX),
-                            pipeline.getShaderDefines()),
-                    () -> com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
-                            source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT),
-                            pipeline.getShaderDefines()));
+                    variant,
+                    com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
+                            vertex, pipeline.getShaderDefines()),
+                    com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
+                            fragment, pipeline.getShaderDefines()));
             MetalShaderCompiler.CompiledShader vs = pair.vertex();
             MetalShaderCompiler.CompiledShader fs = pair.fragment();
             verifyBindingKinds(pipeline, vs, fs);
@@ -240,12 +276,114 @@ public final class MetalRenderPipeline {
                         vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology,
                         collectTexelBuffers(pipeline, vs, fs),
                         pipeline.getLocation().toString(),
-                        "minecraft:core/screenquad".equals(pipeline.getVertexShader().toString()));
+                        "minecraft:core/screenquad".equals(pipeline.getVertexShader().toString()),
+                        isPointLightVariant(variant),
+                        isDynamicVariant(variant),
+                        isClusteredVariant(variant));
             }
         } catch (Throwable t) {
             System.err.println("[MetalMod] pipeline compile failed for " + pipeline.getLocation() + ": " + t);
             return null;
         }
+    }
+
+    /** A lit variant's name and the two sources it replaces the originals with. */
+    private record Adapted(String variant, String vertex, String fragment) {}
+
+    // The render pass decides which light buffers to bind from these three questions, so every family
+    // has to answer them. Deciding them here, from the variant the pipeline was actually built with,
+    // is what keeps "the shader declares the block" and "the pass binds it" in step.
+    private static boolean isPointLightVariant(String variant) {
+        return TerrainLightVariant.VERSION.equals(variant);
+    }
+
+    private static boolean isDynamicVariant(String variant) {
+        return TerrainLightVariant.DYNAMIC_VERSION.equals(variant)
+                || TerrainLightVariant.CLUSTERED_VERSION.equals(variant)
+                || ParticleLightVariant.DYNAMIC_VERSION.equals(variant)
+                || ParticleLightVariant.CLUSTERED_VERSION.equals(variant)
+                || EntityLightVariant.DYNAMIC_VERSION.equals(variant)
+                || EntityLightVariant.CLUSTERED_VERSION.equals(variant)
+                || BlockLightVariant.DYNAMIC_VERSION.equals(variant)
+                || BlockLightVariant.CLUSTERED_VERSION.equals(variant)
+                || ItemLightVariant.DYNAMIC_VERSION.equals(variant)
+                || ItemLightVariant.CLUSTERED_VERSION.equals(variant);
+    }
+
+    private static boolean isClusteredVariant(String variant) {
+        return TerrainLightVariant.CLUSTERED_VERSION.equals(variant)
+                || ParticleLightVariant.CLUSTERED_VERSION.equals(variant)
+                || EntityLightVariant.CLUSTERED_VERSION.equals(variant)
+                || ItemLightVariant.CLUSTERED_VERSION.equals(variant)
+                || BlockLightVariant.CLUSTERED_VERSION.equals(variant);
+    }
+
+    /**
+     * Produce the lit sources for a pipeline, or null when it is not a family this backend lights or
+     * its sources did not match a recorded pair.
+     *
+     * <p>Families are tried in turn rather than keyed off one list, because each carries its own
+     * recorded hashes and its own expression for the camera-relative position. Clustered supersedes
+     * the flat list where it is available; a synthetic single light is the proof path and applies to
+     * terrain only, since it exists to validate the terrain adapter.
+     */
+    private static Adapted adaptForLighting(MetalDevice device, RenderPipeline pipeline,
+                                            String vertex, String fragment) {
+        boolean clustered = device.clusteredLightsEnabled();
+        if (device.dynamicLightsEnabled()) {
+            if (TerrainLightVariant.eligible(pipeline)) {
+                TerrainLightVariant.Sources adapted = clustered
+                        ? TerrainLightVariant.adaptClustered(vertex, fragment)
+                        : TerrainLightVariant.adaptDynamic(vertex, fragment);
+                return adapted == null ? null : new Adapted(
+                        clustered ? TerrainLightVariant.CLUSTERED_VERSION
+                                : TerrainLightVariant.DYNAMIC_VERSION,
+                        adapted.vertex(), adapted.fragment());
+            }
+            if (ParticleLightVariant.eligible(pipeline)) {
+                TerrainLightVariant.Sources adapted = clustered
+                        ? ParticleLightVariant.adaptClustered(vertex, fragment)
+                        : ParticleLightVariant.adaptDynamic(vertex, fragment);
+                return adapted == null ? null : new Adapted(
+                        clustered ? ParticleLightVariant.CLUSTERED_VERSION
+                                : ParticleLightVariant.DYNAMIC_VERSION,
+                        adapted.vertex(), adapted.fragment());
+            }
+            if (BlockLightVariant.eligible(pipeline)) {
+                TerrainLightVariant.Sources adapted = clustered
+                        ? BlockLightVariant.adaptClustered(vertex, fragment)
+                        : BlockLightVariant.adaptDynamic(vertex, fragment);
+                return adapted == null ? null : new Adapted(
+                        clustered ? BlockLightVariant.CLUSTERED_VERSION
+                                : BlockLightVariant.DYNAMIC_VERSION,
+                        adapted.vertex(), adapted.fragment());
+            }
+            if (ItemLightVariant.eligible(pipeline)) {
+                TerrainLightVariant.Sources adapted = clustered
+                        ? ItemLightVariant.adaptClustered(vertex, fragment)
+                        : ItemLightVariant.adaptDynamic(vertex, fragment);
+                return adapted == null ? null : new Adapted(
+                        clustered ? ItemLightVariant.CLUSTERED_VERSION
+                                : ItemLightVariant.DYNAMIC_VERSION,
+                        adapted.vertex(), adapted.fragment());
+            }
+            if (EntityLightVariant.eligible(pipeline)) {
+                TerrainLightVariant.Sources adapted = clustered
+                        ? EntityLightVariant.adaptClustered(vertex, fragment)
+                        : EntityLightVariant.adaptDynamic(vertex, fragment);
+                return adapted == null ? null : new Adapted(
+                        clustered ? EntityLightVariant.CLUSTERED_VERSION
+                                : EntityLightVariant.DYNAMIC_VERSION,
+                        adapted.vertex(), adapted.fragment());
+            }
+            return null;
+        }
+        if (TerrainLightVariant.eligible(pipeline)) {
+            TerrainLightVariant.Sources adapted = TerrainLightVariant.adapt(vertex, fragment);
+            return adapted == null ? null
+                    : new Adapted(TerrainLightVariant.VERSION, adapted.vertex(), adapted.fragment());
+        }
+        return null;
     }
 
     /** Describe every uniform the pipeline declares TEXEL_BUFFER, with the slot the shader reads it at. */
@@ -352,6 +490,16 @@ public final class MetalRenderPipeline {
      * needs the Y-flipped viewport. Precomputed because setPipeline runs once per draw.
      */
     public boolean isScreenquad() { return this.screenquad; }
+
+    /** Whether this pipeline was built from the 6A single-point-light variant. */
+    public boolean usesPointLight() { return this.pointLight; }
+
+    /** Whether this pipeline was built from a bounded light-set variant (6B flat or 6C clustered). */
+    public boolean usesDynamicLights() { return this.dynamicLights; }
+
+    /** Whether this pipeline was built from the clustered variant, which reads the cluster blocks. */
+    public boolean usesClusteredLights() { return this.clusteredLights; }
+
     public int vertexBuffer(String name) { return this.vertexBuffers.getOrDefault(name, -1); }
     public int fragmentBuffer(String name) { return this.fragmentBuffers.getOrDefault(name, -1); }
     public int vertexTexture(String name) { return this.vertexTextures.getOrDefault(name, -1); }

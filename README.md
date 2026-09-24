@@ -6,11 +6,11 @@ drives `MTLDevice` / `CAMetalLayer` directly: real Metal textures, pipelines com
 Minecraft's own shaders, real render passes, and presentation of the engine's render target to the
 drawable.
 
-Apple's **MetalFX** upscaling / frame interpolation, **dynamic lighting**, shaderpack support and
-native ray tracing are later phases; see [ROADMAP.md](ROADMAP.md). Known defects are parked in
-[bug.md](bug.md).
+Apple's **MetalFX** upscaling / frame interpolation, shaderpack support and native ray tracing are
+later phases; **dynamic lighting** is Phase 6 and is in progress — see
+[docs/phase6-plan.md](docs/phase6-plan.md). Known defects are parked in [bug.md](bug.md).
 
-> ## Current status: the Metal backend renders — Phase 5 is in final verification
+> ## Current status: the Metal backend renders; Phase 6 dynamic lighting is in progress
 >
 > Minecraft selects the **Metal backend**, creates the device and a `CAMetalLayer`, creates real
 > Metal **textures, views, buffers and samplers**, compiles the engine's shaders
@@ -253,7 +253,21 @@ MetalMod/
 
 - **Metal Renderer Backend**: Mod Menu → MetalMod (restart required), or
   `config/metalmod.properties`, or `-Dmetalmod.metalBackend=true`.
-- **F3 overlay**: MetalMod status — the backend the engine selected, the framebuffer resolution, and
-  the `unbound/missingAttr/failed` health counters that explain a black or missing object.
+- **Dynamic light preview**: add `-Dmetalmod.dynamicLights=true` to JVM arguments with the Metal
+  backend enabled. This experimental path lights terrain and particles from held/dropped
+  light-emitting block items, up to 32 unshadowed sources, and only through the
+  recognized vanilla terrain, particle, entity, item and moving-block shaders. Emissive entity passes
+  are excluded, and the inventory is left alone by the same rule that fills only vanilla's remaining
+  lightmap headroom. A source buried in or sealed by opaque blocks is dropped, so it cannot light
+  through the wall around it; lights are otherwise unshadowed.
+  Add `-Dmetalmod.clusteredLights=true` as well to evaluate them through a 16-block cluster grid
+  instead of the flat list; without it the shader loops over every published source per fragment.
+  Both are off by default, and both are on the in-game **Lighting** page (**Options -> MetalMod...**
+  -> Lighting, or Mod Menu -> MetalMod) alongside the diagnostic point-light proof. The lighting
+  switches apply while the game is running; an in-game choice beats a `-D` launch flag, which beats
+  the saved file.
+- **F3 overlay**: MetalMod status — the backend the engine selected, the framebuffer resolution, the
+  active dynamic-light snapshot count, the static block-source index counters, the environment
+  summary when enabled, and the `unbound/missingAttr/failed` health counters.
 - **Config screen**: the Metal backend toggle and the UMA memory option. MetalFX/scaling controls are
   gone until Phase 8 — they configured a pipeline that no longer exists.

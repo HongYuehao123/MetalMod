@@ -5,6 +5,9 @@
   "compatibilityLevel": "JAVA_22",
   "client": [
     "GameRendererMixin",
+    "LevelExtractorLightMixin",
+    "OptionsScreenMetalModMixin",
+    "ClientChunkCacheLightMixin",
     "PerformanceCaptureMixin",
     "PerformanceCaptureKeyMixin",
     "WindowMixin",

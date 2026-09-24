@@ -299,7 +299,7 @@ make Phase 7's shaderpack work easier. Iris is a separate Phase 7 dependency. If
 combination is ever attempted, the relevant backend gap is the indirect/multi-draw-indirect path,
 which is still a documented no-op (see §6).
 
-**Progress (in flight).** Phase 5 began with the draw-path defects rather than the visual ones,
+**Implementation history (complete).** Phase 5 began with the draw-path defects rather than the visual ones,
 because they are what make a visual symptom fixable. Twenty-four bugs were found and fixed
 (BUG-004 … BUG-024; see `bug.md`). Most were in the *values* rather than the plumbing: per-draw chunk
 uniforms never uploaded, uniform blocks keyed by instance name, five wrong `MTLBlendFactor` values,
@@ -369,20 +369,18 @@ three of those fixes were incomplete. Five offline gates now cover the phase:
 | `tools/render_check/run.sh` | 80 assertions over 26 mechanisms, real vanilla pipelines |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets |
 
-What remains for Phase 5 is the part that needs a running game, and it has narrowed sharply:
-
-- **BUG-002 and BUG-003 are confirmed fixed in game.**
-- **BUG-001's root cause is found and fixed**: `RenderPass.enableScissor` is bottom-up (GL) and
-  `MetalRenderPassBackend` passed it to Metal's top-left `setScissorRect` unchanged, mirroring every
-  scissor. That clipped the top off the Select World list and its first entry. The render-check
-  assertion that "confirmed" the old behaviour asserted the wrong quadrant and has been corrected, so
-  it can now fail. In-game confirmation of the fix is the one remaining check for these three.
-- **Performance parity is unmeasured.** "Comparable frame rate" needs a real in-play Metal-vs-Vulkan
-  comparison; the only numbers in `HANDOFF.md` were taken with a menu open and the world not ticking.
-- The retired MoltenVK-interop/MetalFX code is deleted (see §4), so it no longer runs a per-frame
-  hook or builds MetalFX scalers that cannot present.
+**Close-out:** the remaining visual checks and routed performance comparison are complete.
+All five offline gates passed again in the final review. See [Phase 6 preparation](docs/phase6-plan.md)
+for the evidence and known limits; older investigation notes above describe the path to sign-off.
 
 ### Phase 6 — Dynamic lighting  · **M–L**
+
+**In progress.** 6A (one synthetic light), 6B (moving sources), 6C (bounded clustered scaling) and
+part of 6D (incremental static block-source index, environment record, versioned diagnostics) are
+implemented behind JVM opt-ins and verified by the offline gates. No in-game run of the Phase 6 jar
+and no performance measurement of the clustered path exist yet. Spot/area evaluation, shadows,
+explicit ownership modes and a shader consumer remain deferred — see
+[the Phase 6 plan](docs/phase6-plan.md) for the precise coverage, evidence and limits.
 
 Vanilla lighting is baked: one block-light and one sky-light value per block, updated on the CPU.
 That gives a shader or a path tracer nothing to work with except a lightmap texture, and nothing that
@@ -463,40 +461,10 @@ native Metal backend, since MoltenVK cannot express it at all.
 
 ## 7. Immediate next step
 
-**Phase 5 — vanilla render parity, verification close-out.** Phases 0–4 are done, and Phase 4's exit
-criterion is met: all 87 vanilla pipelines compile, verified by `tools/shader_inventory/run.sh`. The
-Phase 5 fixes (BUG-004 … BUG-024) are in, all five offline gates are green, and the retired
-MoltenVK-interop architecture has been deleted (§4).
-
-What is left is one in-game pass to confirm the last fix and, separately, a frame-rate comparison:
-
-1. **Confirm the last GUI fixes in game.** Select World: the first entry should have its background
-   panel and an unsquashed world-name line (BUG-001); survival inventory: item icons present and the
-   player preview the right way up (BUG-025). BUG-002 and BUG-003 are already confirmed fixed. The
-   fixes are the scissor Y conversion and the offscreen-GUI-target flip list in
-   `MetalRenderPassBackend` / `MetalCommandEncoderBackend`. **Confirmed in game** - both are fixed.
-2. **Measure parity.** Done, and it is short of the target: in the same scenes the Metal backend runs
-   at ~100 fps above ground and 50-60 fps underground (5120×2664, render distance 32), against
-   120-200 fps on Vulkan/MoltenVK. The first CPU pass (`071bdb0`) already took the frame from 17.5 ms
-   to ~10 ms and from 42.4 ms to ~17-20 ms by caching per-pipeline facts and skipping redundant
-   binds; the remaining gap is per-draw CPU cost plus the GPU items listed in `HANDOFF.md`
-   ("Queued, not done").
-3. **Then Phase 5 is done**, and Phase 6 (dynamic lighting) is next. Performance parity is the one
-   open exit criterion.
-
-The jar is already installed in the test instance; rebuild and reinstall with:
-
-```bash
-./scripts/build_mod.sh
-cp build/libs/metalmod-1.0.0.jar \
-   "$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2/mods/"
-```
-
-Watch `logs/latest.log` for the 30 s telemetry line, which reports `failures=`, `pipelineFailures=`,
-`unboundBindings=`, `missingVertexAttributes=`, `slotCollisions=` and `bindingKindMismatches=` — all
-of them should stay at zero.
-
----
+**Phase 6 — continue dynamic lighting.** Phase 5 is complete for the tested vanilla scope. The
+point-light proof and first moving-source slice now pass their offline GPU checks. Follow
+[docs/phase6-plan.md](docs/phase6-plan.md) for an in-game hook/behavior pass, then clustering and a
+consumer contract. Phase 6 is still open.
 
 ## 8. Verified facts and how to re-verify
 

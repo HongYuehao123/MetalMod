@@ -47,6 +47,13 @@ public class MetalModConfigScreen extends Screen {
         }).bounds(centerX - buttonWidth / 2, startY + 24, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(metalBackendButton);
 
+        // 3. Lighting, on its own page: it is the part of the mod that keeps growing, and these are
+        // the settings that can change while the game is running (unlike the backend above).
+        Button lightingButton = Button.builder(Component.literal("Lighting..."), btn ->
+                this.minecraft.setScreenAndShow(new MetalModLightingConfigScreen(this)))
+                .bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+        this.addRenderableWidget(lightingButton);
+
         // Capture closes the menu and allows five seconds to resume before recording.
         Button captureButton = Button.builder(Component.literal(
                 net.metalmod.debug.PerformanceCapture.isRecording()
@@ -55,13 +62,13 @@ public class MetalModConfigScreen extends Screen {
                 net.metalmod.debug.PerformanceCapture.toggle(this.minecraft);
                 if (this.minecraft.level != null) this.minecraft.setScreenAndShow(null);
             }
-        }).bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+        }).bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(captureButton);
 
         // Done.
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 80, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 104, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
     }
 

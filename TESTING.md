@@ -47,6 +47,45 @@ shader tools and render check also accept an instance directory as an argument o
 Useful one-off: print the generated MSL for a shader pair, or all of them, by adding
 `-Dmetalmod.dumpMsl=<substring>` (or `=all`).
 
+### 2.1 Phase 6 lighting switches
+
+Every lighting path is a JVM opt-in, so the default Vulkan path and the plain Metal path do no extra
+work at all. The lit variants are only built for the three vanilla terrain pipelines after both
+preprocessed sources match a recorded hash; anything else keeps its own shaders and is reported once.
+
+| Switch | What it selects |
+|---|---|
+| `-Dmetalmod.pointLightProof=true` | 6A: one synthetic camera-centred amber light, terrain only |
+| `-Dmetalmod.dynamicLights=true` | 6B: the moving-source set plus the static block index |
+| `-Dmetalmod.clusteredLights=true` | 6C: with `dynamicLights`, evaluate through the cluster grid |
+
+The same three switches are on the in-game **Lighting** page (**Options -> MetalMod...**, or Mod Menu
+-> MetalMod -> Lighting) and persist to `config/metalmod.properties`. They apply at the next frame
+boundary with no restart. Precedence is: an in-game choice, then a `-D` launch flag, then the saved
+file - so a flag seeds a session but never prevents changing the setting in game.
+`MetalMod_Test_26.2` launches with `-Dmetalmod.dynamicLights=true`, which seeds each session as on;
+remove it from the instance's JVM options to let the saved file decide instead.
+
+The variants cover the three terrain pipelines and the two particle pipelines; a pipeline outside
+those families keeps its own shaders and is reported once as a fallback. The startup log prints the
+three switches and every variant applied, so `grep 'lighting' logs/latest.log` says which path a
+session ran. Terrain, particles, entities and items are covered; emissive entity passes are excluded,
+moving blocks are covered, and inventory previews stay unlit because they are drawn fully lit. Glow
+squids are not a light source: vanilla entities emit no light. A source buried in or sealed by opaque
+blocks is dropped; unshadowed leakage through walls otherwise remains.
+
+Re-run the inventory **and** the render check with the switches on — the clustered variant is a
+different shader pair, and the inventory is what compiles all 87 pipelines against it:
+
+```bash
+JDK_JAVA_OPTIONS="-Dmetalmod.dynamicLights=true -Dmetalmod.clusteredLights=true" \
+  ./tools/shader_inventory/run.sh
+./tools/render_check/run.sh          # covers all three paths without any switch
+```
+
+The render check drives each path itself, so it needs no JVM arguments. What each lighting assertion
+covers, and what is still unproven, is listed in [docs/phase6-plan.md](docs/phase6-plan.md) §7.
+
 ## 3. In-game checks
 
 Launch with the backend on, load a world, press **F3**, and let it run at least 30 seconds.
@@ -375,9 +414,10 @@ nothing about the backends. It is a recorded route ready to run if a third dimen
 ## 5. Phase 5 sign-off procedure
 
 Phase 5's exit criterion is *"a normal session is visually indistinguishable from Vulkan/MoltenVK, at
-comparable frame rate"*. That is two measurements, and neither has been taken cleanly: the frame-rate
-pairs so far contradicted each other, and fourteen fixes are marked "pending in-game confirmation" in
-[bug.md](bug.md). This is the sitting that closes both.
+comparable frame rate"*. Both are now complete for the tested scope: the routed comparison in §4 and visual confirmation in
+§5.5 supersede the earlier contradictory pairs and pending confirmations. The procedure below is
+retained for regression testing. The final offline recheck and limitations are in
+[docs/phase6-plan.md](docs/phase6-plan.md).
 
 Budget about an hour. Do it in one session: drift is what spoiled the previous comparisons, and the
 closer together two captures are, the less of it there is.

@@ -26,6 +26,16 @@ public class MetalConfig {
     // "Metal Renderer Backend".
     public volatile boolean preferMetalBackend = false;
 
+    // Phase 6 lighting. Unlike the backend choice these are read at load *and* can be pushed into the
+    // live device, because a lighting variant is chosen when a pipeline is compiled rather than when
+    // the device is created - see MetalDevice.applyPendingLightingSettings(). Each is still settable
+    // per launch with -Dmetalmod.pointLightProof / -Dmetalmod.dynamicLights / -Dmetalmod.clusteredLights,
+    // and a -D value wins over the file, so a launch flag can never be silently overridden by a saved
+    // setting. The lighting screen shows that as a locked toggle.
+    public volatile boolean enablePointLightProof = false;
+    public volatile boolean enableDynamicLights = false;
+    public volatile boolean enableClusteredLights = false;
+
     // The MetalFX scaling mode, quality preset, frame generation, sharpness, HDR and target-refresh
     // settings that used to live here drove the retired MoltenVK-interop frame pipeline
     // (ROADMAP.md §4). Nothing read them once that pipeline went away, so they were removed rather
@@ -43,6 +53,9 @@ public class MetalConfig {
             this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "false"));
             this.enableMemoryPressureHandler = Boolean.parseBoolean(props.getProperty("enableMemoryPressureHandler", "true"));
             this.preferMetalBackend = Boolean.parseBoolean(props.getProperty("preferMetalBackend", "false"));
+            this.enablePointLightProof = Boolean.parseBoolean(props.getProperty("enablePointLightProof", "false"));
+            this.enableDynamicLights = Boolean.parseBoolean(props.getProperty("enableDynamicLights", "false"));
+            this.enableClusteredLights = Boolean.parseBoolean(props.getProperty("enableClusteredLights", "false"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());
         }
@@ -59,6 +72,9 @@ public class MetalConfig {
                 props.setProperty("enableUnifiedMemoryPool", Boolean.toString(this.enableUnifiedMemoryPool));
                 props.setProperty("enableMemoryPressureHandler", Boolean.toString(this.enableMemoryPressureHandler));
                 props.setProperty("preferMetalBackend", Boolean.toString(this.preferMetalBackend));
+                props.setProperty("enablePointLightProof", Boolean.toString(this.enablePointLightProof));
+                props.setProperty("enableDynamicLights", Boolean.toString(this.enableDynamicLights));
+                props.setProperty("enableClusteredLights", Boolean.toString(this.enableClusteredLights));
                 props.store(writer, "MetalMod Apple Silicon Configuration");
             }
         } catch (Exception e) {

@@ -69,6 +69,41 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                 + net.metalmod.backend.MetalDevice.lastFences() + " fences)§r");
         }
         displayer.addLine("§6[MetalMod]§r " + PerformanceCapture.status());
+        // The light set is only extracted when the feature is on and the Metal backend is drawing, so
+        // this line is the in-game answer to "is the extractor running, and what did it publish?".
+        // The live device's switches, not the launch flags: a setting can now come from the settings
+        // screen, and F3 has to report what the running frame is actually doing.
+        net.metalmod.backend.MetalDevice live = net.metalmod.backend.MetalDevice.active();
+        boolean dynamicLights = live != null
+                ? live.dynamicLightsEnabled() : net.metalmod.lighting.LightingSettings.dynamicLights();
+        if (metalActive && dynamicLights) {
+            displayer.addLine("§6[MetalMod]§r dynamic lights §b"
+                    + net.metalmod.lighting.LightCollector.current().lights().size() + "/"
+                    + net.metalmod.lighting.LightSnapshot.CAPACITY
+                    + "§r dropped §b" + net.metalmod.lighting.LightCollector.dropped()
+                    + "§r buried §b" + net.metalmod.lighting.LightCollector.occluded()
+                    + "§r §7(snapshot/cap; unshadowed)§r");
+            // Cluster occupancy is how the scaling gate is read off: how full the lists got, and how
+            // many sources could not be represented in the cell they reached.
+            if (live != null ? live.clusteredLightsEnabled()
+                    : net.metalmod.lighting.LightingSettings.clusteredLights()) {
+                var cluster = net.metalmod.backend.MetalDevice.lastClusterStats();
+                displayer.addLine("§6[MetalMod]§r clusters §b" + cluster.cellsTouched()
+                        + "§r cells, occupancy §b" + cluster.occupancyMax() + "§r max/§b"
+                        + (cluster.occupancyMeanTimes100() / 100.0) + "§r mean, overflowed §b"
+                        + cluster.cellsOverflowing() + "§r, evicted §b" + cluster.evicted()
+                        + "§r, unreachable §b" + cluster.orphaned() + "§r");
+            }
+            // The static index is what says whether "no per-frame world scan" is actually holding.
+            var blocks = net.metalmod.lighting.BlockLightIndex.stats();
+            displayer.addLine("§6[MetalMod]§r block sources §b" + blocks.emitters() + "§r in §b"
+                    + blocks.sections() + "§r sections, §b" + blocks.pendingSections()
+                    + "§r pending §7(scans " + blocks.scans() + ", evictions " + blocks.evictions() + ")§r");
+            var environment = net.metalmod.lighting.LightCollector.environment();
+            if (environment.known()) {
+                displayer.addLine("§6[MetalMod]§r environment " + environment.summary());
+            }
+        }
         if (net.metalmod.debug.CaptureRouteRecorder.isActive()) {
             displayer.addLine("§6[MetalMod]§r §cREC§r route: "
                     + net.metalmod.debug.CaptureRouteRecorder.sampleCount()

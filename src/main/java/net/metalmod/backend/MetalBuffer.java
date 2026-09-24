@@ -66,6 +66,18 @@ public final class MetalBuffer extends GpuBuffer {
         return this.data;
     }
 
+    /**
+     * The buffer's CPU-visible bytes in the order the GPU reads them.
+     *
+     * <p>{@link MemorySegment#asByteBuffer()} is <em>big-endian</em> and Minecraft writes floats
+     * without setting an order, so a raw view byte-swaps every value. {@link #map} already gets this
+     * right; callers that write directly through {@link #data()} must use this accessor instead, or
+     * the GPU reads 16777216 where the CPU wrote 1.
+     */
+    public ByteBuffer mappedBytes() {
+        return this.data.asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
+    }
+
     public boolean isValid() {
         return this.handle.address() != 0;
     }

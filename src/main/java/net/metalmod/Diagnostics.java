@@ -36,7 +36,15 @@ public final class Diagnostics {
     private static final List<String> HOOKS = List.of(
             "GameRenderer.render",
             "GameRenderer.resize",
-            "Window.onFramebufferResize"
+            "Window.onFramebufferResize",
+            // Phase 6: the light set is extracted at the engine's own extraction boundary, and the
+            // set is dropped whenever the extracted level changes.
+            "LevelExtractor.extract",
+            "LevelExtractor.setLevel",
+            // The in-game entry points: the vanilla Options screen's MetalMod button, and the
+            // Lighting page. Reported so a missing button can be told from a missing injection.
+            "OptionsScreen.init",
+            "MetalModLightingConfigScreen.init"
     );
 
     private static final Set<String> SEEN = ConcurrentHashMap.newKeySet();
@@ -101,6 +109,20 @@ public final class Diagnostics {
         System.out.println(TAG + " config  : preferMetalBackend=" + config.preferMetalBackend
                 + " umaPool=" + config.enableUnifiedMemoryPool
                 + " pressureHandler=" + config.enableMemoryPressureHandler);
+
+        // The lighting switches are startup-only, so a log that does not name them cannot say which
+        // path a session actually ran. Printed every launch, on or off, for that reason.
+        boolean dynamic = net.metalmod.lighting.LightingSettings.dynamicLights();
+        System.out.println(TAG + " lighting: " + net.metalmod.lighting.LightingSettings.summary()
+                + " (from " + (net.metalmod.lighting.LightingSettings.overridden(
+                        net.metalmod.lighting.LightingSettings.PROPERTY_DYNAMIC_LIGHTS)
+                        || net.metalmod.lighting.LightingSettings.overridden(
+                                net.metalmod.lighting.LightingSettings.PROPERTY_CLUSTERED_LIGHTS)
+                        ? "launch flags and config" : "config/metalmod.properties") + ")");
+        if (!dynamic) {
+            System.out.println(TAG + " expect  : no dynamic lighting this session. Enable it in "
+                    + "Mod Menu -> MetalMod -> Lighting, or with -Dmetalmod.dynamicLights=true.");
+        }
 
         System.out.println(TAG + " expect  : the native Metal backend draws only when the engine "
                 + "selects it (preferMetalBackend or -Dmetalmod.metalBackend=true).");

@@ -286,6 +286,14 @@ public final class RenderCheck {
             // but chunk and entity meshes are indexed with IndexType.SHORT and each chunk of a
             // shared vertex buffer is drawn by offsetting into it.
             shortIndexCheck(device, pipeline);
+            pointLightCheck(source, terrain);
+            dynamicLightCheck(source, terrain);
+            clusteredLightCheck(source, terrain);
+            particleLightCheck(source);
+            entityLightCheck(source);
+            itemLightCheck(source);
+            blockLightCheck(source);
+            lightingSettingsCheck(source, terrain);
         } finally {
             device.close();
         }
@@ -379,6 +387,945 @@ public final class RenderCheck {
         }
         whiteView.close();
         white.close();
+    }
+
+    /** Phase 6A: actual variant/buffer/pixel path, including fallback and reload. */
+    private static void pointLightCheck(ShaderSource source, RenderPipeline terrain) throws Exception {
+        String previous = System.getProperty("metalmod.pointLightProof");
+        System.setProperty("metalmod.pointLightProof", "true");
+        MetalDevice lit = MetalDevice.create();
+        if (previous == null) System.clearProperty("metalmod.pointLightProof");
+        else System.setProperty("metalmod.pointLightProof", previous);
+        check("point-light device created", lit != null, "");
+        if (lit == null) return;
+        try {
+            lit.precompilePipeline(terrain, source);
+            String lightUniform = net.metalmod.lighting.PointLight.UNIFORM;
+            MetalRenderPipeline compiled = lit.pipelineFor(terrain);
+            check("terrain proof reflects fragment light buffer", compiled != null
+                    && compiled.fragmentBuffer(lightUniform) >= 0, "");
+            if (compiled == null || compiled.fragmentBuffer(lightUniform) < 0) return;
+            GpuTexture albedo = lit.createTexture("proof albedo", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = lit.createTexture("proof baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            solid(albedo, 128, 128, 128, 128);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView albedoView = lit.createTextureView(albedo), bakedView = lit.createTextureView(baked);
+            GpuBuffer vertices = lit.createBuffer(() -> "proof vertices", GpuBuffer.USAGE_VERTEX, terrainVertices());
+            GpuBuffer indices = lit.createBuffer(() -> "proof indices", GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            putProofUniform(lit, uniforms, "Projection", identityMat4());
+            putProofUniform(lit, uniforms, "Globals", globals());
+            putProofUniform(lit, uniforms, "ChunkSection", chunkSection());
+            putProofUniform(lit, uniforms, "Fog", fog());
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", albedoView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            // No test-provided light buffer: this exercises the device-owned default binding.
+            int[] automatic = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof automatic", clear);
+            check("camera-centred default light binds automatically", automatic[0] > 90
+                    && automatic[0] > automatic[1] && automatic[1] > automatic[2], java.util.Arrays.toString(automatic));
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+            for (int distance = 0; distance <= 3; distance++) {
+                var light = new net.metalmod.lighting.PointLight(px, py, 1 + distance, 2, 1, 0, 0, 1);
+                putProofUniform(lit, uniforms, lightUniform, light.relativeTo(0, 0, 0));
+                int[] pixel = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof distance", clear);
+                int expected = distance == 0 ? 128 : distance == 1 ? 56 : 32;
+                check("point light distance " + distance + " -> expected " + expected + "/32/32, alpha 128",
+                        Math.abs(pixel[0] - expected) <= 1 && Math.abs(pixel[1] - 32) <= 1
+                                && Math.abs(pixel[2] - 32) <= 1 && pixel[3] == 128, java.util.Arrays.toString(pixel));
+            }
+            putProofUniform(lit, uniforms, lightUniform,
+                    new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0).relativeTo(0, 0, 0));
+            int[] zero = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof zero", clear);
+            // A deliberately changed fragment source must bypass adaptation and invalidate the cache
+            // even when identifiers/defines are unchanged, and even without clearPipelineCache().
+            ShaderSource replacement = (id, type) -> {
+                String text = source.get(id, type);
+                return type == ShaderType.FRAGMENT && id.equals(terrain.getFragmentShader())
+                        ? text.replace("* vertexColor;", "* vertexColor * vec4(0.5, 1.0, 1.0, 1.0);") : text;
+            };
+            lit.precompilePipeline(terrain, replacement);
+            check("replacement terrain shader keeps original path", lit.pipelineFor(terrain) != null
+                    && lit.pipelineFor(terrain).fragmentBuffer(lightUniform) < 0, "");
+            int[] changed = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof replacement", clear);
+            check("same-ID changed source reaches GPU", Math.abs(changed[0] - 16) <= 1
+                    && Math.abs(changed[1] - 32) <= 1, java.util.Arrays.toString(changed));
+            // Vanilla off comparison from a distinct startup-disabled device.
+            previous = System.getProperty("metalmod.pointLightProof");
+            System.setProperty("metalmod.pointLightProof", "false");
+            MetalDevice off = MetalDevice.create();
+            if (previous == null) System.clearProperty("metalmod.pointLightProof");
+            else System.setProperty("metalmod.pointLightProof", previous);
+            try {
+                off.precompilePipeline(terrain, source);
+                check("disabled terrain has no light binding", off.pipelineFor(terrain).fragmentBuffer(lightUniform) < 0, "");
+                // Buffers/textures belong to lit's MTLDevice; create the vanilla baseline on lit instead.
+                ShaderSource equivalent = (id, type) -> source.get(id, type).replace("void main() {", "void main()  { ");
+                lit.precompilePipeline(terrain, equivalent); // exact adapter anchors reject this spelling
+                int[] vanilla = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof vanilla", clear);
+                check("zero intensity exactly matches vanilla RGBA", java.util.Arrays.equals(zero, vanilla),
+                        java.util.Arrays.toString(zero) + " vs " + java.util.Arrays.toString(vanilla));
+            } finally { off.close(); }
+            lit.clearPipelineCache();
+            lit.precompilePipeline(terrain, source);
+            check("reload restores lit variant", lit.pipelineFor(terrain).fragmentBuffer(lightUniform) >= 0, "");
+            // Large world origin + fractional camera + different chunk origin. ModelView cancels
+            // translation for rasterization, but lighting must use the pre-ModelView position.
+            ByteBuffer section = chunkSection();
+            section.putFloat(48, -15.75f).putInt(80, 30_000_016);
+            ByteBuffer global = globals();
+            global.putInt(0, 30_000_000).putFloat(16, -0.25f);
+            putProofUniform(lit, uniforms, "ChunkSection", section);
+            putProofUniform(lit, uniforms, "Globals", global);
+            putProofUniform(lit, uniforms, lightUniform,
+                    new net.metalmod.lighting.PointLight(30_000_016 + px, py, 1, 2, 1, 0, 0, 1)
+                            .relativeTo(30_000_000.25, 0, 0));
+            int[] large = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof large origin", clear);
+            check("light and terrain agree across chunk/large/fractional camera origins", Math.abs(large[0] - 128) <= 1
+                    && Math.abs(large[1] - 32) <= 1, java.util.Arrays.toString(large));
+            putProofUniform(lit, uniforms, "Fog", fog(new float[]{0, 0, 1, 1}, 0, 0.1f, 0, 0.1f));
+            int[] fogged = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof fog", clear);
+            check("dynamic illumination is applied before fog", fogged[0] == 0 && fogged[1] == 0
+                    && fogged[2] == 255, java.util.Arrays.toString(fogged));
+            RenderPipeline cutout = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("CUTOUT_TERRAIN").get(null);
+            lit.precompilePipeline(cutout, source);
+            solid(albedo, 128, 128, 128, 0);
+            int[] discarded = renderQuad(lit, cutout, vertices, indices, uniforms, textures, true, "proof cutout", clear);
+            check("lit cutout retains alpha discard", discarded[0] == 0 && discarded[1] == 255
+                    && discarded[2] == 0, java.util.Arrays.toString(discarded));
+            RenderPipeline translucent = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("TRANSLUCENT_TERRAIN").get(null);
+            lit.precompilePipeline(translucent, source);
+            check("translucent terrain variant compiles", lit.pipelineFor(translucent) != null
+                    && lit.pipelineFor(translucent).fragmentBuffer(lightUniform) >= 0, "");
+            putProofUniform(lit, uniforms, "Fog", fog());
+            solid(albedo, 128, 128, 128, 128);
+            int[] blended = renderQuad(lit, translucent, vertices, indices, uniforms, textures, true, "proof translucent", clear);
+            check("lit translucent terrain blends over background", Math.abs(blended[0] - 64) <= 1
+                    && Math.abs(blended[1] - 143) <= 1 && Math.abs(blended[2] - 16) <= 1,
+                    java.util.Arrays.toString(blended));
+            // Full daylight has no remaining headroom: adding the synthetic source must not wash it out.
+            solid(baked, 255, 255, 255, 255);
+            int[] daylight = renderQuad(lit, terrain, vertices, indices, uniforms, textures, true, "proof daylight", clear);
+            check("full baked light remains unchanged", daylight[0] == 128 && daylight[1] == 128
+                    && daylight[2] == 128 && daylight[3] == 128, java.util.Arrays.toString(daylight));
+            RenderPipeline gui = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("GUI").get(null);
+            lit.precompilePipeline(gui, source);
+            check("GUI excluded from lighting", lit.pipelineFor(gui).fragmentBuffer(lightUniform) < 0, "");
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); albedoView.close(); bakedView.close(); albedo.close(); baked.close();
+        } finally { lit.close(); }
+    }
+
+    private static void putProofUniform(MetalDevice device, Map<String, GpuBuffer> uniforms,
+                                         String name, ByteBuffer data) {
+        GpuBuffer old = uniforms.put(name, device.createBuffer(() -> name, GpuBuffer.USAGE_UNIFORM, data));
+        if (old != null) old.close(); // Each preceding renderQuad waits for readback completion.
+    }
+
+    /**
+     * Phase 6B: the published light set, not a test-chosen one.
+     *
+     * <p>The point-light proof above drives one light through a uniform the test supplies. This check
+     * exercises the path the game uses: {@link LightCollector} publishes a snapshot, the device
+     * encodes it into its own uniformly-mapped buffer, and the render pass binds it only because the
+     * compiled pipeline was built with the dynamic variant. The assertions are about the published
+     * *set*: zero, one, two coloured, the frame ring across four rotations, a light outside its own
+     * radius, and the cap.
+     */
+    private static void dynamicLightCheck(ShaderSource source, RenderPipeline terrain) throws Exception {
+        String previous = System.getProperty("metalmod.dynamicLights");
+        System.setProperty("metalmod.dynamicLights", "true");
+        MetalDevice device = MetalDevice.create();
+        if (previous == null) System.clearProperty("metalmod.dynamicLights");
+        else System.setProperty("metalmod.dynamicLights", previous);
+        check("dynamic-light device created", device != null, "");
+        if (device == null) return;
+        String lightSet = net.metalmod.lighting.LightSnapshot.UNIFORM;
+        try {
+            device.precompilePipeline(terrain, source);
+            MetalRenderPipeline compiled = device.pipelineFor(terrain);
+            check("dynamic terrain reflects the light-set block", compiled != null
+                    && compiled.fragmentBuffer(lightSet) >= 0, "");
+            if (compiled == null || compiled.fragmentBuffer(lightSet) < 0) return;
+            check("dynamic variant is not the point-light variant", !compiled.usesPointLight()
+                    && compiled.usesDynamicLights(), "");
+            GpuTexture albedo = device.createTexture("dynamic albedo", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = device.createTexture("dynamic baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            solid(albedo, 128, 128, 128, 128);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView albedoView = device.createTextureView(albedo), bakedView = device.createTextureView(baked);
+            GpuBuffer vertices = device.createBuffer(() -> "dynamic vertices", GpuBuffer.USAGE_VERTEX, terrainVertices());
+            GpuBuffer indices = device.createBuffer(() -> "dynamic indices", GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            putProofUniform(device, uniforms, "Projection", identityMat4());
+            putProofUniform(device, uniforms, "Globals", globals());
+            putProofUniform(device, uniforms, "ChunkSection", chunkSection());
+            putProofUniform(device, uniforms, "Fog", fog());
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", albedoView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+
+            // Reference: the same quad with no lighting variant at all, from a device whose switch
+            // is off. Every lit assertion below is phrased against this, so it does not depend on a
+            // hand-computed pixel.
+            previous = System.getProperty("metalmod.dynamicLights");
+            System.setProperty("metalmod.dynamicLights", "false");
+            MetalDevice vanillaDevice = MetalDevice.create();
+            if (previous == null) System.clearProperty("metalmod.dynamicLights");
+            else System.setProperty("metalmod.dynamicLights", previous);
+            int[] vanilla;
+            try {
+                vanillaDevice.precompilePipeline(terrain, source);
+                vanilla = renderQuad(vanillaDevice, terrain, vertices, indices, uniforms, textures,
+                        true, "dynamic vanilla reference", clear);
+            } finally {
+                vanillaDevice.close();
+            }
+            check("vanilla reference is lit only by the baked lightmap", vanilla[0] == vanilla[1]
+                    && vanilla[1] == vanilla[2], java.util.Arrays.toString(vanilla));
+
+            // Empty snapshot: the device-owned buffer is bound and publishes zero lights.
+            net.metalmod.lighting.LightCollector.clear();
+            int[] empty = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "dynamic empty", clear);
+            check("empty light set is pixel-identical to vanilla",
+                    java.util.Arrays.equals(empty, vanilla),
+                    java.util.Arrays.toString(empty) + " vs " + java.util.Arrays.toString(vanilla));
+
+            // One light at the fragment, radius 2, full intensity: the same pixel the 6A proof
+            // produces, reached through the snapshot instead of a test-supplied uniform.
+            publishLight(px, py, 1, 2, 1, 0, 0, 1);
+            int[] one = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "dynamic one", clear);
+            check("published single red light lifts red only", one[0] > vanilla[0] + 20
+                    && one[1] == vanilla[1] && one[2] == vanilla[2] && one[3] == vanilla[3],
+                    java.util.Arrays.toString(one) + " vs " + java.util.Arrays.toString(vanilla));
+
+            // A light exactly at its own radius contributes nothing; one past it must too.
+            publishLight(px + 2, py, 1, 2, 1, 0, 0, 1);
+            int[] atEdge = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "dynamic radius edge", clear);
+            check("light at its radius contributes nothing", java.util.Arrays.equals(atEdge, vanilla),
+                    java.util.Arrays.toString(atEdge));
+            publishLight(px + 3, py, 1, 2, 1, 0, 0, 1);
+            int[] outside = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "dynamic outside radius", clear);
+            check("light outside its radius contributes nothing", java.util.Arrays.equals(outside, vanilla),
+                    java.util.Arrays.toString(outside));
+
+            // Two coloured lights on top of each other: the sum is clamped, and both channels arrive.
+            var snapshot = new net.metalmod.lighting.LightSnapshot(0, 0, 0, java.util.List.of(
+                    new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.5f),
+                    new net.metalmod.lighting.PointLight(px, py, 1, 2, 0, 1, 0, 0.5f)));
+            net.metalmod.lighting.LightCollector.publish(snapshot);
+            int[] two = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "dynamic two coloured", clear);
+            check("two coloured lights sum into one pixel", two[0] > vanilla[0] + 20
+                    && two[1] > vanilla[1] + 20 && two[2] == vanilla[2],
+                    java.util.Arrays.toString(two) + " vs " + java.util.Arrays.toString(vanilla));
+
+            // The snapshot buffer is a three-slot ring behind a fence. Four publishes in a row must
+            // all reach the GPU with their own data.
+            for (int rotation = 0; rotation < 4; rotation++) {
+                publishLight(px, py, 1, 2, 1, 0, 0, 1);
+                int[] ring = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                        "dynamic ring " + rotation, clear);
+                check("light ring rotation " + rotation + " publishes its own set",
+                        Math.abs(ring[0] - one[0]) <= 1 && Math.abs(ring[1] - one[1]) <= 1,
+                        java.util.Arrays.toString(ring) + " vs " + java.util.Arrays.toString(one));
+            }
+
+            // A full set: the shader's loop bound is the declared array, so all eight contribute.
+            java.util.List<net.metalmod.lighting.PointLight> full = new java.util.ArrayList<>();
+            for (int i = 0; i < net.metalmod.lighting.LightSnapshot.CAPACITY; i++) {
+                full.add(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.125f));
+            }
+            net.metalmod.lighting.LightCollector.publish(
+                    new net.metalmod.lighting.LightSnapshot(0, 0, 0, full));
+            int[] capped = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "dynamic full set", clear);
+            check("full light set sums to the same pixel", Math.abs(capped[0] - one[0]) <= 2
+                    && Math.abs(capped[1] - one[1]) <= 2 && capped[2] == one[2],
+                    java.util.Arrays.toString(capped) + " vs " + java.util.Arrays.toString(one));
+
+            net.metalmod.lighting.LightCollector.clear();
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); albedoView.close(); bakedView.close();
+            albedo.close(); baked.close();
+        } finally {
+            net.metalmod.lighting.LightCollector.clear();
+            device.close();
+        }
+    }
+
+    /**
+     * Phase 6C: the clustered variant against the real CPU cluster grid.
+     *
+     * <p>6B walks every published light per fragment. This check drives the same terrain pipeline built
+     * from the clustered source, where the fragment selects its 16-block cell and evaluates only that
+     * cell's index list. The assertions are about what clustering must not change: a light that
+     * reaches the fragment lights it exactly as the flat list did, a light that does not reach it
+     * leaves the pixel alone, and a cell holding more lights than its bound keeps the strongest.
+     */
+    private static void clusteredLightCheck(ShaderSource source, RenderPipeline terrain) throws Exception {
+        String previous = System.getProperty("metalmod.clusteredLights");
+        System.setProperty("metalmod.clusteredLights", "true");
+        String previousFlat = System.getProperty("metalmod.dynamicLights");
+        System.setProperty("metalmod.dynamicLights", "true");
+        MetalDevice device = MetalDevice.create();
+        if (previous == null) System.clearProperty("metalmod.clusteredLights");
+        else System.setProperty("metalmod.clusteredLights", previous);
+        if (previousFlat == null) System.clearProperty("metalmod.dynamicLights");
+        else System.setProperty("metalmod.dynamicLights", previousFlat);
+        check("clustered-light device created", device != null, "");
+        if (device == null) return;
+        try {
+            device.precompilePipeline(terrain, source);
+            MetalRenderPipeline compiled = device.pipelineFor(terrain);
+            String listUniform = net.metalmod.lighting.LightSnapshot.UNIFORM;
+            String clusters = net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM;
+            String grid = net.metalmod.lighting.LightClusterGrid.GRID_UNIFORM;
+            check("clustered terrain declares the cluster blocks", compiled != null
+                    && compiled.usesClusteredLights()
+                    && compiled.fragmentTexture(clusters) >= 0 && compiled.fragmentBuffer(grid) >= 0, "");
+            if (compiled == null || compiled.fragmentTexture(clusters) < 0) return;
+            check("clustered variant keeps the flat light list bound too",
+                    compiled.fragmentBuffer(listUniform) >= 0, "");
+            GpuTexture albedo = device.createTexture("cluster albedo", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = device.createTexture("cluster baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            solid(albedo, 128, 128, 128, 128);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView albedoView = device.createTextureView(albedo), bakedView = device.createTextureView(baked);
+            GpuBuffer vertices = device.createBuffer(() -> "cluster vertices", GpuBuffer.USAGE_VERTEX, terrainVertices());
+            GpuBuffer indices = device.createBuffer(() -> "cluster indices", GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            putProofUniform(device, uniforms, "Projection", identityMat4());
+            putProofUniform(device, uniforms, "Globals", globals());
+            putProofUniform(device, uniforms, "ChunkSection", chunkSection());
+            putProofUniform(device, uniforms, "Fog", fog());
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", albedoView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+
+            // A device with the feature off is the pixel reference, so the assertions do not depend on
+            // a hand-computed colour.
+            previous = System.getProperty("metalmod.dynamicLights");
+            System.setProperty("metalmod.dynamicLights", "false");
+            MetalDevice vanillaDevice = MetalDevice.create();
+            if (previous == null) System.clearProperty("metalmod.dynamicLights");
+            else System.setProperty("metalmod.dynamicLights", previous);
+            int[] vanilla;
+            try {
+                vanillaDevice.precompilePipeline(terrain, source);
+                vanilla = renderQuad(vanillaDevice, terrain, vertices, indices, uniforms, textures,
+                        true, "cluster vanilla reference", clear);
+            } finally {
+                vanillaDevice.close();
+            }
+
+            // One light in the fragment's own cell: clustering must light it exactly as the flat path.
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 1))));
+            int[] lit = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "cluster one light", clear);
+            check("a clustered light lights the fragment it reaches", lit[0] > vanilla[0] + 20
+                    && lit[1] == vanilla[1] && lit[2] == vanilla[2] && lit[3] == vanilla[3],
+                    java.util.Arrays.toString(lit) + " vs " + java.util.Arrays.toString(vanilla));
+            net.metalmod.lighting.LightClusterGrid.Stats stats = device.clusterStats();
+            check("the grid carries the published light",
+                    stats.lights() == 1 && stats.assigned() > 0 && stats.orphaned() == 0,
+                    stats.toString());
+
+            // A light a kilometre away is outside the window: it must light nothing rather than be
+            // clamped into an edge cell.
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(1000, py, 1, 8, 1, 0, 0, 1))));
+            int[] far = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "cluster far light", clear);
+            check("a light outside the cluster window lights nothing", java.util.Arrays.equals(far, vanilla),
+                    java.util.Arrays.toString(far));
+            check("the grid counts the unreachable light", device.clusterStats().orphaned() == 1,
+                    device.clusterStats().toString());
+
+            // More lights in one cell than the cell holds: the strongest (lowest index) survive.
+            java.util.List<net.metalmod.lighting.PointLight> crowd = new java.util.ArrayList<>();
+            for (int index = 0; index < net.metalmod.lighting.LightClusterGrid.ENTRIES_PER_CELL + 2; index++) {
+                crowd.add(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 1));
+            }
+            net.metalmod.lighting.LightCollector.publish(
+                    new net.metalmod.lighting.LightSnapshot(0, 0, 0, crowd));
+            int[] overflowing = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "cluster overflowing cell", clear);
+            check("an overflowing cell still lights the fragment (clamped, not out of bounds)",
+                    overflowing[0] > vanilla[0] + 20 && overflowing[0] <= 255
+                            && overflowing[1] == vanilla[1],
+                    java.util.Arrays.toString(overflowing));
+            check("overflow is counted", device.clusterStats().evicted() > 0
+                    && device.clusterStats().cellsOverflowing() >= 1, device.clusterStats().toString());
+
+            // Empty set: the cluster block is bound and publishes nothing, so the pixel is vanilla.
+            net.metalmod.lighting.LightCollector.clear();
+            int[] empty = renderQuad(device, terrain, vertices, indices, uniforms, textures, true,
+                    "cluster empty", clear);
+            check("an empty cluster grid is pixel-identical to vanilla",
+                    java.util.Arrays.equals(empty, vanilla), java.util.Arrays.toString(empty));
+
+            // Non-terrain pipelines must not be given the cluster blocks.
+            RenderPipeline gui = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("GUI").get(null);
+            device.precompilePipeline(gui, source);
+            check("GUI is excluded from clustering",
+                    device.pipelineFor(gui).fragmentTexture(clusters) < 0, "");
+
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); albedoView.close(); bakedView.close();
+            albedo.close(); baked.close();
+        } finally {
+            net.metalmod.lighting.LightCollector.clear();
+            device.close();
+        }
+    }
+
+    /**
+     * Phase 6C: the particle pair, which is where "the dust around a torch is dark" came from.
+     *
+     * <p>Particles are a different shader pair from terrain, so a source that lights terrain does not
+     * light them until they get their own variant. Their vertex stage already carries a
+     * camera-relative position ({@code ProjMat * ModelViewMat * vec4(Position, 1.0)}, with no
+     * chunk/camera term), and every particle in a batch shares one vertex buffer, so {@code Position}
+     * cannot be model-local. This check drives that adapter through the real pipeline: the vertex
+     * buffer is byte-identical to terrain's, so if the position frame or the fragment injection were
+     * wrong, the lit pixel would not move with the light.
+     */
+    private static void particleLightCheck(ShaderSource source) throws Exception {
+        String previousDynamic = System.getProperty("metalmod.dynamicLights");
+        String previousClustered = System.getProperty("metalmod.clusteredLights");
+        System.setProperty("metalmod.dynamicLights", "true");
+        System.setProperty("metalmod.clusteredLights", "true");
+        MetalDevice device = MetalDevice.create();
+        if (previousDynamic == null) System.clearProperty("metalmod.dynamicLights");
+        else System.setProperty("metalmod.dynamicLights", previousDynamic);
+        if (previousClustered == null) System.clearProperty("metalmod.clusteredLights");
+        else System.setProperty("metalmod.clusteredLights", previousClustered);
+        check("particle-light device created", device != null, "");
+        if (device == null) return;
+        try {
+            RenderPipeline particle = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("OPAQUE_PARTICLE").get(null);
+            device.precompilePipeline(particle, source);
+            MetalRenderPipeline compiled = device.pipelineFor(particle);
+            String lightSet = net.metalmod.lighting.LightSnapshot.UNIFORM;
+            check("particle terrain declares the light set", compiled != null
+                    && compiled.usesDynamicLights() && compiled.fragmentBuffer(lightSet) >= 0, "");
+            if (compiled == null || compiled.fragmentBuffer(lightSet) < 0) return;
+            check("particle variant reads the cluster table too", compiled.usesClusteredLights()
+                    && compiled.fragmentTexture(net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM) >= 0, "");
+
+            GpuTexture surface = device.createTexture("particle surface", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = device.createTexture("particle baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            // White particle texture at full alpha, and a half-lit lightmap so the dynamic term has
+            // headroom to fill. The vertex colour is white, so the reference is the lightmap itself.
+            solid(surface, 255, 255, 255, 255);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView surfaceView = device.createTextureView(surface), bakedView = device.createTextureView(baked);
+            GpuBuffer vertices = device.createBuffer(() -> "particle vertices", GpuBuffer.USAGE_VERTEX, particleVertices());
+            GpuBuffer indices = device.createBuffer(() -> "particle indices", GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            putProofUniform(device, uniforms, "Projection", identityMat4());
+            putProofUniform(device, uniforms, "DynamicTransforms",
+                    dynamicTransforms(new float[]{1.0f, 1.0f, 1.0f, 1.0f}));
+            putProofUniform(device, uniforms, "Fog", fog());
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", surfaceView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+
+            net.metalmod.lighting.LightCollector.clear();
+            int[] reference = renderQuad(device, particle, vertices, indices, uniforms, textures, true,
+                    "particle reference", clear);
+            check("particles are lit only by the baked lightmap with no source",
+                    reference[0] == reference[1] && reference[1] == reference[2] && reference[3] == 255,
+                    java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] lit = renderQuad(device, particle, vertices, indices, uniforms, textures, true,
+                    "particle lit", clear);
+            check("a published source lights the particle it reaches", lit[0] > reference[0] + 20
+                    && lit[1] == reference[1] && lit[2] == reference[2] && lit[3] == reference[3],
+                    java.util.Arrays.toString(lit) + " vs " + java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px + 3, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] outside = renderQuad(device, particle, vertices, indices, uniforms, textures, true,
+                    "particle outside radius", clear);
+            check("a particle outside the light radius is unchanged",
+                    java.util.Arrays.equals(outside, reference), java.util.Arrays.toString(outside));
+
+            // The particle fragment stage discards below alpha 0.1. The variant must not disturb that,
+            // which is the one thing about particles that terrain's version cannot exercise.
+            solid(surface, 255, 255, 255, 12);
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 1))));
+            int[] discarded = renderQuad(device, particle, vertices, indices, uniforms, textures, true,
+                    "particle discarded", clear);
+            check("the particle alpha discard still fires under a light",
+                    discarded[0] == 0 && discarded[1] == 255 && discarded[2] == 0,
+                    java.util.Arrays.toString(discarded));
+            solid(surface, 255, 255, 255, 255);
+
+            net.metalmod.lighting.LightCollector.clear();
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); surfaceView.close(); bakedView.close();
+            surface.close(); baked.close();
+        } finally {
+            net.metalmod.lighting.LightCollector.clear();
+            device.close();
+        }
+    }
+
+    /**
+     * The settings-screen path: a lighting switch can change while the game is running.
+     *
+     * <p>This is the assertion the whole settings page rests on. A lighting variant is chosen when a
+     * pipeline is <em>compiled</em>, so a toggle is only real if it (a) reaches the live device and
+     * (b) makes the pipeline rebuild with the other variant. Both halves are checked here, in the same
+     * order the screen performs them: write the config, request a rebuild, adopt it at the frame
+     * boundary, then compile the pipeline again and look at what came out.
+     */
+    private static void lightingSettingsCheck(ShaderSource source, RenderPipeline terrain) throws Exception {
+        net.metalmod.config.MetalConfig config = net.metalmod.config.MetalConfig.INSTANCE;
+        boolean savedDynamic = config.enableDynamicLights;
+        boolean savedClustered = config.enableClusteredLights;
+        boolean savedProof = config.enablePointLightProof;
+        String lightSet = net.metalmod.lighting.LightSnapshot.UNIFORM;
+        MetalDevice device = null;
+        try {
+            // A launch flag would win over the config and make this check vacuous.
+            check("no launch flag is set while the settings toggle is exercised",
+                    !net.metalmod.lighting.LightingSettings.overridden(
+                            net.metalmod.lighting.LightingSettings.PROPERTY_DYNAMIC_LIGHTS)
+                            && !net.metalmod.lighting.LightingSettings.overridden(
+                                    net.metalmod.lighting.LightingSettings.PROPERTY_CLUSTERED_LIGHTS), "");
+            config.enablePointLightProof = false;
+            config.enableDynamicLights = false;
+            config.enableClusteredLights = false;
+
+            device = MetalDevice.create();
+            check("a device created with lighting off reports it off", device != null
+                    && !device.dynamicLightsEnabled() && !device.clusteredLightsEnabled(), "");
+            if (device == null) return;
+            device.precompilePipeline(terrain, source);
+            check("lighting off compiles the vanilla terrain pipeline",
+                    device.pipelineFor(terrain) != null
+                            && device.pipelineFor(terrain).fragmentBuffer(lightSet) < 0, "");
+
+            // Flip it exactly as the screen does - record the choice, request the rebuild - and
+            // adopt at the frame boundary.
+            net.metalmod.lighting.LightingSettings.chooseDynamicLights(true);
+            net.metalmod.lighting.LightingSettings.chooseClusteredLights(true);
+            MetalDevice.requestLightingRebuild();
+            device.applyPendingLightingSettings();
+            check("the live device adopts the toggle", device.dynamicLightsEnabled()
+                    && device.clusteredLightsEnabled(), "");
+            device.precompilePipeline(terrain, source);
+            MetalRenderPipeline rebuilt = device.pipelineFor(terrain);
+            check("the rebuilt pipeline is the clustered variant", rebuilt != null
+                    && rebuilt.usesClusteredLights() && rebuilt.fragmentBuffer(lightSet) >= 0
+                    && rebuilt.fragmentTexture(net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM) >= 0, "");
+
+            // Toggling back must also work, or a user who tries it once is stuck with it.
+            net.metalmod.lighting.LightingSettings.chooseDynamicLights(false);
+            MetalDevice.requestLightingRebuild();
+            device.applyPendingLightingSettings();
+            device.precompilePipeline(terrain, source);
+            check("toggling back rebuilds the vanilla terrain pipeline",
+                    device.pipelineFor(terrain) != null
+                            && device.pipelineFor(terrain).fragmentBuffer(lightSet) < 0, "");
+        } finally {
+            net.metalmod.lighting.LightingSettings.clearSessionChoices();
+            config.enableDynamicLights = savedDynamic;
+            config.enableClusteredLights = savedClustered;
+            config.enablePointLightProof = savedProof;
+            // Never leave a pending request behind for whatever runs next.
+            MetalDevice.requestLightingRebuild();
+            if (device != null) {
+                device.applyPendingLightingSettings();
+                device.close();
+            }
+        }
+    }
+
+    /**
+     * Phase 6C: the entity pair, which is where "a mob in torchlight stays dark" came from.
+     *
+     * <p>Entities are a third shader pair, and their fragment stage shades over several statements
+     * rather than one: surface sample, per-face vertex colour, {@code ColorModulator}, overlay, then
+     * the baked lightmap. The variant captures the surface sample where it is taken and adds the
+     * dynamic contribution right before fog, so nothing is applied twice. This check drives that
+     * through the real {@code ENTITY_CUTOUT} pipeline, whose vertex buffer carries the {@code Normal}
+     * attribute and whose fragment stage picks a front or back colour from {@code gl_FrontFacing}.
+     *
+     * <p>Emissive pipelines are excluded by policy rather than adapted - they never sample the
+     * lightmap, so there is no headroom and nothing to relight - and that exclusion is asserted here
+     * so it cannot quietly become "we forgot".
+     */
+    private static void entityLightCheck(ShaderSource source) throws Exception {
+        String previousDynamic = System.getProperty("metalmod.dynamicLights");
+        String previousClustered = System.getProperty("metalmod.clusteredLights");
+        System.setProperty("metalmod.dynamicLights", "true");
+        System.setProperty("metalmod.clusteredLights", "true");
+        MetalDevice device = MetalDevice.create();
+        if (previousDynamic == null) System.clearProperty("metalmod.dynamicLights");
+        else System.setProperty("metalmod.dynamicLights", previousDynamic);
+        if (previousClustered == null) System.clearProperty("metalmod.clusteredLights");
+        else System.setProperty("metalmod.clusteredLights", previousClustered);
+        check("entity-light device created", device != null, "");
+        if (device == null) return;
+        try {
+            RenderPipeline entity = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("ENTITY_CUTOUT").get(null);
+            device.precompilePipeline(entity, source);
+            MetalRenderPipeline compiled = device.pipelineFor(entity);
+            String lightSet = net.metalmod.lighting.LightSnapshot.UNIFORM;
+            String clusters = net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM;
+            check("entity terrain declares the light set", compiled != null
+                    && compiled.usesDynamicLights() && compiled.fragmentBuffer(lightSet) >= 0, "");
+            if (compiled == null || compiled.fragmentBuffer(lightSet) < 0) return;
+            check("entity variant reads the cluster table too",
+                    compiled.usesClusteredLights() && compiled.fragmentTexture(clusters) >= 0, "");
+
+            GpuTexture surface = device.createTexture("entity surface", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture overlay = device.createTexture("entity overlay", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = device.createTexture("entity baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            // White surface and overlay at full alpha, so the overlay's mix leaves the colour alone,
+            // and a half-lit lightmap so the dynamic term has headroom to fill.
+            solid(surface, 255, 255, 255, 255);
+            solid(overlay, 255, 255, 255, 255);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView surfaceView = device.createTextureView(surface);
+            GpuTextureView overlayView = device.createTextureView(overlay);
+            GpuTextureView bakedView = device.createTextureView(baked);
+            GpuBuffer vertices = device.createBuffer(() -> "entity light vertices",
+                    GpuBuffer.USAGE_VERTEX, entityVertices());
+            GpuBuffer indices = device.createBuffer(() -> "entity light indices",
+                    GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                    GpuBuffer.USAGE_UNIFORM, identityMat4()));
+            uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                    GpuBuffer.USAGE_UNIFORM, dynamicTransforms(new float[]{1f, 1f, 1f, 1f})));
+            uniforms.put("Lighting", device.createBuffer(() -> "Lighting",
+                    GpuBuffer.USAGE_UNIFORM, lighting()));
+            uniforms.put("Fog", device.createBuffer(() -> "Fog", GpuBuffer.USAGE_UNIFORM,
+                    fog(new float[]{0f, 0f, 0f, 0f}, 0f, 2f, 1000f, 2000f)));
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", surfaceView,
+                    "Sampler1", overlayView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+
+            net.metalmod.lighting.LightCollector.clear();
+            int[] reference = renderQuad(device, entity, vertices, indices, uniforms, textures, true,
+                    "entity light reference", clear);
+            check("an unlit entity is the lightmap times the surface",
+                    reference[0] == reference[1] && reference[1] == reference[2] && reference[3] == 255,
+                    java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] lit = renderQuad(device, entity, vertices, indices, uniforms, textures, true,
+                    "entity light lit", clear);
+            check("a published source lights the entity it reaches", lit[0] > reference[0] + 20
+                    && lit[1] == reference[1] && lit[2] == reference[2] && lit[3] == reference[3],
+                    java.util.Arrays.toString(lit) + " vs " + java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px + 3, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] outside = renderQuad(device, entity, vertices, indices, uniforms, textures, true,
+                    "entity light outside radius", clear);
+            check("an entity outside the light radius is unchanged",
+                    java.util.Arrays.equals(outside, reference), java.util.Arrays.toString(outside));
+
+            // The headroom term has to be a real limit, not something that happens to be hidden by a
+            // clamp: with a bright-but-not-saturated lightmap and a dim source, the addition must land
+            // strictly between the unlit value and full scale. A variant that ignored the lightmap
+            // would saturate here.
+            solid(baked, 200, 200, 200, 255);
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.25f))));
+            int[] partial = renderQuad(device, entity, vertices, indices, uniforms, textures, true,
+                    "entity light partial headroom", clear);
+            check("a partially lit entity gains only the lightmap's headroom",
+                    partial[0] > 202 && partial[0] < 245 && partial[1] == 200 && partial[2] == 200,
+                    java.util.Arrays.toString(partial) + " (a missing headroom term would read 255)");
+
+            // At full baked light there is no headroom at all, so even a full-strength source adds
+            // nothing. Together with the assertion above this pins the term at both ends.
+            solid(baked, 255, 255, 255, 255);
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 1))));
+            int[] daylight = renderQuad(device, entity, vertices, indices, uniforms, textures, true,
+                    "entity light daylight", clear);
+            check("a fully lit entity gains nothing from a source",
+                    daylight[0] == 255 && daylight[1] == 255 && daylight[2] == 255,
+                    java.util.Arrays.toString(daylight));
+
+            // The exclusion policy, asserted rather than assumed.
+            RenderPipeline emissive = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("ENTITY_TRANSLUCENT_EMISSIVE").get(null);
+            device.precompilePipeline(emissive, source);
+            MetalRenderPipeline emissiveCompiled = device.pipelineFor(emissive);
+            check("an emissive entity pipeline is deliberately not lit", emissiveCompiled != null
+                    && !emissiveCompiled.usesDynamicLights()
+                    && emissiveCompiled.fragmentBuffer(lightSet) < 0, "");
+
+            net.metalmod.lighting.LightCollector.clear();
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); surfaceView.close(); overlayView.close();
+            bakedView.close(); surface.close(); overlay.close(); baked.close();
+        } finally {
+            net.metalmod.lighting.LightCollector.clear();
+            device.close();
+        }
+    }
+
+    /**
+     * Phase 6C: the item pair - the torch in the player's hand, and items lying in the world.
+     *
+     * <p>The pair is line-for-line the same shape as {@code core/entity}, so this drives the shared
+     * adapter through {@code ITEM_CUTOUT} and asserts the same behaviour plus the one thing that is
+     * specific to items: vanilla renders inventory item previews through this same pipeline, and the
+     * only thing that keeps the dynamic term out of them is the headroom rule. The last assertion here
+     * is what makes that claim checkable rather than hopeful - a fully lit lightmap must leave the
+     * frame pixel-identical.
+     */
+    private static void itemLightCheck(ShaderSource source) throws Exception {
+        String previousDynamic = System.getProperty("metalmod.dynamicLights");
+        String previousClustered = System.getProperty("metalmod.clusteredLights");
+        System.setProperty("metalmod.dynamicLights", "true");
+        System.setProperty("metalmod.clusteredLights", "true");
+        MetalDevice device = MetalDevice.create();
+        if (previousDynamic == null) System.clearProperty("metalmod.dynamicLights");
+        else System.setProperty("metalmod.dynamicLights", previousDynamic);
+        if (previousClustered == null) System.clearProperty("metalmod.clusteredLights");
+        else System.setProperty("metalmod.clusteredLights", previousClustered);
+        check("item-light device created", device != null, "");
+        if (device == null) return;
+        try {
+            RenderPipeline item = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("ITEM_CUTOUT").get(null);
+            device.precompilePipeline(item, source);
+            MetalRenderPipeline compiled = device.pipelineFor(item);
+            String lightSet = net.metalmod.lighting.LightSnapshot.UNIFORM;
+            String clusters = net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM;
+            check("the held-item pipeline declares the light set", compiled != null
+                    && compiled.usesDynamicLights() && compiled.fragmentBuffer(lightSet) >= 0, "");
+            if (compiled == null || compiled.fragmentBuffer(lightSet) < 0) return;
+            check("the item variant reads the cluster table too",
+                    compiled.usesClusteredLights() && compiled.fragmentTexture(clusters) >= 0, "");
+
+            GpuTexture surface = device.createTexture("item surface", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture overlay = device.createTexture("item overlay", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = device.createTexture("item baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            solid(surface, 255, 255, 255, 255);
+            solid(overlay, 255, 255, 255, 255);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView surfaceView = device.createTextureView(surface);
+            GpuTextureView overlayView = device.createTextureView(overlay);
+            GpuTextureView bakedView = device.createTextureView(baked);
+            GpuBuffer vertices = device.createBuffer(() -> "item light vertices",
+                    GpuBuffer.USAGE_VERTEX, entityVertices());
+            GpuBuffer indices = device.createBuffer(() -> "item light indices",
+                    GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                    GpuBuffer.USAGE_UNIFORM, identityMat4()));
+            uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                    GpuBuffer.USAGE_UNIFORM, dynamicTransforms(new float[]{1f, 1f, 1f, 1f})));
+            uniforms.put("Lighting", device.createBuffer(() -> "Lighting",
+                    GpuBuffer.USAGE_UNIFORM, lighting()));
+            uniforms.put("Fog", device.createBuffer(() -> "Fog", GpuBuffer.USAGE_UNIFORM,
+                    fog(new float[]{0f, 0f, 0f, 0f}, 0f, 2f, 1000f, 2000f)));
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", surfaceView,
+                    "Sampler1", overlayView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+
+            net.metalmod.lighting.LightCollector.clear();
+            int[] reference = renderQuad(device, item, vertices, indices, uniforms, textures, true,
+                    "item light reference", clear);
+            check("an unlit item is the lightmap times the surface",
+                    reference[0] == reference[1] && reference[1] == reference[2] && reference[3] == 255,
+                    java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] lit = renderQuad(device, item, vertices, indices, uniforms, textures, true,
+                    "item light lit", clear);
+            check("a published source lights the held item it reaches", lit[0] > reference[0] + 20
+                    && lit[1] == reference[1] && lit[2] == reference[2] && lit[3] == reference[3],
+                    java.util.Arrays.toString(lit) + " vs " + java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px + 3, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] outside = renderQuad(device, item, vertices, indices, uniforms, textures, true,
+                    "item light outside radius", clear);
+            check("an item outside the light radius is unchanged",
+                    java.util.Arrays.equals(outside, reference), java.util.Arrays.toString(outside));
+
+            // What keeps the dynamic term out of the inventory: there it is drawn fully lit, so there
+            // is no headroom. This has to be exact, because it is the whole exclusion argument.
+            solid(baked, 255, 255, 255, 255);
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 1))));
+            int[] fullBright = renderQuad(device, item, vertices, indices, uniforms, textures, true,
+                    "item light full brightness", clear);
+            check("a fully lit item - as the inventory draws it - gains nothing at all",
+                    java.util.Arrays.equals(fullBright, new int[]{255, 255, 255, 255}),
+                    java.util.Arrays.toString(fullBright));
+
+            net.metalmod.lighting.LightCollector.clear();
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); surfaceView.close(); overlayView.close();
+            bakedView.close(); surface.close(); overlay.close(); baked.close();
+        } finally {
+            net.metalmod.lighting.LightCollector.clear();
+            device.close();
+        }
+    }
+
+    /**
+     * Phase 6C: the block pair - blocks moved by a piston, and falling blocks.
+     *
+     * <p>The pair is flat-shaded like particles, but its camera-relative position is
+     * {@code Position + ModelOffset} rather than {@code Position}, so this check is mostly about that
+     * one expression: the light is placed at the fragment the offset produces, and a variant that
+     * forgot the offset would light a different place - or nothing.
+     */
+    private static void blockLightCheck(ShaderSource source) throws Exception {
+        String previousDynamic = System.getProperty("metalmod.dynamicLights");
+        String previousClustered = System.getProperty("metalmod.clusteredLights");
+        System.setProperty("metalmod.dynamicLights", "true");
+        System.setProperty("metalmod.clusteredLights", "true");
+        MetalDevice device = MetalDevice.create();
+        if (previousDynamic == null) System.clearProperty("metalmod.dynamicLights");
+        else System.setProperty("metalmod.dynamicLights", previousDynamic);
+        if (previousClustered == null) System.clearProperty("metalmod.clusteredLights");
+        else System.setProperty("metalmod.clusteredLights", previousClustered);
+        check("block-light device created", device != null, "");
+        if (device == null) return;
+        try {
+            RenderPipeline block = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                    .getField("SOLID_BLOCK").get(null);
+            device.precompilePipeline(block, source);
+            MetalRenderPipeline compiled = device.pipelineFor(block);
+            String lightSet = net.metalmod.lighting.LightSnapshot.UNIFORM;
+            String clusters = net.metalmod.lighting.LightClusterGrid.DATA_UNIFORM;
+            check("the moving-block pipeline declares the light set", compiled != null
+                    && compiled.usesDynamicLights() && compiled.fragmentBuffer(lightSet) >= 0, "");
+            if (compiled == null || compiled.fragmentBuffer(lightSet) < 0) return;
+            check("the block variant reads the cluster table too",
+                    compiled.usesClusteredLights() && compiled.fragmentTexture(clusters) >= 0, "");
+
+            GpuTexture surface = device.createTexture("block surface", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            GpuTexture baked = device.createTexture("block baked", GpuTexture.USAGE_TEXTURE_BINDING
+                    | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+            solid(surface, 255, 255, 255, 255);
+            solid(baked, 64, 64, 64, 255);
+            GpuTextureView surfaceView = device.createTextureView(surface);
+            GpuTextureView bakedView = device.createTextureView(baked);
+            // Same 28-byte Position/Color/UV0/UV2 vertex terrain uses; ModelOffset stays zero, so the
+            // fragment's camera-relative position is its Position and the light can be aimed at it.
+            GpuBuffer vertices = device.createBuffer(() -> "block light vertices",
+                    GpuBuffer.USAGE_VERTEX, terrainVertices());
+            GpuBuffer indices = device.createBuffer(() -> "block light indices",
+                    GpuBuffer.USAGE_INDEX, indexBytes());
+            Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+            uniforms.put("Projection", device.createBuffer(() -> "Projection",
+                    GpuBuffer.USAGE_UNIFORM, identityMat4()));
+            uniforms.put("DynamicTransforms", device.createBuffer(() -> "DynamicTransforms",
+                    GpuBuffer.USAGE_UNIFORM, dynamicTransforms(new float[]{1f, 1f, 1f, 1f})));
+            uniforms.put("Fog", device.createBuffer(() -> "Fog", GpuBuffer.USAGE_UNIFORM,
+                    fog(new float[]{0f, 0f, 0f, 0f}, 0f, 2f, 1000f, 2000f)));
+            Map<String, GpuTextureView> textures = Map.of("Sampler0", surfaceView, "Sampler2", bakedView);
+            float[] clear = {0, 1, 0, 1};
+            double px = 1.0 / WIDTH, py = -1.0 / HEIGHT;
+
+            net.metalmod.lighting.LightCollector.clear();
+            int[] reference = renderQuad(device, block, vertices, indices, uniforms, textures, true,
+                    "block light reference", clear);
+            check("an unlit moving block is the lightmap times the surface",
+                    reference[0] == reference[1] && reference[1] == reference[2] && reference[3] == 255,
+                    java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] lit = renderQuad(device, block, vertices, indices, uniforms, textures, true,
+                    "block light lit", clear);
+            check("a published source lights the moving block it reaches", lit[0] > reference[0] + 20
+                    && lit[1] == reference[1] && lit[2] == reference[2] && lit[3] == reference[3],
+                    java.util.Arrays.toString(lit) + " vs " + java.util.Arrays.toString(reference));
+
+            net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                    java.util.List.of(new net.metalmod.lighting.PointLight(px + 3, py, 1, 2, 1, 0, 0, 0.5f))));
+            int[] outside = renderQuad(device, block, vertices, indices, uniforms, textures, true,
+                    "block light outside radius", clear);
+            check("a moving block outside the light radius is unchanged",
+                    java.util.Arrays.equals(outside, reference), java.util.Arrays.toString(outside));
+
+            net.metalmod.lighting.LightCollector.clear();
+            for (GpuBuffer buffer : uniforms.values()) buffer.close();
+            vertices.close(); indices.close(); surfaceView.close(); bakedView.close();
+            surface.close(); baked.close();
+        } finally {
+            net.metalmod.lighting.LightCollector.clear();
+            device.close();
+        }
+    }
+
+    /** Publish one light, positioned so it lands on the checked fragment. */
+    private static void publishLight(double x, double y, double z, float radius,
+                                     float r, float g, float b, float intensity) {
+        net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
+                java.util.List.of(new net.metalmod.lighting.PointLight(x, y, z, radius, r, g, b, intensity))));
+    }
+
+    /**
+     * 28-byte particle vertex: Position RGB32_FLOAT, UV0 RG32_FLOAT, Color RGBA8_UNORM, UV2 RG16_SINT.
+     *
+     * <p>The element <em>order</em> differs from terrain's - particles put UV0 before Color - and the
+     * pipeline reflects it in that order, so the attribute offsets come from here. Reusing the terrain
+     * buffer feeds UV0's bytes to Color and Color's to UV0, which samples a black texel with zero
+     * alpha and the draw discards.
+     */
+    private static ByteBuffer particleVertices() {
+        ByteBuffer buffer = ByteBuffer.allocateDirect(4 * 28).order(ByteOrder.nativeOrder());
+        float[][] positions = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+        for (float[] p : positions) {
+            // Reversed-Z (the particle pipeline tests GREATER_THAN_OR_EQUAL), so the near plane is 1.
+            buffer.putFloat(p[0]).putFloat(p[1]).putFloat(1.0f);
+            buffer.putFloat(0.0f).putFloat(0.0f);                       // UV0
+            buffer.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255);   // Color
+            buffer.putShort((short) 0).putShort((short) 0);             // UV2
+        }
+        buffer.flip();
+        return buffer;
     }
 
     /** 28-byte terrain vertex: Position RGB32_FLOAT, Color RGBA8_UNORM, UV0 RG32_FLOAT, UV2 RG16_SINT. */
@@ -3110,7 +4057,7 @@ public final class RenderCheck {
         ByteBuffer pixels = ((MetalBuffer) readback).data().asByteBuffer().order(ByteOrder.nativeOrder());
         int centre = ((HEIGHT / 2) * WIDTH + (WIDTH / 2)) * 4;
         int[] rgb = {pixels.get(centre) & 0xFF, pixels.get(centre + 1) & 0xFF,
-                pixels.get(centre + 2) & 0xFF};
+                pixels.get(centre + 2) & 0xFF, pixels.get(centre + 3) & 0xFF};
         readback.close();
         sampler.close();
         if (depthView != null) depthView.close();

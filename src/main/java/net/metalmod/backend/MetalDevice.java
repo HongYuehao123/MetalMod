@@ -19,6 +19,11 @@ import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTexture;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import net.metalmod.lighting.LightClusterGrid;
+import net.metalmod.lighting.LightingSettings;
+import net.metalmod.lighting.LightCollector;
+import net.metalmod.lighting.LightSnapshot;
+import net.metalmod.lighting.PointLight;
 
 import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
@@ -45,6 +50,317 @@ public final class MetalDevice implements GpuDeviceBackend {
     private final MetalTransientMemory transientMemory;
     private final MetalShaderCompiler shaderCompiler = new MetalShaderCompiler();
     private final Map<RenderPipeline, MetalRenderPipeline> pipelines = new HashMap<>();
+
+    // Startup-only experimental switches. The snapshot they publish is immutable, so one buffer per
+    // frame can safely be shared by every draw in that frame - and only when a pipeline actually
+    // declares the light block, which the render pass checks through the compiled pipeline.
+    // Sampled when the device is created, then re-sampled from the settings screen. Deliberately not
+    // final: a lighting variant is chosen at pipeline *compile* time, so a toggle has to be able to
+    // invalidate the compiled pipelines and let them rebuild - see applyPendingLightingSettings().
+    // volatile because the settings screen writes them and the render thread reads them.
+    private volatile boolean pointLightProof = LightingSettings.pointLightProof();
+    private volatile boolean dynamicLights = LightingSettings.dynamicLights();
+    // Cluster lists are opt-in on top of dynamic lights, so the flat list stays available as a
+    // comparison baseline and as a fallback if the clustered path misbehaves in a scene.
+    private volatile boolean clusteredLights = LightingSettings.clusteredLights();
+
+    /** Set from the settings screen; adopted at the next frame boundary by the render thread. */
+    private static final java.util.concurrent.atomic.AtomicBoolean LIGHTING_REBUILD =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * The device the game is currently drawing with, for the F3 section and the settings screen.
+     *
+     * <p>The game has exactly one; the offline tools create several in a row, and they only ever read
+     * the one they hold, so this is a diagnostic pointer rather than shared state.
+     */
+    private static volatile MetalDevice ACTIVE;
+
+    /** Ask the render thread to adopt the current lighting settings at the next frame boundary. */
+    public static void requestLightingRebuild() {
+        LIGHTING_REBUILD.set(true);
+    }
+
+    /** Whether the game currently has a live Metal device, and with which lighting switches. */
+    public static MetalDevice active() {
+        return ACTIVE;
+    }
+
+    /**
+     * Adopt any lighting change the settings screen requested.
+     *
+     * <p>Called at the end of a presented frame, never mid-frame: the change drops every compiled
+     * pipeline, and a render pass created earlier in the same frame still holds the old handle. The
+     * compiled *shader pairs* are kept - the pair cache is keyed on the variant and its sources, so a
+     * variant change compiles the new pair and leaves the old one cached for switching back.
+     */
+    public void applyPendingLightingSettings() {
+        if (!LIGHTING_REBUILD.compareAndSet(true, false)) {
+            return;
+        }
+        boolean proof = LightingSettings.pointLightProof();
+        boolean dynamic = LightingSettings.dynamicLights();
+        boolean clustered = LightingSettings.clusteredLights();
+        if (proof == this.pointLightProof && dynamic == this.dynamicLights
+                && clustered == this.clusteredLights) {
+            return;
+        }
+        this.pointLightProof = proof;
+        this.dynamicLights = dynamic;
+        this.clusteredLights = clustered;
+        invalidatePipelines();
+        if (!dynamic) {
+            // Nothing reads the set any more, and leaving it published would keep a stale light on F3.
+            LightCollector.clear();
+        }
+        System.out.println("[MetalMod] lighting settings applied: " + LightingSettings.summary());
+    }
+
+    /**
+     * Drop every compiled pipeline, keeping the compiled shader pairs.
+     *
+     * <p>What a lighting toggle needs: the pipeline objects embed the chosen variant, while the pair
+     * cache is already keyed on variant and source. Cheaper than {@link #clearPipelineCache()}, which
+     * is for a resource reload where the shader text itself changed.
+     */
+    public synchronized void invalidatePipelines() {
+        for (MetalRenderPipeline compiled : this.pipelines.values()) {
+            compiled.close();
+        }
+        this.pipelines.clear();
+        this.failedPipelines.clear();
+        this.pointLightFallbacks.clear();
+    }
+    private final LightClusterGrid clusterGrid = new LightClusterGrid();
+    private GpuSampler backendSampler;
+    private static volatile LightClusterGrid.Stats PUBLISHED_CLUSTER_STATS =
+            new LightClusterGrid.Stats(0, 0, 0, 0, 0, 0, 0, 0);
+    private GpuBuffer pointLightProofBuffer;
+    // Three buffer sets, rotated per presented frame. A set is only rewritten after the fence taken
+    // when it was last used has signalled, so a frame the GPU is still reading is never overwritten.
+    private final LightFrame[] lightFrames = new LightFrame[3];
+    private final MemorySegment[] lightFences = new MemorySegment[3];
+    private int lightFrameIndex;
+    private LightFrame currentLightFrame;
+    private long uploadedLightGeneration = -1;
+    private boolean currentFrameClustered;
+    private final Set<String> pointLightFallbacks = new HashSet<>();
+    private final Set<String> lightingVariants = new HashSet<>();
+    private int variantLogCount;
+
+    /** One frame's published light set: the flat record list, plus the clustered grid and texture. */
+    private static final class LightFrame {
+        MetalBuffer list;
+        MetalBuffer grid;
+        GpuTexture data;
+        GpuTextureView dataView;
+    }
+
+    public boolean pointLightProofEnabled() { return this.pointLightProof; }
+    public boolean dynamicLightsEnabled() { return this.dynamicLights; }
+    public boolean clusteredLightsEnabled() { return this.clusteredLights; }
+
+    /**
+     * The light-set buffer for this frame, encoded from the published snapshot.
+     *
+     * <p>One upload per frame, not per light and not per draw: the snapshot is an immutable record,
+     * and every pipeline that declares the block is handed the same buffer. The upload is refreshed
+     * the first time the buffer is asked for after any change to the frame, so a set published
+     * between two draws of one frame still reaches the GPU rather than being dropped with the old
+     * contents.
+     */
+    GpuBuffer dynamicLightsBuffer() {
+        return publishLightFrame(false).list;
+    }
+
+    /**
+     * The cluster data texture: header, per-cell record indices and the light records.
+     *
+     * <p>A texture, not a uniform array: the table is tens of kilobytes, and {@code texelFetch}
+     * addresses it with integer arithmetic that does not depend on array stride rules. One texture is
+     * reused per frame and re-uploaded only when the published light set changes.
+     */
+    GpuTextureView lightDataView() {
+        publishLightFrame(true);
+        return this.currentLightFrame.dataView;
+    }
+
+    /** The texture object behind {@link #lightDataView()}, for the render pass's deferred binding. */
+    GpuTexture lightDataTexture() {
+        publishLightFrame(true);
+        return this.currentLightFrame.data;
+    }
+
+    /** The cluster window origin in the camera-relative float frame, as one vec4. */
+    GpuBuffer lightGridBuffer() {
+        return publishLightFrame(true).grid;
+    }
+
+    /**
+     * Upload the published light set for this frame, once, into its ring slot.
+     *
+     * <p>{@code clustered} is part of what has been uploaded: one frame can contain both a clustered
+     * pipeline and a plain light-set pipeline, and each must be given the buffers it declares.
+     */
+    private LightFrame publishLightFrame(boolean clustered) {
+        if (!this.dynamicLights) throw new IllegalStateException("Dynamic lights are disabled");
+        if (clustered && !this.clusteredLights) {
+            throw new IllegalStateException("Clustered lights are disabled");
+        }
+        long generation = LightCollector.generation();
+        if (this.currentLightFrame == null) {
+            this.currentLightFrame = claimLightFrame();
+            this.uploadedLightGeneration = -1;
+        } else if (clustered != this.currentFrameClustered && this.uploadedLightGeneration == generation) {
+            // The other representation has not been built for this generation yet.
+            this.uploadedLightGeneration = -1;
+        }
+        if (generation != this.uploadedLightGeneration) {
+            LightSnapshot snapshot = LightCollector.current();
+            upload(this.currentLightFrame.list, "MetalMod dynamic lights", snapshot.encode());
+            if (this.clusteredLights) {
+                this.clusterGrid.build(snapshot);
+                upload(this.currentLightFrame.grid, "MetalMod light grid",
+                        this.clusterGrid.encodeGridUniform());
+                uploadClusterTexture(snapshot);
+                PUBLISHED_CLUSTER_STATS = this.clusterGrid.stats();
+            }
+            this.uploadedLightGeneration = generation;
+            this.currentFrameClustered = clustered;
+        }
+        return this.currentLightFrame;
+    }
+
+    /** Write the cluster header, cell table and light records into this frame's data texture. */
+    private void uploadClusterTexture(LightSnapshot snapshot) {
+        LightFrame frame = this.currentLightFrame;
+        if (frame.data == null || frame.dataView == null) return;
+        float[] texels = this.clusterGrid.encodeTexels();
+        float[] records = this.clusterGrid.encodeRecords(snapshot);
+        System.arraycopy(records, 0, texels, LightClusterGrid.recordTexel(0) * 4, records.length);
+        java.nio.ByteBuffer bytes = java.nio.ByteBuffer.allocateDirect(texels.length * 4)
+                .order(java.nio.ByteOrder.nativeOrder());
+        bytes.asFloatBuffer().put(texels);
+        bytes.position(0).limit(texels.length * 4);
+        try {
+            CommandEncoderBackend encoder = createCommandEncoder();
+            encoder.writeToTexture(frame.data, bytes, 0, 0, 0, 0,
+                    LightClusterGrid.TEXELS_PER_ROW, LightClusterGrid.TEXEL_ROWS);
+            encoder.submit();
+        } catch (Throwable failure) {
+            // The clustered variant must not take the frame down: fall back to an unreachable source
+            // distribution (an empty grid), so terrain renders with vanilla baked light instead.
+            reportResourceFailure("light data texture upload: " + failure);
+            frame.dataView = null;
+        }
+    }
+
+    private static void upload(MetalBuffer buffer, String label, java.nio.ByteBuffer data) {
+        if (!buffer.isMapped()) throw new IllegalStateException(label + " is unmapped");
+        buffer.mappedBytes().put(data);
+    }
+
+    /** Wait for this slot's previous frame, then hand back the buffer set to write into. */
+    private LightFrame claimLightFrame() {
+        MemorySegment fence = this.lightFences[this.lightFrameIndex];
+        if (fence != null && fence.address() != 0) {
+            if (!MetalNative.fenceWait(fence, Long.MAX_VALUE)) {
+                throw new IllegalStateException("Timed out waiting to reuse a dynamic light buffer");
+            }
+            MetalNative.fenceRelease(fence);
+            this.lightFences[this.lightFrameIndex] = null;
+        }
+        LightFrame frame = this.lightFrames[this.lightFrameIndex];
+        if (frame == null) {
+            frame = new LightFrame();
+            this.lightFrames[this.lightFrameIndex] = frame;
+        }
+        if (frame.list == null) {
+            frame.list = (MetalBuffer) createBuffer(() -> "MetalMod dynamic lights",
+                    GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, LightSnapshot.BYTES);
+        }
+        if (this.clusteredLights && frame.grid == null) {
+            // Allocated only when the clustered variant is on, so the flat path pays nothing for it.
+            frame.grid = (MetalBuffer) createBuffer(() -> "MetalMod light grid",
+                    GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, 16);
+        }
+        if (this.clusteredLights && frame.data == null) {
+            frame.data = createTexture("MetalMod light data",
+                    GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
+                    GpuFormat.RGBA32_FLOAT, LightClusterGrid.TEXELS_PER_ROW, LightClusterGrid.TEXEL_ROWS,
+                    1, 1);
+            if (frame.data != null) {
+                frame.dataView = createTextureView(frame.data);
+            }
+        }
+        return frame;
+    }
+
+    /** Whatever the cluster grid measured on its last build, for the tests. */
+    public LightClusterGrid.Stats clusterStats() {
+        return this.clusterGrid.stats();
+    }
+
+    /**
+     * The same numbers after the last GPU publication, for the F3 section.
+     *
+     * <p>Static because the debug screen has no device reference; the game only ever has one Metal
+     * device, and this is a diagnostic snapshot rather than state anything renders from.
+     */
+    public static LightClusterGrid.Stats lastClusterStats() {
+        return PUBLISHED_CLUSTER_STATS;
+    }
+
+    /**
+     * Close the light frame at present: fence the slot in use and advance the ring.
+     *
+     * <p>Called on the present path, so a light set is published at most once per presented frame,
+     * and a frame that never presents never leaves a buffer unfenced.
+     */
+    public void endDynamicLightFrame() {
+        if (this.currentLightFrame == null) return;
+        MemorySegment fence = MetalNative.fenceCreate(this.queue);
+        if (fence == null || fence.address() == 0) {
+            throw new IllegalStateException("Could not fence dynamic light buffer reuse");
+        }
+        this.lightFences[this.lightFrameIndex] = fence;
+        this.currentLightFrame = null;
+        this.lightFrameIndex = (this.lightFrameIndex + 1) % this.lightFrames.length;
+    }
+
+    /**
+     * Report once per pipeline that a lighting variant was applied to it.
+     *
+     * <p>The positive counterpart of {@link #reportPointLightFallback}: without it a log shows that
+     * pipelines compiled but not that any of them were lit, which is the question a support log is
+     * actually asking.
+     */
+    void noteLightingVariant(String variant, String pipeline) {
+        if (this.variantLogCount < 12 && this.lightingVariants.add(variant + "|" + pipeline)) {
+            this.variantLogCount++;
+            System.out.println("[MetalMod] lighting variant " + variant + " applied to " + pipeline);
+        }
+    }
+
+    /** Report once per pipeline that a terrain shader could not be recognised and was left alone. */
+    void reportPointLightFallback(String pipeline) {
+        if (this.pointLightFallbacks.add(pipeline)) {
+            System.err.println("[MetalMod] point-light proof skipped for " + pipeline
+                    + ": unrecognized terrain shader source; keeping supplied shaders");
+        }
+    }
+
+    /** The 6A proof's synthetic source: camera-centred, radius 8, amber, unshadowed. */
+    GpuBuffer pointLightProofBuffer() {
+        if (!this.pointLightProof) throw new IllegalStateException("Point-light proof is disabled");
+        if (this.pointLightProofBuffer == null) {
+            this.pointLightProofBuffer = createBuffer(() -> "MetalMod synthetic point light",
+                    GpuBuffer.USAGE_UNIFORM,
+                    new PointLight(0, 0, 0, 8, 1, 0.65f, 0.3f, 1).relativeTo(0, 0, 0));
+            System.out.println("[MetalMod] point-light proof: camera-centred, radius 8, terrain only, unshadowed");
+        }
+        return this.pointLightProofBuffer;
+    }
 
     // The engine supplies a ShaderSource for the static pipelines and none at all for the
     // post-processing chain, which arrives through the one-argument precompilePipeline(pipeline).
@@ -573,7 +889,9 @@ public final class MetalDevice implements GpuDeviceBackend {
 
         System.out.println("[MetalMod] Metal device: " + strings[0]
                 + " | maxTexture=" + maxTexture + " | maxBuffer=" + maxBuffer);
-        return new MetalDevice(device, queue, info);
+        MetalDevice created = new MetalDevice(device, queue, info);
+        ACTIVE = created;
+        return created;
     }
 
     // One 2D texture per texel-buffer backing buffer, keyed by handle and size. The data changes
@@ -714,6 +1032,20 @@ public final class MetalDevice implements GpuDeviceBackend {
         return new MetalCommandEncoderBackend(this);
     }
 
+    /**
+     * A shared nearest-neighbour sampler for textures the backend binds itself.
+     *
+     * <p>The clustered light table is read with {@code texelFetch}, which ignores filtering; a sampler
+     * object still has to be bound with the texture for the shader's signature to be complete.
+     */
+    public GpuSampler defaultSampler() {
+        if (this.backendSampler == null) {
+            this.backendSampler = createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
+                    FilterMode.NEAREST, FilterMode.NEAREST, 1, java.util.OptionalDouble.empty());
+        }
+        return this.backendSampler;
+    }
+
     @Override
     public GpuSampler createSampler(AddressMode addressModeU, AddressMode addressModeV,
                                     FilterMode minFilter, FilterMode magFilter,
@@ -775,7 +1107,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (memory.address() == 0) {
             reportResourceFailure("buffer (initial data) size=" + safeSize + " usage=" + usage);
         } else if (requested > 0) {
-            memory.asByteBuffer().put(data.duplicate());
+            memory.asByteBuffer().order(java.nio.ByteOrder.nativeOrder()).put(data.duplicate());
         }
         return new MetalBuffer(usage, safeSize, handle, memory, true, null);
     }
@@ -878,6 +1210,11 @@ public final class MetalDevice implements GpuDeviceBackend {
         }
         this.pipelines.clear();
         this.failedPipelines.clear();
+        // The compiled shader pairs are keyed on source text, so a resource reload that changes a
+        // shader under the same identifier must drop them too - and the fallback log is per source
+        // set, so it starts over as well.
+        this.shaderCompiler.clearCache();
+        this.pointLightFallbacks.clear();
     }
 
     @Override
@@ -886,10 +1223,28 @@ public final class MetalDevice implements GpuDeviceBackend {
             return;
         }
         this.closed = true;
+        if (ACTIVE == this) {
+            ACTIVE = null;
+        }
         if (this.queue != null && this.queue.address() != 0) {
             MetalNative.queueRelease(this.queue);
         }
         this.clearPipelineCache();
+        if (this.pointLightProofBuffer != null) this.pointLightProofBuffer.close();
+        // Every in-flight light buffer is fenced: wait before releasing the memory it holds.
+        for (MemorySegment fence : this.lightFences) {
+            if (fence != null && fence.address() != 0) {
+                MetalNative.fenceWait(fence, Long.MAX_VALUE);
+                MetalNative.fenceRelease(fence);
+            }
+        }
+        for (LightFrame frame : this.lightFrames) {
+            if (frame == null) continue;
+            if (frame.list != null) frame.list.close();
+            if (frame.grid != null) frame.grid.close();
+            if (frame.dataView != null) frame.dataView.close();
+            if (frame.data != null) frame.data.close();
+        }
         for (MetalTexture texture : this.texelTextures.values()) {
             texture.close();
         }

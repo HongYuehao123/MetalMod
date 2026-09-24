@@ -9,6 +9,9 @@ import com.mojang.blaze3d.systems.RenderPass;
 import com.mojang.blaze3d.systems.RenderPassBackend;
 import com.mojang.blaze3d.textures.GpuSampler;
 import com.mojang.blaze3d.textures.GpuTextureView;
+import net.metalmod.lighting.LightClusterGrid;
+import net.metalmod.lighting.LightSnapshot;
+import net.metalmod.lighting.PointLight;
 import org.lwjgl.PointerBuffer;
 
 import java.lang.foreign.Arena;
@@ -119,6 +122,30 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         MetalNative.renderPassSetPipeline(this.encoder, resolved.handle());
         MetalDevice.notePipelineTarget(this.owner.currentTargetLabel(), this.pipelineName);
         flipViewportForScreenquad(resolved);
+        // MetalMod-owned light buffers, bound only for pipelines actually built with a lighting
+        // variant - the compiled pipeline answers that from its variant, not from its name. A
+        // test-provided uniform of the same name wins, which is how the offscreen check drives one
+        // light at a time instead of going through the world snapshot.
+        if (resolved.usesPointLight() && !this.uniforms.containsKey(PointLight.UNIFORM)) {
+            setUniform(PointLight.UNIFORM, this.owner.device().pointLightProofBuffer());
+        }
+        if (resolved.usesDynamicLights() && !this.uniforms.containsKey(LightSnapshot.UNIFORM)) {
+            setUniform(LightSnapshot.UNIFORM, this.owner.device().dynamicLightsBuffer());
+        }
+        if (resolved.usesClusteredLights()) {
+            if (!this.uniforms.containsKey(LightClusterGrid.GRID_UNIFORM)) {
+                setUniform(LightClusterGrid.GRID_UNIFORM, this.owner.device().lightGridBuffer());
+            }
+            // The cluster table is a texture the device owns, not engine state, so it is bound here
+            // the same way the device-owned light buffers are - and only when the compiled pipeline
+            // was actually built from the clustered source.
+            if (!this.textures.containsKey(LightClusterGrid.DATA_UNIFORM)) {
+                GpuTextureView data = this.owner.device().lightDataView();
+                if (data != null) {
+                    bindTexture(LightClusterGrid.DATA_UNIFORM, data, this.owner.device().defaultSampler());
+                }
+            }
+        }
     }
 
     /**

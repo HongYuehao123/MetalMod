@@ -89,7 +89,7 @@ public final class MetalTransientMemory implements TransientMemory {
         }
         MetalBuffer target = allocate(total, alignment, usage);
         if (target.isMapped()) {
-            ByteBuffer view = target.data().asByteBuffer();
+            ByteBuffer view = target.mappedBytes();
             for (ByteBuffer buffer : data) {
                 view.put(buffer.duplicate());
             }

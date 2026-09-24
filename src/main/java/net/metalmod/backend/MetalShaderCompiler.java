@@ -73,7 +73,8 @@ public final class MetalShaderCompiler implements AutoCloseable {
      */
     public record PairKey(net.minecraft.resources.Identifier vertex,
                           net.minecraft.resources.Identifier fragment,
-                          net.minecraft.client.renderer.ShaderDefines defines) {
+                          net.minecraft.client.renderer.ShaderDefines defines,
+                          String variant, String vertexSource, String fragmentSource) {
     }
 
     private final Map<PairKey, CompiledPair> pairCache = new HashMap<>();
@@ -96,15 +97,47 @@ public final class MetalShaderCompiler implements AutoCloseable {
                                     net.minecraft.client.renderer.ShaderDefines defines,
                                     java.util.function.Supplier<String> vertexSource,
                                     java.util.function.Supplier<String> fragmentSource) {
-        PairKey key = new PairKey(vertexId, fragmentId, defines);
+        return compilePair(vertexId, fragmentId, defines, "vanilla (lazy)", null, null, vertexSource, fragmentSource);
+    }
+
+    /**
+     * Compile a vertex/fragment pair for a named shader variant whose text is known up front.
+     *
+     * <p>The pair cache is keyed on the variant name <em>and</em> the two source strings, not on the
+     * shader identifiers. Identifiers and defines are identical for the vanilla terrain pair and for
+     * every MetalMod lighting variant of it, so a key of (identifiers, defines) alone would hand a
+     * lit pipeline the cached unlit compilation — or the reverse after a resource reload. The two
+     * source strings are the identity that actually distinguishes them.
+     *
+     * <p>The lazy overload above cannot hash what it has not fetched, so it keeps its supplier-based
+     * path and a "<code>(lazy)</code>" variant token. Callers that rewrite shader text (the terrain
+     * lighting variants) must use this overload: {@code PipelineTests} asserts that a changed source
+     * under unchanged identifiers reaches the GPU.
+     */
+    public CompiledPair compilePair(net.minecraft.resources.Identifier vertexId,
+                                    net.minecraft.resources.Identifier fragmentId,
+                                    net.minecraft.client.renderer.ShaderDefines defines,
+                                    String variant, String vertexSource, String fragmentSource) {
+        return compilePair(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource, null, null);
+    }
+
+    private CompiledPair compilePair(net.minecraft.resources.Identifier vertexId,
+                                     net.minecraft.resources.Identifier fragmentId,
+                                     net.minecraft.client.renderer.ShaderDefines defines,
+                                     String variant, String vertexSource, String fragmentSource,
+                                     java.util.function.Supplier<String> lazyVertex,
+                                     java.util.function.Supplier<String> lazyFragment) {
+        PairKey key = new PairKey(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource);
         CompiledPair cached = this.pairCache.get(key);
         if (cached != null) {
             this.cacheHits++;
             return cached;
         }
         this.cacheMisses++;
-        CompiledPair compiled = compilePair(vertexId.toString(), vertexSource.get(),
-                fragmentId.toString(), fragmentSource.get());
+        CompiledPair compiled = compilePair(vertexId.toString(),
+                vertexSource != null ? vertexSource : lazyVertex.get(),
+                fragmentId.toString(),
+                fragmentSource != null ? fragmentSource : lazyFragment.get());
         this.pairCache.put(key, compiled);
         return compiled;
     }
@@ -569,6 +602,14 @@ public final class MetalShaderCompiler implements AutoCloseable {
             String message = ctx == 0L ? "" : Spvc.spvc_context_get_last_error_string(ctx);
             throw new IllegalStateException("SPIRV-Cross " + what + " failed: " + message);
         }
+    }
+
+    /**
+     * Drop every cached pair. Called on a resource reload: the engine hands the backend new shader
+     * text under the same identifiers, and stale compiled MSL would keep rendering the old shaders.
+     */
+    public void clearCache() {
+        this.pairCache.clear();
     }
 
     @Override
