@@ -254,10 +254,11 @@ scene depth and asserts that the frame is untouched.
    - both now fixed and neither the cost.
 
    **The honest number is that MetalFX temporal costs roughly 5.6 ms more than spatial at 50% on 5K on
-   this machine.** In a scene whose frame is already draw-bound the scaling itself saves little, so the
-   premium is close to pure addition. There is no knob on the temporal filter, so the mode is a
-   **quality mode with a measurable price**, not a free upgrade; spatial stays the default, and the
-   settings page should say what the price is.
+   this machine.** [The temporal cost record](temporal-performance.md) has the measurements, the
+   falsified hypotheses and the reproduce steps in full. In a scene whose frame is already draw-bound
+   the scaling itself saves little, so the premium is close to pure addition. There is no knob on the
+   temporal filter, so the mode is a **quality mode with a measurable price**, not a free upgrade;
+   spatial stays the default, and the settings page should say what the price is.
 
 ### 3.5 Anti-aliasing — optional separate work after Temporal
 

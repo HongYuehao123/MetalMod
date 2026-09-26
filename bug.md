@@ -10,7 +10,10 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ## BUG-035 — Temporal upscaling costs far more in the game than its parts measure
 
-**Status:** **OPEN.** Full-path slowdown reproduced offscreen at 5K; queue/completion latency remains unattributed.
+**Status:** **OPEN**, but explained. The cost is MetalFX's temporal filter, not this project's motion
+pass. Full measurements, the falsified hypotheses and the reproduce steps are in
+[docs/temporal-performance.md](docs/temporal-performance.md); the summary is that the mode costs about
+5.6 ms a frame more than spatial at 50% on 5K, and there is no knob on the filter.
 **Severity:** high for the mode. It is the difference between temporal being a trade and being a
 regression.
 

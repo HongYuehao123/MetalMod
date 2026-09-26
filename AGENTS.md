@@ -185,6 +185,7 @@ MetalMod/
 │   ├── lighting-abi.md                 # Phase 6 GPU light record ABI contract
 │   ├── phase6-plan.md                  # Phase 6 execution plan and verification log
 │   ├── phase7-plan.md                  # Phase 7 per-increment record and integration contract
+│   ├── temporal-performance.md         # What MetalFX temporal costs, how that was established, and what was ruled out
 │   └── raytracing-plan.md              # Long-term Phase 9 ray tracing plan
 └── config/
     └── metalmod.properties             # Runtime configuration properties
