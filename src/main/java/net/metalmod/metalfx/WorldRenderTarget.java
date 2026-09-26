@@ -105,6 +105,34 @@ public final class WorldRenderTarget {
 
     private static final AtomicLong temporalFrames = new AtomicLong();
 
+    /**
+     * Whether the motion dispatch and the temporal scaler go into separate command buffers.
+     *
+     * <p>Off by default: one buffer is the better shape, and the default is what the frame uses. It is a
+     * flag rather than a constant because the split form is the only way to read each pass's own GPU
+     * span on F3, and those spans are how the temporal path's cost was attributed in the first place.
+     */
+    private static final boolean SPLIT_TEMPORAL_ENCODE =
+            Boolean.getBoolean("metalmod.splitTemporalEncode");
+
+    /**
+     * Skip the motion dispatch while still running the scaler. A diagnostic, off by default.
+     *
+     * <p>It exists to answer one question that the isolated per-pass timings cannot: whether the
+     * temporal path's cost is the scaler or the fact that a full-screen pass runs in front of it. With
+     * the dispatch removed the scaler reads a stale motion texture, so the two passes are no longer
+     * dependent on each other while everything else about the frame is unchanged. It is not a mode to
+     * run - the motion field would be wrong - and it is named for what it does rather than for a
+     * feature.
+     */
+    private static final boolean SKIP_MOTION_ENCODE =
+            Boolean.getBoolean("metalmod.skipMotionEncode");
+
+    /** Whether the temporal path is encoding each pass into its own command buffer. For F3 wording. */
+    public static boolean temporalSplitEncode() {
+        return SPLIT_TEMPORAL_ENCODE;
+    }
+
     private static volatile double appliedScale = DISABLED_SCALE;
 
     /**
@@ -671,7 +699,13 @@ public final class WorldRenderTarget {
         // Builds the matrices and decides whether the history is still valid. It runs every temporal
         // frame, not only when the scaler is created, because the matrix pair is per frame.
         SceneMotion.prepare(world.width, world.height);
-        if (SceneMotion.dispatch(device, depth) != 0) {
+        // Two encodings, one command buffer by default. The dispatch and the scaler that reads its
+        // result are strictly ordered, and putting them in one buffer makes that boundary an encoder
+        // barrier inside Metal rather than a queue-level dependency between two buffers - which is the
+        // difference the isolated GPU spans could not account for. The split form is kept behind a flag
+        // because it is what produces the per-pass spans on F3, and those are how this was found.
+        boolean splitEncode = SPLIT_TEMPORAL_ENCODE;
+        if (splitEncode && !SKIP_MOTION_ENCODE && SceneMotion.dispatch(device, depth) != 0) {
             lastUpscaleError = "motion dispatch: " + SceneMotion.lastFailure();
             return false;
         }
@@ -704,6 +738,14 @@ public final class WorldRenderTarget {
         }
         boolean ok = false;
         try {
+            if (!splitEncode && !SKIP_MOTION_ENCODE) {
+                // The dispatch first, into this same buffer; Metal orders the compute encoder ahead of
+                // the scaler's own work on the motion texture without a queue boundary in between.
+                if (SceneMotion.encodeInto(commandBuffer, depth) != 0) {
+                    lastUpscaleError = "motion encode: " + SceneMotion.lastFailure();
+                    return false;
+                }
+            }
             ok = effect.encode(commandBuffer, source, depth, motion, destination,
                     ProjectionJitter.offsetX(), ProjectionJitter.offsetY(), reset);
             if (!ok) {
@@ -943,6 +985,39 @@ public final class WorldRenderTarget {
      * <p>Kept here because the scaler belongs to this class: the probe asks for a number, not for the
      * handle.
      */
+    /**
+     * How long the temporal scaler alone takes on the GPU, against the targets this frame actually uses.
+     *
+     * <p>Separate from the full-path timing on purpose: the isolated number measured elsewhere used
+     * textures this project created and uploaded, and the frame uses the engine's own render targets.
+     * If those two disagree, the difference is the targets and not the effect.
+     */
+    public static double gpuTimeTemporal(MetalDevice device, RenderTarget world, RenderTarget main,
+                                         int passes) {
+        MetalFxTemporalScaler effect = ensureTemporalScaler(device, world, main.width, main.height);
+        if (effect == null) {
+            return -1.0;
+        }
+        MemorySegment motion = SceneMotion.texture();
+        if (motion.address() == 0) {
+            return -1.0;
+        }
+        return MetalNative.temporalGpuTime(effect.handle(), device.queueHandle(),
+                textureHandle(world.getColorTextureView()),
+                textureHandle(world.getDepthTextureView()),
+                motion,
+                textureHandle(main.getColorTextureView()),
+                ProjectionJitter.offsetX(), ProjectionJitter.offsetY(), passes);
+    }
+
+    /** How long the motion pass alone takes on the GPU, against the targets this frame uses. */
+    public static double gpuTimeMotion(MetalDevice device, RenderTarget world, int passes) {
+        if (SceneMotion.texture().address() == 0) {
+            return -1.0;
+        }
+        return SceneMotion.gpuTime(device, textureHandle(world.getDepthTextureView()), passes);
+    }
+
     public static double gpuTimeUpscale(MetalDevice device, RenderTarget world, RenderTarget main,
                                         int passes) {
         MetalFxScaler effect = ensureScaler(device, world, main.width, main.height);

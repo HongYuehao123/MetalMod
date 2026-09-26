@@ -23,6 +23,7 @@
 // crashing - a fault here takes the game down with it.
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -48,6 +49,14 @@ MMM_MOTION_API void* mmm_motion_texture(void* motion);
 
 MMM_MOTION_API int32_t mmm_motion_width(void* motion);
 MMM_MOTION_API int32_t mmm_motion_height(void* motion);
+
+/// Copy the motion texture into `out` (rowBytes * height bytes). Blocks.
+///
+/// The texture itself is private - the CPU never needs the vectors during a frame - so this is the only
+/// way to read them, and it is a blit into a shared staging texture followed by a blocking read. For
+/// tests, not for the frame.
+MMM_MOTION_API int mmm_motion_read(void* motion, void* queue, void* out, size_t capacity,
+                                   size_t rowBytes);
 
 /// Human-readable description of the last failure. Never NULL; empty after a success.
 MMM_MOTION_API const char* mmm_motion_last_error(void);
@@ -125,6 +134,16 @@ MMM_MOTION_API void mmm_motion_stamp_stats(void* motion, int32_t* outStored, int
 ///
 /// The matrices are the same pair mmm_motion_run() takes, and the stamps in force are the ones already
 /// set, so the measurement is of exactly what a frame encodes.
+/// Encode one motion step into a command buffer the caller owns, without committing it.
+///
+/// This is the form the renderer uses when the dispatch and the effect that reads its result must sit
+/// in the *same* command buffer. Two buffers chained by the queue serialise at a queue boundary, and a
+/// full barrier per boundary is not free; one buffer lets Metal order the two encoders with an internal
+/// barrier instead. Returns 0 on success; the caller commits.
+MMM_MOTION_API int mmm_motion_encode(void* motion, void* commandBuffer, void* depthTexture,
+                                     const float* currentInverseViewProjection,
+                                     const float* previousViewProjection);
+
 /// The last mmm_motion_run()'s GPU span in milliseconds, or 0 when none has completed. Free to read:
 /// the command buffer's own timestamps, reported so a frame's cost can be attributed in the frame.
 MMM_MOTION_API double mmm_motion_last_gpu_ms(void);

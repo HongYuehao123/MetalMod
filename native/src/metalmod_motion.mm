@@ -169,6 +169,11 @@ static_assert(sizeof(MMMMotionStamp) == 8 * sizeof(float), "a stamp is eight flo
 
 struct MMMMotion {
     id<MTLTexture> texture;
+    // A shared copy of `texture`, written only when someone asks to read the vectors back. The real
+    // one is private: it is written by the dispatch and read by the scaler, and a shared texture has
+    // to be flushed and invalidated across that boundary, which measured several milliseconds a frame
+    // at 5K. The CPU never needs to see it during a frame, so the copy is the right price to pay.
+    id<MTLTexture> staging;
     int32_t width;
     int32_t height;
     // The stamp buffer is created with the resource and rewritten in place, so a steady frame does
@@ -297,7 +302,8 @@ void* mmm_motion_create(void* device, int32_t width, int32_t height) {
         // verifies the vectors rather than only their presence.
         descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite
                 | MTLTextureUsageRenderTarget;
-        descriptor.storageMode = MTLStorageModeShared;
+        // Private, deliberately: see the `staging` member.
+        descriptor.storageMode = MTLStorageModePrivate;
 
         id<MTLTexture> texture = [metalDevice newTextureWithDescriptor:descriptor];
         if (texture == nil) {
@@ -306,6 +312,20 @@ void* mmm_motion_create(void* device, int32_t width, int32_t height) {
             return NULL;
         }
         texture.label = @"MetalMod motion vectors";
+
+        MTLTextureDescriptor* stagingDescriptor =
+                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
+                                                                    width:(NSUInteger)width
+                                                                   height:(NSUInteger)height
+                                                                mipmapped:NO];
+        stagingDescriptor.usage = MTLTextureUsageShaderWrite;
+        stagingDescriptor.storageMode = MTLStorageModeShared;
+        id<MTLTexture> staging = [metalDevice newTextureWithDescriptor:stagingDescriptor];
+        if (staging == nil) {
+            mmm_motion_set_error(@"could not allocate the motion staging texture");
+            return NULL;
+        }
+        staging.label = @"MetalMod motion staging";
 
         id<MTLBuffer> stamps = [metalDevice newBufferWithLength:
                         (NSUInteger)(MMM_MOTION_STAMP_CAPACITY * sizeof(MMMMotionStampUniforms))
@@ -318,6 +338,7 @@ void* mmm_motion_create(void* device, int32_t width, int32_t height) {
 
         MMMMotion* handle = new MMMMotion();
         handle->texture = texture;
+        handle->staging = staging;
         handle->width = width;
         handle->height = height;
         handle->stampBuffer = stamps;
@@ -334,6 +355,40 @@ void mmm_motion_release(void* motion) {
         MMMMotion* handle = (MMMMotion*)motion;
         delete handle;
     }
+}
+
+int mmm_motion_read(void* motion, void* queue, void* out, size_t capacity, size_t rowBytes) {
+    MMMMotion* handle = (MMMMotion*)motion;
+    id<MTLCommandQueue> metalQueue = (__bridge id<MTLCommandQueue>)queue;
+    if (handle == NULL || handle->texture == nil || handle->staging == nil) return -1;
+    if (metalQueue == nil || out == NULL) return -1;
+    size_t needed = rowBytes * (size_t)handle->height;
+    if (capacity < needed) return -3;
+    @autoreleasepool {
+        id<MTLCommandBuffer> commandBuffer = [metalQueue commandBuffer];
+        commandBuffer.label = @"MetalMod motion readback";
+        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+        [blit copyFromTexture:handle->texture
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake((NSUInteger)handle->width, (NSUInteger)handle->height, 1)
+                     toTexture:handle->staging
+              destinationSlice:0
+              destinationLevel:0
+             destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        [commandBuffer commit];
+        [commandBuffer waitUntilCompleted];
+        [handle->staging getBytes:out
+                     bytesPerRow:rowBytes
+                    bytesPerImage:needed
+                       fromRegion:MTLRegionMake2D(0, 0, (NSUInteger)handle->width,
+                                                  (NSUInteger)handle->height)
+                      mipmapLevel:0
+                            slice:0];
+    }
+    return 0;
 }
 
 void* mmm_motion_texture(void* motion) {
@@ -520,6 +575,44 @@ static MTLSize mmm_motion_encode_into(MMMMotion* handle, id<MTLCommandBuffer> co
         [overlay endEncoding];
     }
     return groups;
+}
+
+int mmm_motion_encode(void* motion, void* commandBuffer, void* depthTexture,
+                      const float* currentInverseViewProjection,
+                      const float* previousViewProjection) {
+    g_MotionError[0] = '\0';
+    MMMMotion* handle = (MMMMotion*)motion;
+    id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
+    id<MTLTexture> depth = (__bridge id<MTLTexture>)depthTexture;
+    if (handle == NULL || handle->texture == nil) return -1;
+    if (buffer == nil) return -2;
+    if (depth == nil) return -3;
+    if (currentInverseViewProjection == NULL || previousViewProjection == NULL) return -4;
+    if (g_MotionPipeline == NULL) return -6;
+    if (depth.width != (NSUInteger)handle->width || depth.height != (NSUInteger)handle->height) {
+        mmm_motion_set_error(@"the depth texture does not match the motion texture's size");
+        return -5;
+    }
+
+    MMMMotionUniforms uniforms;
+    memcpy(uniforms.currentInverseViewProjection, currentInverseViewProjection,
+           sizeof(uniforms.currentInverseViewProjection));
+    memcpy(uniforms.previousViewProjection, previousViewProjection,
+           sizeof(uniforms.previousViewProjection));
+    uniforms.inputSize[0] = (float)handle->width;
+    uniforms.inputSize[1] = (float)handle->height;
+    uniforms.pad[0] = 0.0f;
+    uniforms.pad[1] = 0.0f;
+    MMMMotionOverlayUniforms overlayUniforms;
+    overlayUniforms.targetSize[0] = (float)handle->width;
+    overlayUniforms.targetSize[1] = (float)handle->height;
+    overlayUniforms.pad[0] = 0.0f;
+    overlayUniforms.pad[1] = 0.0f;
+
+    @autoreleasepool {
+        mmm_motion_encode_into(handle, buffer, depth, uniforms, overlayUniforms);
+    }
+    return 0;
 }
 
 double mmm_motion_last_gpu_ms(void) {

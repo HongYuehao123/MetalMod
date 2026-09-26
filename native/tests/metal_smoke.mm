@@ -1393,9 +1393,12 @@ static bool motion_run_and_read(void* motion, void* queue, void* depth,
     int height = mmm_motion_height(motion);
     static __fp16 halves[64 * 64 * 2];
     if (width * height * 2 > 64 * 64 * 2) return false;
-    if (mmm_texture_read_region(mmm_motion_texture(motion), 0, 0, 0, 0, width, height, halves,
-                                (size_t)width * height * 2 * sizeof(__fp16),
-                                (size_t)width * 2 * sizeof(__fp16)) != 0) {
+    // Through the motion resource's own readback, because the texture is private and a direct read is
+    // refused. That refusal is the point: private is what keeps the scaler's read of it from paying a
+    // shared-memory flush across the encoder boundary.
+    if (mmm_motion_read(motion, queue, halves,
+                        (size_t)width * height * 2 * sizeof(__fp16),
+                        (size_t)width * 2 * sizeof(__fp16)) != 0) {
         return false;
     }
     for (int i = 0; i < width * height * 2; i++) out[i] = (float)halves[i];

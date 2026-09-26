@@ -226,10 +226,14 @@ public class MetalModUpscalingConfigScreen extends Screen {
             this.scaleUpButton.active = this.draftScale < 1.0 - 1e-6;
         }
         if (this.upscalerCycleButton != null) {
+            // Labelled with the trade rather than the name alone. Temporal is not a free upgrade: it
+            // costs several milliseconds a frame more than spatial at high output resolutions, which is
+            // measured in docs/phase7-plan.md §3.4, and a button that says only "temporal" invites the
+            // assumption that it is strictly better.
             this.upscalerCycleButton.setMessage(Component.literal(switch (this.draftUpscaler) {
-                case MetalFx.TEMPORAL -> "MetalFX temporal";
+                case MetalFx.TEMPORAL -> "MetalFX temporal (sharper, costs more)";
                 case MetalFx.OFF -> "Off (native)";
-                default -> "MetalFX spatial";
+                default -> "MetalFX spatial (faster)";
             }));
             // Always clickable, including at 100%: the scale is what turns scaling on or off, and a
             // disabled row here would hide the only control that says which scaler is chosen.
@@ -345,9 +349,9 @@ public class MetalModUpscalingConfigScreen extends Screen {
         String scale = this.draftScale >= 1.0 ? "100% (off)"
                 : Math.round(this.draftScale * 100) + "%";
         String effect = switch (this.draftUpscaler) {
-            case MetalFx.TEMPORAL -> "MetalFX temporal";
+            case MetalFx.TEMPORAL -> "MetalFX temporal (sharper, costs more)";
             case MetalFx.OFF -> "no upscaler";
-            default -> "MetalFX spatial";
+            default -> "MetalFX spatial (faster)";
         };
         return scale + ", " + effect;
     }

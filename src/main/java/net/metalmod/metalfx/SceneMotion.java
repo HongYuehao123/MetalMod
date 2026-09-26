@@ -756,6 +756,16 @@ public final class SceneMotion {
         motionHeight = 0;
     }
 
+    /**
+     * The motion resource's own handle, for a readback that has to go through its staging texture.
+     *
+     * <p>Separate from {@link #texture()}: that one is the private texture the scaler reads, which the
+     * CPU cannot read at all. This is the resource that owns both.
+     */
+    public static MemorySegment handleOf() {
+        return motion;
+    }
+
     /** The motion texture the temporal scaler reads, or NULL. */
     public static MemorySegment texture() {
         return motion.address() == 0 ? MemorySegment.NULL : MetalNative.motionTexture(motion);
@@ -803,6 +813,52 @@ public final class SceneMotion {
             failures++;
             return -1;
         }
+    }
+
+    /**
+     * Encode this frame's motion into a caller-owned command buffer, without committing it.
+     *
+     * <p>The alternative to {@link #dispatch} is a buffer of this side's own, which the queue then has
+     * to serialise against the scaler's buffer. Sharing one buffer moves that boundary inside Metal,
+     * where it is an encoder barrier rather than a queue dependency.
+     */
+    public static int encodeInto(MemorySegment commandBuffer, MemorySegment depthTexture) {
+        if (motion.address() == 0 || !matricesReady) {
+            return -1;
+        }
+        if (commandBuffer == null || commandBuffer.address() == 0) {
+            return -1;
+        }
+        if (depthTexture == null || depthTexture.address() == 0) {
+            return -1;
+        }
+        MemorySegment.copy(currentInverseValues, 0, currentInverseSegment,
+                ValueLayout.JAVA_FLOAT, 0, 16);
+        MemorySegment.copy(previousForwardValues, 0, previousForwardSegment,
+                ValueLayout.JAVA_FLOAT, 0, 16);
+        return MetalNative.motionEncode(motion, commandBuffer, depthTexture,
+                currentInverseSegment, previousForwardSegment);
+    }
+
+    /**
+     * How long one motion step takes on the GPU, averaged over passes, against the given depth texture.
+     *
+     * <p>Negative when it could not be measured. Used by the cost check to separate the pass from the
+     * scaler it feeds, on the same textures the frame uses rather than on ones the harness made.
+     */
+    public static double gpuTime(MetalDevice device, MemorySegment depthTexture, int passes) {
+        if (device == null || motion.address() == 0 || !matricesReady) {
+            return -1.0;
+        }
+        if (depthTexture == null || depthTexture.address() == 0) {
+            return -1.0;
+        }
+        MemorySegment.copy(currentInverseValues, 0, currentInverseSegment,
+                ValueLayout.JAVA_FLOAT, 0, 16);
+        MemorySegment.copy(previousForwardValues, 0, previousForwardSegment,
+                ValueLayout.JAVA_FLOAT, 0, 16);
+        return MetalNative.motionGpuTime(motion, device.queueHandle(), depthTexture,
+                currentInverseSegment, previousForwardSegment, passes);
     }
 
     /** Whether a depth format can be read by the motion kernel. */

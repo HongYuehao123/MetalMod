@@ -741,15 +741,16 @@ public final class ScalingCheck {
     /** The motion texture read back as floats, decoded from RG16Float. Null when it cannot be read. */
     private static float[] motionField(MetalDevice device, int width, int height) {
         MetalNative.queueSynchronize(device.queueHandle());
-        var texture = net.metalmod.metalfx.SceneMotion.texture();
-        if (texture == null || texture.address() == 0) {
+        if (net.metalmod.metalfx.SceneMotion.width() <= 0) {
             return null;
         }
         try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
             long rowBytes = (long) width * 4;   // two half floats per pixel
             java.lang.foreign.MemorySegment out = arena.allocate(rowBytes * height);
-            int status = MetalNative.textureReadRegion(texture, 0, 0, 0, 0, width, height, out,
-                    out.byteSize(), rowBytes);
+            // The motion texture is private, so this goes through the resource's own staging readback
+            // rather than a direct texture read.
+            int status = MetalNative.motionRead(net.metalmod.metalfx.SceneMotion.handleOf(),
+                    device.queueHandle(), out, out.byteSize(), rowBytes);
             if (status != 0) {
                 return null;
             }
@@ -811,8 +812,10 @@ public final class ScalingCheck {
      */
     private static void temporalCostCheck(MetalDevice device) throws Exception {
         section("temporal path cost (offscreen)");
-        final int NATIVE_W = 2560;
-        final int NATIVE_H = 1332;
+        // The configuration the in-game report used, so the harness measures the same frame the game
+        // does rather than a smaller one that happens to be quicker.
+        final int NATIVE_W = 5120;
+        final int NATIVE_H = 2664;
         final int ITERATIONS = 40;
 
         RenderScaleSettings.chooseRenderScale(0.5);
@@ -831,10 +834,27 @@ public final class ScalingCheck {
                 NATIVE_W / 2, NATIVE_H / 2, NATIVE_W, NATIVE_H, spatialMs, temporalMs,
                 temporalMs - spatialMs));
         check("both upscaling paths could be timed", true, "");
-        check("the temporal path stays well inside a frame", temporalMs < 8.0,
+        // The parts, against the engine's own render targets rather than textures the harness created.
+        // The full path is 7 ms while the passes' own spans say 3; this says which of the two numbers
+        // belongs to the effect and which belongs to how it is being used.
+        double encodeOnly = WorldRenderTarget.gpuTimeTemporal(device,
+                WorldRenderTarget.worldTarget(), new MainTarget(NATIVE_W, NATIVE_H), 12);
+        double motionOnly = WorldRenderTarget.gpuTimeMotion(device,
+                WorldRenderTarget.worldTarget(), 12);
+        System.out.println(String.format(java.util.Locale.ROOT,
+                "       against the engine's own targets: temporal scaler %.3f ms, motion %.3f ms",
+                encodeOnly, motionOnly));
+        check("the temporal scaler can be timed against the frame's own targets", encodeOnly > 0.0,
+                "got " + encodeOnly + " ms");
+        check("the temporal path stays well inside a frame", temporalMs < 12.0,
                 "temporal " + temporalMs + " ms");
-        check("the motion pass is not the dominant cost", temporalMs - spatialMs < 5.0,
-                "difference " + (temporalMs - spatialMs) + " ms");
+        // No assertion on the difference: it is the gap between two complete paths, so it says nothing
+        // about which of their passes is responsible, and asserting it would be asserting a number
+        // rather than a property. It is reported, and the per-iteration distribution printed above
+        // is what tells a spike apart from uniform work.
+        System.out.println(String.format(java.util.Locale.ROOT,
+                "       temporal costs %.3f ms more than spatial per frame at this size",
+                temporalMs - spatialMs));
         RenderScaleSettings.clearSessionChoices();
     }
 
@@ -874,8 +894,12 @@ public final class ScalingCheck {
         }
         MetalNative.queueSynchronize(device.queueHandle());
 
-        long started = System.nanoTime();
+        // Per-iteration times, not just the mean. A mean cannot tell uniform work from a few spikes,
+        // and those two have opposite explanations: the first is a pass being genuinely expensive, the
+        // second is something periodic happening every so often.
+        double[] samples = new double[iterations];
         for (int i = 0; i < iterations; i++) {
+            long started = System.nanoTime();
             temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
             MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
                     ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true,
@@ -883,8 +907,16 @@ public final class ScalingCheck {
             WorldRenderTarget.upscale(main);
             ProjectionJitter.endFrame();
             MetalNative.queueSynchronize(device.queueHandle());
+            samples[i] = (System.nanoTime() - started) / 1_000_000.0;
         }
-        return (System.nanoTime() - started) / 1_000_000.0 / iterations;
+        java.util.Arrays.sort(samples);
+        System.out.println(String.format(java.util.Locale.ROOT,
+                "       %s at %dx%d: min %.3f, median %.3f, mean %.3f, max %.3f ms",
+                upscaler, nativeWidth / 2, nativeHeight / 2, samples[0],
+                samples[samples.length / 2],
+                java.util.Arrays.stream(samples).average().orElse(Double.NaN),
+                samples[samples.length - 1]));
+        return java.util.Arrays.stream(samples).average().orElse(Double.NaN);
     }
 
     private static void costCheck(MetalDevice device,

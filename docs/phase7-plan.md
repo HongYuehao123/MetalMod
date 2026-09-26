@@ -231,31 +231,33 @@ scene depth and asserts that the frame is untouched.
    | MetalFX temporal | 2.240 ms | 3.282 ms |
    | motion pass (dispatch + overlay) | included | **0.110 ms** |
 
-   The second column is a real 50%-on-5K configuration and it is the number that matters: the temporal
-   *effect* costs about the same as the spatial one, and the motion pass is a tenth of a millisecond.
-   The isolated parts were timed through `mmm_motion_gpu_time` and `mmm_fx_temporal_gpu_time`, each pass
-   in its own command buffer read through its own GPU timestamps, with noise and a depth gradient
-   uploaded rather than a flat clear so the filter's data-dependent clamping has something to do.
+   **Those isolated numbers do not describe the frame, and the full path says so.** Timed end to end
+   with the queue drained, at the same sizes, in the same harness, 40 iterations each:
 
-   **An in-game report contradicts the comfortable reading of that table.** At native 5K a light scene
-   ran 231 fps (4.2 ms) while temporal at 50% ran 73 fps (13.1 ms), with F3 reporting `0 entities,
-   0 particles, 0 stamps` - so the overlay is not the cost, and roughly 9 ms of the frame is not
-   explained by anything this harness measures. The two passes of the temporal path are therefore now
-   timed **in the frame they run in**: their command buffers' own GPU spans are exposed as
-   `mmm_motion_last_gpu_ms` / `mmm_fx_temporal_last_gpu_ms` and printed on F3 as `gpu motion X ms +
-   scaler Y ms`. It costs nothing - the timestamps exist whether or not anyone reads them - and it is
-   the only way to attribute a live frame.
+   | Path | Mean | Min | Median |
+   |---|---:|---:|---:|
+   | spatial | 1.64 ms | 1.55 | 1.58 |
+   | temporal | 7.26 ms | 7.07 | 7.21 |
+   | temporal with the motion dispatch removed | 6.99 ms | 6.89 | 6.99 |
 
-   Two fixes came out of chasing it: the temporal encode never set `inputContentWidth` /
-   `inputContentHeight`, which both MetalFX headers list as a per-frame step and which defaults to zero;
-   and the scaler is now created with `requiresSynchronousInitialization = YES`, so a cost is never
-   measured while MetalFX is still running its interim upscaler. Neither moved the offscreen number
-   much, so neither is the whole story - which is itself the finding: the parts are cheap and the live
-   frame disagrees.
+   Uniform, not spiky - every iteration pays it. The motion pass is about **0.3 ms of a 5.6 ms
+   premium**, so the cost is the scaler, and the scaler's own span reads 2.7 ms only because the
+   isolated timing passes a **constant jitter** with unchanging inputs: a workload MetalFX can shortcut,
+   because there is nothing to resample. A frame advances the jitter phase every frame, exactly as the
+   game does, so the history is resampled at a new sub-pixel position every frame - and that resampling
+   *is* the filter's work.
 
-   The open question is whether the motion pass is as cheap in the game as it is here, or whether
-   reading a depth buffer that hundreds of draws have just written costs something a cleared one does
-   not. That is what the next session reads off F3 first.
+   Four candidate fixes were tried and none moved the number, which is why the conclusion is about the
+   effect rather than about the integration: one command buffer instead of two (7.09 against 7.07), a
+   private motion texture with a staging readback (7.26), private engine targets (the earlier pass), and
+   two genuine omissions - the content region never being set and the scaler being built asynchronously
+   - both now fixed and neither the cost.
+
+   **The honest number is that MetalFX temporal costs roughly 5.6 ms more than spatial at 50% on 5K on
+   this machine.** In a scene whose frame is already draw-bound the scaling itself saves little, so the
+   premium is close to pure addition. There is no knob on the temporal filter, so the mode is a
+   **quality mode with a measurable price**, not a free upgrade; spatial stays the default, and the
+   settings page should say what the price is.
 
 ### 3.5 Anti-aliasing — optional separate work after Temporal
 

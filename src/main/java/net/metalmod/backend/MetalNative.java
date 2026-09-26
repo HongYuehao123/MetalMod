@@ -70,7 +70,7 @@ public final class MetalNative {
     private static MethodHandle mhMotionCreate, mhMotionRelease, mhMotionTexture, mhMotionWidth,
             mhMotionHeight, mhMotionLastError, mhMotionRun, mhMotionFormatSupported, mhMotionDescribe,
             mhMotionSetStamps, mhMotionStampCapacity, mhMotionStampStats, mhMotionGpuTime,
-            mhMotionLastGpuMs;
+            mhMotionLastGpuMs, mhMotionEncode, mhMotionRead;
 
     static {
         try {
@@ -252,6 +252,10 @@ public final class MetalNative {
                 FunctionDescriptor.of(D, A, A, A, A, A, I));
         mhMotionLastGpuMs = optional(lookup, linker, "mmm_motion_last_gpu_ms",
                 FunctionDescriptor.of(D));
+        mhMotionEncode = optional(lookup, linker, "mmm_motion_encode",
+                FunctionDescriptor.of(I, A, A, A, A, A));
+        mhMotionRead = optional(lookup, linker, "mmm_motion_read",
+                FunctionDescriptor.of(I, A, A, A, L, L));
     }
 
     private static MethodHandle optional(SymbolLookup lookup, Linker linker, String name,
@@ -1163,6 +1167,37 @@ public final class MetalNative {
                     currentInverseViewProjection, previousViewProjection, passes);
         } catch (Throwable t) {
             return -1.0;
+        }
+    }
+
+    /**
+     * Encode a motion step into a caller-owned command buffer, for a caller that needs the dispatch and
+     * the scaler reading it in one buffer rather than two chained by the queue.
+     */
+    public static int motionEncode(MemorySegment motion, MemorySegment commandBuffer,
+            MemorySegment depth, MemorySegment currentInverseViewProjection,
+            MemorySegment previousViewProjection) {
+        if (mhMotionEncode == null) return -1;
+        ffiCalls++;
+        try {
+            return (int) mhMotionEncode.invokeExact(motion, commandBuffer, depth,
+                    currentInverseViewProjection, previousViewProjection);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * Read the motion vectors back into `out`. The texture is private, so this blits it into the
+     * resource's shared staging copy and blocks. For tests, not for the frame.
+     */
+    public static int motionRead(MemorySegment motion, MemorySegment queue, MemorySegment out,
+            long capacity, long rowBytes) {
+        if (mhMotionRead == null || isNull(motion)) return -1;
+        try {
+            return (int) mhMotionRead.invokeExact(motion, queue, out, capacity, rowBytes);
+        } catch (Throwable t) {
+            return -1;
         }
     }
 

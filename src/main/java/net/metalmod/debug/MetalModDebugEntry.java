@@ -121,9 +121,14 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                 // What the two passes of the temporal path cost on the GPU, read from their own command
                 // buffers, against the frame they are part of. Without the split the frame time can only
                 // say that temporal is slower, not which half of it is.
-                displayer.addLine("§6[MetalMod]§r temporal gpu §bmotion "
-                        + oneDecimal((float) net.metalmod.backend.MetalNative.motionLastGpuMs())
-                        + "§r + scaler §b"
+                // With one buffer the two passes share a span, so the line says so rather than
+                // reporting a motion figure that is a stale leftover from the split path.
+                boolean split = net.metalmod.metalfx.WorldRenderTarget.temporalSplitEncode();
+                displayer.addLine("§6[MetalMod]§r temporal gpu §b"
+                        + (split ? "motion "
+                                + oneDecimal((float) net.metalmod.backend.MetalNative.motionLastGpuMs())
+                                + "§r + scaler "
+                                : "motion+scaler ")
                         + oneDecimal((float) net.metalmod.backend.MetalNative.temporalLastGpuMs())
                         + "§r ms of §b"
                         + oneDecimal(net.metalmod.backend.MetalDevice.lastFrameMs()) + "§r ms");

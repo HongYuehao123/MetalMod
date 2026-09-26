@@ -108,8 +108,11 @@ public final class ScaleHotkey {
         }
 
         String describe = switch (next) {
-            case MetalFx.TEMPORAL -> "MetalFX temporal";
-            case MetalFx.SPATIAL -> "MetalFX spatial";
+            // The trade, not just the name: temporal costs several milliseconds a frame more than
+            // spatial at high output resolutions (docs/phase7-plan.md §3.4), and the action bar is
+            // exactly where someone deciding between them is looking.
+            case MetalFx.TEMPORAL -> "MetalFX temporal (sharper, costs more)";
+            case MetalFx.SPATIAL -> "MetalFX spatial (faster)";
             default -> "no upscaler (native)";
         };
         String message = String.format(java.util.Locale.ROOT,
