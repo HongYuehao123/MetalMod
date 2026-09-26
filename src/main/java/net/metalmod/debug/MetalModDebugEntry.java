@@ -123,8 +123,12 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                 // say that temporal is slower, not which half of it is.
                 // With one buffer the two passes share a span, so the line says so rather than
                 // reporting a motion figure that is a stale leftover from the split path.
+                // Labelled "pass", not "the cost": the span is what the encoded passes take, and the
+                // path around them costs more - measured at 7.3 ms end to end against a 2.7 ms span,
+                // because the span runs with the history already warm. Read it as a split between the
+                // passes, not as the price of the mode; the head line's frame time is the price.
                 boolean split = net.metalmod.metalfx.WorldRenderTarget.temporalSplitEncode();
-                displayer.addLine("§6[MetalMod]§r temporal gpu §b"
+                displayer.addLine("§6[MetalMod]§r temporal pass gpu §b"
                         + (split ? "motion "
                                 + oneDecimal((float) net.metalmod.backend.MetalNative.motionLastGpuMs())
                                 + "§r + scaler "
