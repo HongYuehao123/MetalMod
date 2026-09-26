@@ -51,32 +51,43 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | **7A done** (verified offline, awaiting one in-game session); **7B implemented** (camera reprojection **plus per-object stamps for entities, particles and pushed blocks**, live encode, resets; verified offline); 7C not started |
+| 7 — MetalFX | **7A done** (verified offline and in game); **7B implemented and measured** (camera reprojection **plus per-object stamps for entities, particles and pushed blocks**, live encode, resets; verified offline, and costs ~5.6 ms over spatial at 50%/5K - [why](docs/temporal-performance.md)); 7C not started |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
-## Temporal performance debugging (2026-09-25)
+## Temporal cost is settled (2026-09-26)
 
-BUG-035 now reproduces offscreen at 5120x2664 output / 50% scale: the complete fenced upscale
-step measured spatial **1.67 ms**, temporal **7.27 ms**, with only **0.104 ms** inside the temporal
-CPU encode and **7.13 ms** waiting for queue completion. The last motion/scaler GPU samples
-were 0.054/2.747 ms; these are not the full path's latency. A shared/private-target A/B did not
-improve temporal cost. Canonical build and stock scaling check passed; the diagnostic 5K variant
-exceeded the temporal-minus-spatial budget. No renderer changes or in-game verification in this
-pass. See BUG-035 for limits and the next scheduling/MetalFX investigation.
+**MetalFX temporal costs about 5.6 ms a frame more than spatial** at 50% scale on a 5120-wide output,
+and the cost is the temporal filter, not this project's motion pass - the motion dispatch is about
+**0.3 ms** of it. Measured two ways that agree: offscreen through the scaling check (spatial 1.64 ms
+against temporal 7.26 ms, 40 iterations with the queue drained, uniform rather than spiky) and in game
+at one hilltop with F6 (12.7 ms / 91 fps against 17.3 ms / 58 fps, matching draw counts).
+
+The earlier 2.7 ms reading was never a floor: an isolated timing passes a **constant jitter**, and the
+temporal filter shortcuts when the history does not need resampling. A real frame advances the jitter
+phase every frame, which is the filter's actual work. The `temporal pass gpu` F3 line is therefore a
+split between the two passes, not a price for the mode; the F3 head line is the number that answers
+what the mode costs.
+
+Six hypotheses were tested. Four were falsified (the depth read, one command buffer against two, the
+motion texture's storage mode, the engine targets' storage mode) and **two were real defects now
+fixed**: the scaler's content region was never set, and it was being built asynchronously, so it ran
+its interim upscaler. There is no knob on the temporal filter, so the mode is a **quality mode with a
+measurable price**; spatial stays the default and the settings page and F6 label the trade. Full
+record, limits and reproduce steps: [docs/temporal-performance.md](docs/temporal-performance.md);
+defect entry: BUG-035.
 
 ## Agreed next priority
 
-**Evaluate Temporal in game.** 7B now runs end to end with both halves of the motion field: a native
+**Judge Temporal's picture.** 7B runs end to end with both halves of the motion field - a native
 camera-reprojection kernel over the level depth, and a per-object overlay that stamps entities,
 particles and pushed blocks with their own previous positions (the engine interpolates all three every
-frame, so the information was already there). `SceneMotion` publishes the current/previous
-view-projection contract shared with Phase 8C, the temporal scaler is encoded on the device queue
-behind the level's passes and ahead of the interface, and history resets on camera cuts, world changes
-and resizes. What remains is a session: how tight an entity's bounding box is around its silhouette,
-how the modes compare in quality and cost, and whether anything in ordinary play still trails. That
-comparison procedure is [TESTING.md](TESTING.md) §6.D. Separate AA remains optional afterward. See
+frame, so the information was already there) - and its cost is now known and explained. What remains
+is the human half: how tight an entity's bounding box is around its silhouette, whether the temporal
+picture is worth 5.6 ms, and whether anything in ordinary play still trails. F6 cycles off / spatial /
+temporal at one spot, so all three can be compared in one session; the procedure is
+[TESTING.md](TESTING.md) §6.D. Separate AA remains optional afterward. See
 [the corrected AA plan](docs/antialiasing-plan.md) and [the Phase 7 record](docs/phase7-plan.md).
 This is a planning decision, not a verification result.
 
@@ -91,21 +102,21 @@ final verdict per gate, the carried-forward evidence items and the limits, and
 [docs/lighting-abi.md](docs/lighting-abi.md) for the published light-record contract that Phase 8
 builds on. `TESTING.md` §5.6 is the final-test checklist.
 
-Phase 7 (MetalFX) is **7A done, 7B implemented, 7C not started**; see
+Phase 7 (MetalFX) is **7A done, 7B implemented and measured, 7C not started**; see
 [docs/phase7-plan.md](docs/phase7-plan.md) for the per-increment record, the integration contract,
-the nine defects the work found, and the six in-game observations that close 7A. What that means in
+the defects the work found, and the in-game observations that close 7A. What that means in
 a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale and cycles the
 upscaler through **off / MetalFX spatial / MetalFX temporal**, shows the live sizes and which effect
-actually ran, and raises a toast in world when a change lands. The world renders at that fraction
+actually ran, applies its edits when the page is left rather than per click, and raises a toast in
+world when a change lands. The world renders at that fraction
 into its own target and MetalFX returns it to native, while the HUD, menus and tooltips keep drawing
 at native resolution. Temporal adds a native camera-reprojection pass over the level's depth **and a
 per-object overlay** that stamps entities, particles and pushed blocks with their own previous
 positions, so geometry that moves on its own no longer reprojects as if it were static. When temporal
 cannot run - an older device, no motion producer, a depth format the kernel cannot read - the frame
-falls back to Spatial and F3 and the settings page say why. **No in-game run has happened yet** - the design's central claim
-is verified offscreen against the engine's own `MainTarget` and `FrameGraphBuilder`, not on screen.
-[TESTING.md](TESTING.md) §6.E is the five-minute pass that closes 7A; the one observation that decides
-it is the HUD at 50%, which must be as sharp as at 100%.
+falls back to Spatial and F3 and the settings page say why. **F6** cycles off / spatial / temporal in
+place at one spot; that is how the cost above was established, and how the picture should be judged
+next. [TESTING.md](TESTING.md) §6 is the procedure; §6.D is the temporal pass.
 
 What that means in a session, concretely: held and dropped items, entities, particles and moving
 blocks light the world; a source buried in or sealed by opaque blocks contributes nothing; a placed
@@ -164,15 +175,15 @@ MetalFX capability queries, or the window-title status functions.
 
 ## Verification gates
 
-Run all five before trusting a change:
+Run all of these before trusting a change:
 
 | Command | Reports |
 |---|---|
 | `./scripts/build_mod.sh` | compiles the mod and every non-JUnit test |
-| `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence and the MetalFX spatial/temporal scalers, `ALL CHECKS PASSED` |
+| `./scripts/run_smoke.sh` / `native/build/metalmod_smoke` | native device/resource/pipeline/draw/surface/staging/texel/fence, the MetalFX spatial/temporal scalers, and the Phase 7B motion kernel and screen-space overlay, `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics from any pipeline |
 | `./tools/render_check/run.sh` | 173 pixel assertions, including the 6A/6B/6C terrain, particle, entity, item and moving-block lighting paths, the runtime toggle, the measured zero-work disabled path, and six MetalFX spatial upscaling assertions, `RENDER CHECK PASSED` |
-| `./tools/scaling_check/run.sh` | Phase 7 end to end offscreen: the scaled level target through the engine's own `MainTarget` and `FrameGraphBuilder`, the upscale, the resize, the release, the jitter sequence, and the temporal path - the scene contract, the motion field's values and conventions, and the reset lifecycle, `SCALING CHECK PASSED` |
+| `./tools/scaling_check/run.sh` | Phase 7 end to end offscreen: the scaled level target through the engine's own `MainTarget` and `FrameGraphBuilder`, the upscale, the resize, the release, the jitter sequence, and the temporal path - the scene contract, the motion field's values and conventions, the per-object stamps and their depth test, the reset lifecycle, and each path's cost distribution against spatial at the same sizes, `SCALING CHECK PASSED` |
 | `./tools/mixin_check/run.sh` | every mixin target, injected method, `@Shadow` member and `@At` descriptor against the client jar, `MIXIN CHECK PASSED` |
 | `net.metalmod.StandaloneTestRunner` | format tables, multi-draw, sub-buffer offsets, UMA ownership |
 
