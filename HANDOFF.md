@@ -56,6 +56,16 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Temporal performance debugging (2026-09-25)
+
+BUG-035 now reproduces offscreen at 5120x2664 output / 50% scale: the complete fenced upscale
+step measured spatial **1.67 ms**, temporal **7.27 ms**, with only **0.104 ms** inside the temporal
+CPU encode and **7.13 ms** waiting for queue completion. The last motion/scaler GPU samples
+were 0.054/2.747 ms; these are not the full path's latency. A shared/private-target A/B did not
+improve temporal cost. Canonical build and stock scaling check passed; the diagnostic 5K variant
+exceeded the temporal-minus-spatial budget. No renderer changes or in-game verification in this
+pass. See BUG-035 for limits and the next scheduling/MetalFX investigation.
+
 ## Agreed next priority
 
 **Evaluate Temporal in game.** 7B now runs end to end with both halves of the motion field: a native

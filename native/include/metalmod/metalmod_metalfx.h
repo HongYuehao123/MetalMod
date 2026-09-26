@@ -189,6 +189,9 @@ MMM_FX_API double mmm_gpu_time_upscale(void* scaler, void* queue,
 /// The last temporal encode's GPU span in milliseconds, or 0 when none has completed.
 MMM_FX_API double mmm_fx_temporal_last_gpu_ms(void);
 
+/// The last spatial run's GPU span in milliseconds, or 0 when none has completed.
+MMM_FX_API double mmm_fx_spatial_last_gpu_ms(void);
+
 /// The same, for one MetalFX temporal step: the scaler alone, with the history it carries, so the
 /// effect's cost can be separated from the motion pass that feeds it. Returns per-pass milliseconds,
 /// or a negative value on failure.

@@ -84,6 +84,16 @@ public class MetalModDebugEntry implements DebugScreenEntry {
             long scaled = net.metalmod.metalfx.WorldRenderTarget.scaledFrameCount();
             long failed = net.metalmod.metalfx.WorldRenderTarget.failedFrameCount();
             scale.append("§r | upscaled §b").append(scaled);
+            // The effect's own GPU span, read from its command buffer. Reported for the spatial path as
+            // well as the temporal one so an F3 reading of one can be compared against the other in the
+            // same session - an offscreen number is taken under different conditions and is not a
+            // substitute.
+            double effectMs = net.metalmod.metalfx.WorldRenderTarget.temporalActive()
+                    ? net.metalmod.backend.MetalNative.temporalLastGpuMs()
+                    : net.metalmod.backend.MetalNative.spatialLastGpuMs();
+            if (effectMs > 0.0) {
+                scale.append("§r | gpu §b").append(oneDecimal((float) effectMs)).append(" ms");
+            }
             // A failure is named with its reason rather than counted: the count alone would leave
             // "MetalFX is not running" unanswerable on the one screen a user can see.
             if (failed > 0) {

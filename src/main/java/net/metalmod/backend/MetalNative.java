@@ -62,7 +62,8 @@ public final class MetalNative {
             mhFxSpatialEncode, mhFxSpatialRun, mhFxSpatialTextureUsage, mhFxLastError,
             mhFxTemporalSupported, mhFxTemporalCreate, mhFxTemporalRelease, mhFxTemporalEncode,
             mhFxTemporalDescribe, mhPresentTime, mhPresentReadReset,
-            mhGpuTimeFill, mhGpuTimeUpscale, mhTemporalGpuTime, mhTemporalLastGpuMs;
+            mhGpuTimeFill, mhGpuTimeUpscale, mhTemporalGpuTime, mhTemporalLastGpuMs,
+            mhSpatialLastGpuMs;
 
     // Phase 7B motion vectors. Also optional, for the same reason: a dylib without them leaves the
     // backend able to render and to run Spatial, it just cannot run Temporal.
@@ -225,6 +226,8 @@ public final class MetalNative {
         mhTemporalGpuTime = optional(lookup, linker, "mmm_fx_temporal_gpu_time",
                 FunctionDescriptor.of(D, A, A, A, A, A, A, F, F, I));
         mhTemporalLastGpuMs = optional(lookup, linker, "mmm_fx_temporal_last_gpu_ms",
+                FunctionDescriptor.of(D));
+        mhSpatialLastGpuMs = optional(lookup, linker, "mmm_fx_spatial_last_gpu_ms",
                 FunctionDescriptor.of(D));
 
         // Motion vectors (Phase 7B). Optional like the rest of the Phase 7 surface.
@@ -1168,6 +1171,16 @@ public final class MetalNative {
         if (mhMotionLastGpuMs == null) return 0.0;
         try {
             return (double) mhMotionLastGpuMs.invokeExact();
+        } catch (Throwable t) {
+            return 0.0;
+        }
+    }
+
+    /** The last spatial run's GPU span in the running frame, in milliseconds, or 0. */
+    public static double spatialLastGpuMs() {
+        if (mhSpatialLastGpuMs == null) return 0.0;
+        try {
+            return (double) mhSpatialLastGpuMs.invokeExact();
         } catch (Throwable t) {
             return 0.0;
         }

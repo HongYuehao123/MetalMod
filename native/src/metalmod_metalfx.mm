@@ -37,6 +37,9 @@ static char g_LastFxError[512] = {0};
 /// The last temporal scaler step's GPU span, in milliseconds, written from its completion handler.
 static volatile double g_TemporalLastGpuMs = 0.0;
 
+/// The same for the spatial scaler, so the two effects can be compared in one session.
+static volatile double g_SpatialLastGpuMs = 0.0;
+
 static void mmm_fx_set_error(NSString* message) {
     const char* utf8 = message != nil ? message.UTF8String : "unknown MetalFX failure";
     if (utf8 == NULL) utf8 = "unknown MetalFX failure";
@@ -200,6 +203,13 @@ int mmm_fx_spatial_run(void* scaler, void* queue,
         commandBuffer.label = @"MetalMod MetalFX upscale";
         int rc = mmm_fx_spatial_encode(scaler, (__bridge void*)commandBuffer,
                                        sourceTexture, targetTexture, 0, 0);
+        // The frame's own cost, read from the buffer after it runs - the same free measurement the
+        // temporal path reports, so an F3 reading of one effect can be compared against the other
+        // rather than against an offscreen number taken under different conditions.
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            double seconds = completed.GPUEndTime - completed.GPUStartTime;
+            if (seconds > 0.0) g_SpatialLastGpuMs = seconds * 1000.0;
+        }];
         // Committed either way: the buffer is ours and nothing else will release it, and an empty
         // commit is cheaper than a leaked command buffer.
         [commandBuffer commit];
@@ -564,4 +574,8 @@ int mmm_fx_temporal_encode(void* scaler, void* commandBuffer,
 
 double mmm_fx_temporal_last_gpu_ms(void) {
     return g_TemporalLastGpuMs;
+}
+
+double mmm_fx_spatial_last_gpu_ms(void) {
+    return g_SpatialLastGpuMs;
 }

@@ -10,7 +10,7 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ## BUG-035 — Temporal upscaling costs far more in the game than its parts measure
 
-**Status:** **OPEN.** Attribution instrumented; the next in-game reading settles it.
+**Status:** **OPEN.** Full-path slowdown reproduced offscreen at 5K; queue/completion latency remains unattributed.
 **Severity:** high for the mode. It is the difference between temporal being a trade and being a
 regression.
 
@@ -20,7 +20,40 @@ At 5120x2664 native, a light scene - digging straight down - ran **231 fps (4.2 
 at 50% render scale with temporal ran **73 fps (13.1 ms)**, and F3 reported `0 entities, 0 particles,
 0 stamps`, so the per-object overlay was contributing nothing.
 
-### What is ruled out
+### Follow-up: full-path reproduction (2026-09-25)
+
+The regression **also reproduces offscreen**. The earlier isolated GPU timestamps below do not
+rule out the temporal path: they are not the fenced wall time of the complete operation.
+A fresh canonical build and a temporary copy of `ScalingCheck.java` with its cost-test output
+changed from 2560x1332 to 5120x2664 gave, at 50% render scale (40 measured iterations after warm-up):
+
+| Measurement | Spatial | Temporal |
+|---|---:|---:|
+| Full upscale step, including queue drain | 1.67 ms | 7.27 ms |
+| CPU inside `WorldRenderTarget.upscale` | 0.046 ms | 0.104 ms |
+| CPU waiting for the queue drain | 1.59 ms | 7.13 ms |
+
+The final completed temporal samples reported motion **0.054 ms**, scaler **2.747 ms** on the
+GPU. Those are individual command-buffer samples, not averages or a complete frame measurement;
+they do not explain the entire wall-time gap. CPU encoding is small in this reproduction.
+The stock 2560x1332 cost check passed (spatial 0.92 ms, temporal 2.26 ms); the 5K variant failed
+its temporal-minus-spatial budget. That assertion is named "the motion pass is not the dominant
+cost", but actually measures the difference between two complete paths and cannot isolate motion.
+
+An A/B using the existing `-Dmetalmod.privateTextures=all` switch measured **7.19 ms temporal
+with both shared and private targets**, so this experiment did not support storage mode as the
+performance fix. The private run also failed six existing pixel/upload assertions because that
+harness uploads directly into textures that become private; it is not a correctness pass or a
+recommendation to enable the switch.
+
+These are synthetic, fenced measurements with no game scene or presentation, not FPS predictions.
+Nevertheless, the full temporal path alone exceeding the previously reported 4.2 ms native frame
+makes the reported regression plausible without entity stamps or expensive live depth rendering.
+Next investigation: trace command-buffer scheduling and MetalFX internal work across the complete
+motion → scaler → completion sequence. Do not infer total latency by adding the two GPU spans.
+No renderer behavior was changed in this debugging pass.
+
+### Earlier isolated measurements (insufficient to rule out the full path)
 
 Every part measured offscreen, at the same 2560x1332 -> 5120x2664, through each pass's own GPU
 timestamps, with noise and a depth gradient uploaded rather than a flat clear so MetalFX's
@@ -32,10 +65,10 @@ data-dependent history clamping has something to do:
 | MetalFX temporal scaler | 3.1-3.3 ms |
 | motion pass (dispatch + overlay) | **0.11-0.16 ms** |
 
-So the effect is *not* meaningfully more expensive than spatial, and the motion pass is a tenth of a
-millisecond. Neither can account for a 9 ms gap.
+These isolated spans made the two scalers appear similar. The full-path reproduction above shows
+that this was insufficient evidence to rule out temporal overhead.
 
-### What is left
+### Original hypotheses (before the full-path reproduction)
 
 The live frame differs from the harness in at least three ways that the harness cannot reproduce: the
 depth buffer has been written by hundreds of draws rather than cleared, the two passes' command buffers
@@ -63,7 +96,7 @@ spans, recorded from their completion handlers and printed on F3 as `gpu motion 
 This costs nothing on the frame and splits the temporal path in the running game, which is the
 measurement that was missing.
 
-### Next step
+### Earlier proposed in-game check
 
 Read those two numbers in the same scene as the 231-versus-73 comparison. Whichever is large names the
 suspect: a large `motion` means the depth read is the cost and the pass needs a different form; a large
