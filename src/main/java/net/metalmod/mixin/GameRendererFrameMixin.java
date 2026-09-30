@@ -35,6 +35,9 @@ public class GameRendererFrameMixin {
         // must not reuse the previous frame's camera as if it were current - that would publish
         // motion for a frame that never rendered one.
         net.metalmod.metalfx.SceneMotion.beginFrame();
+        net.metalmod.metalfx.WorldRenderTarget.beginFrame(renderLevel && willDrawLevel());
+        var main = ((GameRenderer) (Object) this).mainRenderTarget();
+        net.metalmod.metalfx.WorldRenderTarget.refresh(main.width, main.height);
         // The frame boundary for the level's target: anything the settings screen or a window resize
         // asked for is built here, and the target it replaced is retired rather than destroyed,
         // because the previous frame's command buffers may still be reading it. Doing this inside a
@@ -57,6 +60,7 @@ public class GameRendererFrameMixin {
         // machine and this dylib can produce. Asked here, before the frame graph is built, so a
         // machine without a usable scaler renders natively instead of rendering small into a target
         // nothing would present, and a machine without motion falls back to Spatial.
+        net.metalmod.metalfx.WorldRenderTarget.observePacing();
         net.metalmod.metalfx.WorldRenderTarget.setScalingAvailable(
                 net.metalmod.metalfx.WorldRenderTarget.metalFxUsable(
                         net.metalmod.backend.MetalDevice.active()));
@@ -64,8 +68,6 @@ public class GameRendererFrameMixin {
         // its mind halfway through is a frame whose passes were built against one target and executed
         // against another.
         net.metalmod.metalfx.WorldRenderTarget.decideScalingForFrame();
-        net.metalmod.metalfx.WorldRenderTarget.beginFrame(
-                renderLevel && willDrawLevel());
         // The jitter has to be in force while the level's projection is *built*, which happens during
         // extraction - earlier than the frame's render call and earlier than any Phase 7A hook. This
         // is therefore the frame's own boundary as far as jitter is concerned. Gated on the effect

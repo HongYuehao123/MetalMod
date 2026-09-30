@@ -35,6 +35,7 @@ public class StandaloneTestRunner {
         failures += net.metalmod.debug.LightingCaptureColumnsTest.runTests();
         failures += net.metalmod.debug.DebugPageTextTest.runTests();
         failures += net.metalmod.debug.CaptureRouteTest.runTests();
+        failures += net.metalmod.metalfx.TemporalPacingGuardTest.runTests();
 
         UnifiedMemoryTest.runTests();
 

@@ -69,6 +69,7 @@ public final class MixinCheck {
     }
 
     private static final Map<String, ClassShape> SHAPES = new HashMap<>();
+    private static ZipFile glfwJar;
 
     /** Every class in the jar, by binary name, so a mixin's simple target can be resolved. */
     private static final Set<String> JAR_CLASSES = new HashSet<>();
@@ -98,7 +99,9 @@ public final class MixinCheck {
             }
         }
 
-        try (ZipFile zip = new ZipFile(jar.toFile())) {
+        try (ZipFile zip = new ZipFile(jar.toFile());
+             ZipFile glfw = args.length > 1 ? new ZipFile(args[1]) : null) {
+            glfwJar = glfw;
             indexClasses(zip);
             for (MixinFile mixin : mixins) {
                 checkMixin(zip, mixin);
@@ -240,13 +243,18 @@ public final class MixinCheck {
 
         String entryName = binaryName.replace('.', '/') + ".class";
         ZipEntry entry = zip.getEntry(entryName);
+        ZipFile source = zip;
+        if (entry == null && glfwJar != null) {
+            entry = glfwJar.getEntry(entryName);
+            source = glfwJar;
+        }
         if (entry == null) {
             ClassShape missing = new ClassShape(false, null);
             SHAPES.put(binaryName, missing);
             return missing;
         }
         ClassShape resolved;
-        try (InputStream in = zip.getInputStream(entry)) {
+        try (InputStream in = source.getInputStream(entry)) {
             ClassReader reader = new ClassReader(in);
             final ClassShape parsed = new ClassShape(true, reader.getSuperName());
             resolved = parsed;

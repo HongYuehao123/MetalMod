@@ -151,6 +151,12 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                     + net.metalmod.metalfx.WorldRenderTarget.unavailableReason()
                     + " - rendering at native resolution§r");
         }
+        if (metalActive && net.metalmod.metalfx.WorldAntialiasing.enabled()) {
+            String aaError = net.metalmod.metalfx.WorldAntialiasing.lastError();
+            displayer.addLine("§6[MetalMod]§r world AA §bFXAA§r before HUD, frames §b"
+                    + net.metalmod.metalfx.WorldAntialiasing.frameCount()
+                    + (aaError.isEmpty() ? "" : "§r §c" + aaError));
+        }
         // Pacing (Phase 7C groundwork). The frame time on the first line is CPU wall time; this is the
         // display's own report of when frames landed, which is the only place a missed refresh is
         // stated rather than inferred. Shown only once the display has reported something, so the line

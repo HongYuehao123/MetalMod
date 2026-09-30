@@ -1,7 +1,6 @@
 package net.metalmod.mixin;
 
 import net.metalmod.metalfx.ProjectionJitter;
-import net.metalmod.metalfx.RenderScaleSettings;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.Projection;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
@@ -60,11 +59,9 @@ public class CameraJitterMixin {
         // then be reprojecting a frame that was jittered by a different amount.
         int windowWidth = Math.round(this.projection.width());
         int windowHeight = Math.round(this.projection.height());
-        int renderWidth = RenderScaleSettings.scaledSize(windowWidth);
-        int renderHeight = RenderScaleSettings.scaledSize(windowHeight);
-        float clipX = ProjectionJitter.clipX(renderWidth);
-        float clipY = ProjectionJitter.clipY(renderHeight);
-        // Post-multiplied: the offset is a clip-space translation, so it composes after the projection.
-        matrix.translate(clipX, clipY, 0.0f);
+        var world = net.metalmod.metalfx.WorldRenderTarget.worldTarget();
+        int renderWidth = world != null ? world.width : windowWidth;
+        int renderHeight = world != null ? world.height : windowHeight;
+        ProjectionJitter.apply(matrix, renderWidth, renderHeight);
     }
 }

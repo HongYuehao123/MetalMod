@@ -80,7 +80,7 @@ public final class RenderScaleSettings {
      * allocates a second, identical target.
      */
     public static boolean active() {
-        return renderScale() != 1.0;
+        return renderScale() != 1.0 && !MetalFx.OFF.equals(upscaler());
     }
 
     /**

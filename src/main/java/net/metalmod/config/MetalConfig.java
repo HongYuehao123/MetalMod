@@ -36,6 +36,12 @@ public class MetalConfig {
     public volatile boolean enableDynamicLights = false;
     public volatile boolean enableClusteredLights = false;
 
+    // Keep the requested 2560x1440 window size as the default Metal render target, including on a
+    // 2x Retina display. This saves the 5K output cost, but the user has observed more aliasing than
+    // the stock 5120x2880 framebuffer even with FXAA. The quality gap is tracked in BUG-040; the
+    // Retina-size alternative remains selectable and both choices require a restart.
+    public volatile boolean syncWindowResolution = true;
+
     // Phase 7 upscaling. The render scale is the fraction of the native resolution the world is
     // rendered at, and the upscaler names the effect that returns it to native: "spatial",
     // "temporal" or "off". These are live settings like the lighting switches - the renderer
@@ -47,6 +53,14 @@ public class MetalConfig {
     // Announces an upscaling change as an in-world toast, so a setting whose effect is otherwise
     // invisible can be checked without opening F3.
     public volatile boolean upscalingNotice = true;
+    // Optional world-only FXAA. The Retina-native path already has dense coverage; FXAA softened the
+    // player's image without restoring the samples removed by 2K resolution sync.
+    public volatile boolean postAntialiasing = false;
+
+    public boolean postAntialiasing() {
+        String override = System.getProperty("metalmod.postAA");
+        return override == null ? postAntialiasing : Boolean.parseBoolean(override);
+    }
 
     // The MetalFX quality preset, frame generation, sharpness, HDR and target-refresh settings that
     // used to live here drove the retired MoltenVK-interop frame pipeline (ROADMAP.md §4). Nothing
@@ -68,12 +82,30 @@ public class MetalConfig {
             this.enablePointLightProof = Boolean.parseBoolean(props.getProperty("enablePointLightProof", "false"));
             this.enableDynamicLights = Boolean.parseBoolean(props.getProperty("enableDynamicLights", "false"));
             this.enableClusteredLights = Boolean.parseBoolean(props.getProperty("enableClusteredLights", "false"));
+            this.syncWindowResolution = Boolean.parseBoolean(props.getProperty("syncWindowResolution", "true"));
             this.renderScale = parseScale(props.getProperty("renderScale", "1.0"));
             this.upscaler = props.getProperty("upscaler", "spatial");
             this.upscalingNotice = Boolean.parseBoolean(props.getProperty("upscalingNotice", "true"));
+            this.postAntialiasing = Boolean.parseBoolean(props.getProperty("postAntialiasing", "false"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());
         }
+    }
+
+    /**
+     * The window-resolution sync setting, with the per-launch flag taking precedence.
+     *
+     * <p>Same precedence as the rest of the file: a {@code -D} value wins over the saved one, so a
+     * launch flag can never be silently overridden by a value written from the settings screen. Only
+     * present, not "true": {@code -Dmetalmod.syncWindowResolution=false} has to be able to turn it
+     * off, which {@code Boolean.getBoolean} would read as absent and then fall through to the file.
+     */
+    public boolean syncWindowResolution() {
+        String override = System.getProperty("metalmod.syncWindowResolution");
+        if (override != null) {
+            return Boolean.parseBoolean(override);
+        }
+        return this.syncWindowResolution;
     }
 
     /**
@@ -105,9 +137,11 @@ public class MetalConfig {
                 props.setProperty("enablePointLightProof", Boolean.toString(this.enablePointLightProof));
                 props.setProperty("enableDynamicLights", Boolean.toString(this.enableDynamicLights));
                 props.setProperty("enableClusteredLights", Boolean.toString(this.enableClusteredLights));
+                props.setProperty("syncWindowResolution", Boolean.toString(this.syncWindowResolution));
                 props.setProperty("renderScale", Double.toString(this.renderScale));
                 props.setProperty("upscaler", this.upscaler);
                 props.setProperty("upscalingNotice", Boolean.toString(this.upscalingNotice));
+                props.setProperty("postAntialiasing", Boolean.toString(this.postAntialiasing));
                 props.store(writer, "MetalMod Apple Silicon Configuration");
             }
         } catch (Exception e) {

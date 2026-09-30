@@ -11,7 +11,7 @@ package net.metalmod.metalfx;
  *
  * <p><b>Where the offset is applied.</b> The level's projection matrix, and only the level's:
  * {@code CameraRenderState.projectionMatrix} is what the world passes read, while the interface has
- * its own projections. {@code CameraRenderStateJitterMixin} post-multiplies the translation in, and
+ * its own projections. {@code CameraJitterMixin} applies a homogeneous clip translation after projection, and
  * is scoped by {@link #beginFrame} / {@link #endFrame} so nothing else that reads the same state sees
  * a jittered matrix.
  *
@@ -83,9 +83,7 @@ public final class ProjectionJitter {
     /**
      * Advance to this frame's phase and start applying it.
      *
-     * <p>Called once per presented frame. The phase advances whether or not a temporal effect is
-     * running, so switching the effect on does not restart the sequence - a visible hitch the first
-     * time it is enabled.
+     * <p>Called once per Temporal frame. Other paths do not advance or apply jitter.
      */
     public static void beginFrame() {
         ACTIVE.set(true);
@@ -122,8 +120,7 @@ public final class ProjectionJitter {
     }
 
     /**
-     * The offset expressed as a clip-space translation, which is what post-multiplying the projection
-     * needs.
+     * The offset expressed as a clip-space translation applied on the left of the projection.
      *
      * <p>A translation of {@code (2 * pixelOffset / dimension)} in NDC moves the image by exactly that
      * many pixels, because NDC spans two units across the viewport.
@@ -134,6 +131,16 @@ public final class ProjectionJitter {
 
     public static float clipY(int height) {
         return height <= 0 ? 0.0f : 2.0f * offsetY() / height;
+    }
+
+    /** T * P: every projected depth moves by the same input-pixel offset. */
+    public static void apply(org.joml.Matrix4f projection, int width, int height) {
+        projection.translateLocal(clipX(width), clipY(height), 0.0f);
+    }
+
+    /** Undo the clip translation while preserving right-side bob/portal transforms. */
+    public static void remove(org.joml.Matrix4f projection, int width, int height) {
+        projection.translateLocal(-clipX(width), -clipY(height), 0.0f);
     }
 
     // ---------------------------------------------------------------------------------------------

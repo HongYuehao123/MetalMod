@@ -11,12 +11,14 @@ import net.minecraft.network.chat.Component;
  * <p>The MetalFX scaling/preset/frame-generation controls that used to be here drove the retired
  * MoltenVK-interop frame pipeline and did nothing once it was removed, so they are gone
  * (ROADMAP.md §4). What is left is the Metal backend toggle - which is the setting that actually
- * changes what renders - and the UMA memory options.
+ * changes what renders - the window-resolution toggle, which decides whether the render targets
+ * follow the resolution the display is set to or the Retina backing, and the UMA memory options.
  */
 public class MetalModConfigScreen extends Screen {
 
     private final Screen parent;
     private Button metalBackendButton;
+    private Button windowSyncButton;
 
     public MetalModConfigScreen(Screen parent) {
         super(Component.literal("MetalMod: Apple Silicon Metal Settings"));
@@ -47,20 +49,31 @@ public class MetalModConfigScreen extends Screen {
         }).bounds(centerX - buttonWidth / 2, startY + 24, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(metalBackendButton);
 
-        // 3. MetalFX, first among the live settings and on its own page, because it is the one whose
+        // 3. Window resolution sync. Also a window-creation hint, so it needs a restart. It sits next
+        // to the backend toggle because both are chosen before the window exists, while the two pages
+        // below are live.
+        windowSyncButton = Button.builder(getWindowSyncText(), btn -> {
+            MetalConfig.INSTANCE.syncWindowResolution = !MetalConfig.INSTANCE.syncWindowResolution;
+            MetalConfig.INSTANCE.save();
+            btn.setMessage(getWindowSyncText());
+        }).bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+        windowSyncButton.active = System.getProperty("metalmod.syncWindowResolution") == null;
+        this.addRenderableWidget(windowSyncButton);
+
+        // 4. MetalFX, first among the live settings and on its own page, because it is the one whose
         // effect is visible in the frame itself: render resolution, the upscaler, and the live status
         // that says which path actually ran. The two pages below it change what the world is lit by
         // and how it is measured; this one changes how many pixels it is drawn with.
         Button upscalingButton = Button.builder(
                 Component.literal("MetalFX Upscaling: " + upscalingSummary() + "..."), btn ->
                         this.minecraft.setScreenAndShow(new MetalModUpscalingConfigScreen(this)))
-                .bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
+                .bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(upscalingButton);
 
-        // 4. Lighting, also live: the switches that decide what the world is lit by.
+        // 5. Lighting, also live: the switches that decide what the world is lit by.
         Button lightingButton = Button.builder(Component.literal("Lighting..."), btn ->
                 this.minecraft.setScreenAndShow(new MetalModLightingConfigScreen(this)))
-                .bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
+                .bounds(centerX - buttonWidth / 2, startY + 96, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(lightingButton);
 
         // Capture closes the menu and allows five seconds to resume before recording.
@@ -71,13 +84,13 @@ public class MetalModConfigScreen extends Screen {
                 net.metalmod.debug.PerformanceCapture.toggle(this.minecraft);
                 if (this.minecraft.level != null) this.minecraft.setScreenAndShow(null);
             }
-        }).bounds(centerX - buttonWidth / 2, startY + 96, buttonWidth, buttonHeight).build();
+        }).bounds(centerX - buttonWidth / 2, startY + 120, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(captureButton);
 
         // Done.
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 128, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 152, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
     }
 
@@ -106,6 +119,20 @@ public class MetalModConfigScreen extends Screen {
         boolean on = MetalConfig.INSTANCE.preferMetalBackend;
         return Component.literal("Metal Renderer Backend: " + (on ? "ON" : "OFF")
                 + (on ? " (restart to disable)" : " (restart to enable)"));
+    }
+
+    /**
+     * The toggle for Retina backing resolution instead of the window's smaller logical size.
+     *
+     * <p>The size is spelled out in the label because the setting's whole effect is invisible from
+     * here - it changes what "100%" means - and the restart note is the same one the backend toggle
+     * carries, for the same reason: the hint is read when the window is created.
+     */
+    private Component getWindowSyncText() {
+        boolean locked = System.getProperty("metalmod.syncWindowResolution") != null;
+        boolean on = MetalConfig.INSTANCE.syncWindowResolution();
+        return Component.literal("Retina Resolution: " + (on ? "OFF (2K)" : "ON (5K)")
+                + (locked ? " (launch flag)" : " (restart to apply)"));
     }
 
     @Override

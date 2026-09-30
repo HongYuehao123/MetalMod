@@ -22,6 +22,7 @@ public final class MetalNative {
     private static boolean available = false;
     private static String loadError = null;
     private static MethodHandle mhCaptureSetEnabled, mhCaptureReadReset;
+    private static MethodHandle mhAaRun, mhMsaaWorld, mhMsaaPipeline;
     private static boolean capturing;
     private static Thread captureThread;
     private static long capturePipelineNanos, capturePipelineCount;
@@ -118,7 +119,12 @@ public final class MetalNative {
                 .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(B))).orElse(null);
         mhCaptureReadReset = lookup.find("mmm_capture_read_reset")
                 .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, I))).orElse(null);
+        mhAaRun = lookup.find("mmm_aa_run")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, A, A, A)))
+                .orElse(null);
 
+        mhMsaaWorld = optional(lookup, linker, "mmm_msaa_world", FunctionDescriptor.of(I, A, A));
+        mhMsaaPipeline = optional(lookup, linker, "mmm_msaa_pipeline", FunctionDescriptor.of(I, A, I));
         mhDeviceCreate = linker.downcallHandle(symbol(lookup, "mmm_device_create"), FunctionDescriptor.of(A));
         mhDeviceRelease = linker.downcallHandle(symbol(lookup, "mmm_device_release"), FunctionDescriptor.ofVoid(A));
         mhDeviceInfo = linker.downcallHandle(symbol(lookup, "mmm_device_info"), FunctionDescriptor.of(I, A, A, L, A, L, A, L));
@@ -219,7 +225,7 @@ public final class MetalNative {
                 FunctionDescriptor.of(I, A, A, A, A, A, A, F, F, B));
         mhFxTemporalDescribe = optional(lookup, linker, "mmm_fx_temporal_describe",
                 FunctionDescriptor.of(B, A, A, A, A, A, A, A));
-        mhPresentTime = optional(lookup, linker, "mmm_present_time", FunctionDescriptor.of(D, A));
+        mhPresentTime = optional(lookup, linker, "mmm_present_time", FunctionDescriptor.of(D, A, A));
         mhPresentReadReset = optional(lookup, linker, "mmm_present_read_reset", FunctionDescriptor.of(I, A, I));
         mhGpuTimeFill = optional(lookup, linker, "mmm_gpu_time_fill", FunctionDescriptor.of(D, A, A, I));
         mhGpuTimeUpscale = optional(lookup, linker, "mmm_gpu_time_upscale", FunctionDescriptor.of(D, A, A, A, A, I));
@@ -352,10 +358,8 @@ public final class MetalNative {
     /**
      * Take the next drawable.
      *
-     * <p>Returns {@code {drawable, texture, presentTimeSeconds, presentIntervalSeconds}}, where the
-     * last two describe where this drawable was previously shown. They are read here because the
-     * present path consumes the drawable, so this is the last moment it can be asked - see
-     * {@link #presentTimeAtAcquire}.
+     * <p>Returns {@code {drawable, texture, 0, 0}}. Presentation time is measured asynchronously
+     * by the drawable's presented handler and read through {@link #presentReadReset}.
      */
     public static Object[] layerAcquire(MemorySegment layer) {
         try (Arena a = Arena.ofConfined()) {
@@ -390,6 +394,21 @@ public final class MetalNative {
         return addr(mhTextureCreateView, tex, pf, type, baseMip, mips, baseLayer, layers);
     }
     public static void textureRelease(MemorySegment t) { v(mhTextureRelease, t); }
+
+    /** Register resolved world attachments for Spatial 4x coverage, or null/null to disable. */
+    public static boolean msaaAvailable() { return mhMsaaWorld != null && mhMsaaPipeline != null; }
+    public static int msaaWorld(MemorySegment color, MemorySegment depth) {
+        return mhMsaaWorld == null ? -1 : i(mhMsaaWorld, color, depth);
+    }
+    public static int msaaPipeline(MemorySegment pipeline, int coverageIndex) {
+        return mhMsaaPipeline == null ? -1 : i(mhMsaaPipeline, pipeline, coverageIndex);
+    }
+
+    /** Run full-resolution world FXAA before the HUD. An older native library simply lacks it. */
+    public static int aaRun(MemorySegment device, MemorySegment queue, MemorySegment source,
+                            MemorySegment scratch) {
+        return mhAaRun == null ? -1 : i(mhAaRun, device, queue, source, scratch);
+    }
     /**
      * Copy a rectangle between textures with a blit encoder, on the device queue and committed in
      * order. The only correct path for depth attachments, and the only one that lands in the frame
@@ -849,7 +868,7 @@ public final class MetalNative {
 
     /** Presentation-pacing metric order, matching MMMPresentMetric. */
     public static final java.util.List<String> PRESENT_METRICS = java.util.List.of(
-            "frames", "unreported", "steady", "dropped");
+            "frames", "unreported", "steady", "dropped", "last_interval_seconds");
 
     public static boolean presentPacingAvailable() {
         return available && mhPresentTime != null && mhPresentReadReset != null;

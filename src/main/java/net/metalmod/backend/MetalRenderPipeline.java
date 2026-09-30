@@ -129,6 +129,7 @@ public final class MetalRenderPipeline {
             // the ShaderManager has already paid for.
             String vertex = source.get(pipeline.getVertexShader(), ShaderType.VERTEX);
             String fragment = source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT);
+            boolean coverage = MetalNative.msaaAvailable() && net.metalmod.lighting.SpatialCoverageVariant.verified(pipeline, vertex, fragment);
             String variant = "vanilla";
             if (device.pointLightProofEnabled() || device.dynamicLightsEnabled()) {
                 Adapted adapted = adaptForLighting(device, pipeline, vertex, fragment);
@@ -146,6 +147,7 @@ public final class MetalRenderPipeline {
                     device.reportPointLightFallback(pipeline.getLocation().toString());
                 }
             }
+            if (coverage) fragment = net.metalmod.lighting.SpatialCoverageVariant.adaptVerified(fragment);
             MetalShaderCompiler.CompiledPair pair = compiler.compilePair(
                     pipeline.getVertexShader(), pipeline.getFragmentShader(), pipeline.getShaderDefines(),
                     variant,
@@ -271,6 +273,8 @@ public final class MetalRenderPipeline {
                             + pipeline.getLocation() + ": " + MetalNative.lastError());
                     return null;
                 }
+                MetalNative.msaaPipeline(pipe, coverage ? fs.fragmentBuffers().getOrDefault(
+                        net.metalmod.lighting.SpatialCoverageVariant.UNIFORM, -1) : -1);
                 return new MetalRenderPipeline(pipe, vlib, flib,
                         vs.vertexBuffers(), fs.fragmentBuffers(),
                         vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology,

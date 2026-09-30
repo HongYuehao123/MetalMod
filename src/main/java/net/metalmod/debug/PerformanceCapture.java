@@ -37,6 +37,14 @@ public final class PerformanceCapture {
     private static CaptureRoute route;
     private static CaptureRoutePlayer routePlayer;
     private static volatile String status = "F8: record performance (60s)";
+    // Opt-in unattended reproduction for camera-direction stalls. The normal F8 path is untouched.
+    private static final boolean TURN_PROBE = Boolean.getBoolean("metalmod.turnProbe");
+    private static final int TURN_PROBE_ROUTE_STAGE = Integer.getInteger("metalmod.turnProbeRouteStage", -1);
+    private static long turnProbeWorldReadyAt;
+    private static long turnProbeStartedAt;
+    private static boolean turnProbeTriggered;
+    private static boolean turnProbePlaced;
+    private static float turnProbeBaseYaw;
 
     private PerformanceCapture() {}
 
@@ -77,7 +85,7 @@ public final class PerformanceCapture {
             }
             prefix = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))
                     + "-" + backend.replaceAll("[^A-Za-z0-9_-]", "_");
-            route = CaptureRouteStore.load(minecraft);
+            route = TURN_PROBE ? null : CaptureRouteStore.load(minecraft);
             routePlayer = route == null ? null : new CaptureRoutePlayer(route);
             boolean prep = !"false".equalsIgnoreCase(System.getProperty("metalmod.capturePrep", "true"));
             metadata = "Backend: " + backend + "\nNative metrics: " + nativeEnabled
@@ -97,6 +105,8 @@ public final class PerformanceCapture {
                     + "\nRoute: " + (route == null
                             ? "none for this dimension (F7 records one); move manually"
                             : route.describe())
+                    + (TURN_PROBE ? "\nTurn probe: 10s still, 40s rotating at 120 degrees/s, 10s still" : "")
+                    + (TURN_PROBE_ROUTE_STAGE >= 0 ? "\nTurn probe route stage: " + TURN_PROBE_ROUTE_STAGE : "")
                     + "\nWorld prep: " + (route == null ? "n/a" : prep ? "on" : "off")
                     + (route == null ? "" : "\nKnown routes: " + CaptureRouteStore.describeAvailable(minecraft))
                     + "\nCapture limit: 60 seconds or 36000 frames"
@@ -127,6 +137,9 @@ public final class PerformanceCapture {
         // Route recording samples here too, so a route is sampled on exactly the frames a capture
         // would see rather than on some independent timer.
         CaptureRouteRecorder.sample(minecraft, now);
+        if (TURN_PROBE) {
+            updateTurnProbe(minecraft, now);
+        }
         if (recording == null) return;
         try {
             if (minecraft.level == null || minecraft.player == null) {
@@ -184,7 +197,9 @@ public final class PerformanceCapture {
             recording.put(PerformanceRecording.COL_GC_REPORTED_MS, delta(gcMillis, lastGcMillis));
             lastGcCount = gcCount;
             lastGcMillis = gcMillis;
-            if (routePlayer != null) {
+            if (TURN_PROBE) {
+                recording.put(PerformanceRecording.COL_ROUTE_STAGE, turnProbeStage(now));
+            } else if (routePlayer != null) {
                 routePlayer.tick(minecraft, now);
                 recording.put(PerformanceRecording.COL_ROUTE_STAGE, routePlayer.stage());
             } else {
@@ -203,6 +218,57 @@ public final class PerformanceCapture {
         } catch (RuntimeException error) {
             fail(minecraft, error);
         }
+    }
+
+    /** Run an unattended, reversible camera turn in a loaded local world for performance capture. */
+    private static void updateTurnProbe(Minecraft minecraft, long now) {
+        if (turnProbeTriggered) {
+            if (recording == null || startedAt == 0 || minecraft.player == null) return;
+            if (turnProbeStartedAt == 0) {
+                turnProbeStartedAt = now;
+                turnProbeBaseYaw = minecraft.player.getYRot();
+                System.out.println("[MetalMod] turn probe recording started at yaw " + turnProbeBaseYaw);
+            }
+            double elapsed = (now - turnProbeStartedAt) / 1e9;
+            double rotatingSeconds = Math.max(0.0, Math.min(40.0, elapsed - 10.0));
+            minecraft.player.setYRot((float) (turnProbeBaseYaw + rotatingSeconds * 120.0));
+            return;
+        }
+        if (minecraft.level == null || minecraft.player == null || minecraft.gui.screen() != null) {
+            turnProbeWorldReadyAt = 0;
+            return;
+        }
+        if (turnProbeWorldReadyAt == 0) {
+            turnProbeWorldReadyAt = now;
+            if (TURN_PROBE_ROUTE_STAGE >= 0 && !turnProbePlaced) {
+                CaptureRoute savedRoute = CaptureRouteStore.load(minecraft);
+                if (savedRoute != null && TURN_PROBE_ROUTE_STAGE < savedRoute.stageCount()) {
+                    CaptureRoute.Waypoint waypoint = savedRoute.waypoint(TURN_PROBE_ROUTE_STAGE);
+                    CaptureRoutePlayer.run(minecraft, "gamemode spectator");
+                    CaptureRoutePlayer.run(minecraft, String.format(java.util.Locale.ROOT,
+                            "execute in %s run tp @s %.3f %.3f %.3f %.2f %.2f",
+                            waypoint.dimension(), waypoint.x(), waypoint.y(), waypoint.z(),
+                            waypoint.yaw(), waypoint.pitch()));
+                    System.out.println("[MetalMod] turn probe placed at " + waypoint.describe());
+                } else {
+                    System.out.println("[MetalMod] turn probe route stage unavailable: "
+                            + TURN_PROBE_ROUTE_STAGE);
+                }
+                turnProbePlaced = true;
+            }
+        }
+        long settleNanos = TURN_PROBE_ROUTE_STAGE >= 0 ? 15_000_000_000L : 8_000_000_000L;
+        if (now - turnProbeWorldReadyAt >= settleNanos && !saving) {
+            turnProbeTriggered = true;
+            System.out.println("[MetalMod] turn probe armed; F8 capture starts after its countdown");
+            toggle(minecraft);
+        }
+    }
+
+    private static int turnProbeStage(long now) {
+        if (turnProbeStartedAt == 0) return -1;
+        double elapsed = (now - turnProbeStartedAt) / 1e9;
+        return elapsed < 10.0 ? 0 : elapsed < 50.0 ? 1 : 2;
     }
 
     /**

@@ -23,6 +23,8 @@ set(SOURCES
     src/metalmod_metal.mm
     src/metalmod_metalfx.mm
     src/metalmod_motion.mm
+    src/metalmod_msaa.mm
+    src/metalmod_aa.mm
 )
 
 add_library(metalmod SHARED ${SOURCES})

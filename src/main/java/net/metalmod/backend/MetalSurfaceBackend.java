@@ -8,8 +8,12 @@ import com.mojang.blaze3d.textures.GpuTextureView;
 import com.mojang.blaze3d.textures.GpuTexture;
 
 import java.lang.foreign.MemorySegment;
+import java.nio.IntBuffer;
 import java.util.Collection;
 import java.util.List;
+
+import org.lwjgl.glfw.GLFW;
+import org.lwjgl.system.MemoryStack;
 
 /**
  * Phase 3 surface: owns the CAMetalLayer attached to the game window.
@@ -26,6 +30,8 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     private final MetalDevice device;
     private final MemorySegment layer;
+    /** The GLFW window handle, kept only so the one-off resolution line can report the window's own sizes. */
+    private final long window;
 
     private boolean configured;
     private int width;
@@ -37,8 +43,13 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     private boolean firstPresentLogged;
 
     public MetalSurfaceBackend(MetalDevice device, MemorySegment layer) {
+        this(device, layer, 0L);
+    }
+
+    public MetalSurfaceBackend(MetalDevice device, MemorySegment layer, long window) {
         this.device = device;
         this.layer = layer;
+        this.window = window;
     }
 
     @Override
@@ -57,7 +68,49 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
         // this line the two are indistinguishable from outside.
         System.out.println("[MetalMod] surface configured " + this.width + "x" + this.height
                 + " | requested " + configuration.presentMode()
-                + " | CAMetalLayer displaySyncEnabled=" + (vsync ? "true (vsync)" : "false"));
+                + " | CAMetalLayer displaySyncEnabled=" + (vsync ? "true (vsync)" : "false")
+                + " | " + (MetalBackend.windowResolutionSynced()
+                        ? "logical resolution (Core Animation scales to the panel)"
+                        : "Retina backing resolution"));
+        logResolutions();
+    }
+
+    /**
+     * Print the window's sizes at each surface configuration, including fullscreen and window resizes.
+     *
+     * <p>Keep the physical Retina framebuffer separate from the drawable the engine requested. It is
+     * logged here rather than at window creation because GLFW's answers are only settled once the
+     * window exists and has been shown.
+     */
+    private void logResolutions() {
+        if (this.window == 0L) {
+            return;
+        }
+        // Separate one-element buffers rather than one buffer sliced by position: GLFW writes both
+        // ints, and passing a slice of the same allocation as the second out-param reads back wrong.
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer logicalWidthBuf = stack.mallocInt(1);
+            IntBuffer logicalHeightBuf = stack.mallocInt(1);
+            IntBuffer framebufferWidthBuf = stack.mallocInt(1);
+            IntBuffer framebufferHeightBuf = stack.mallocInt(1);
+            GLFW.glfwGetWindowSize(this.window, logicalWidthBuf, logicalHeightBuf);
+            GLFW.glfwGetFramebufferSize(this.window, framebufferWidthBuf, framebufferHeightBuf);
+            int logicalWidth = logicalWidthBuf.get(0);
+            int logicalHeight = logicalHeightBuf.get(0);
+            int framebufferWidth = framebufferWidthBuf.get(0);
+            int framebufferHeight = framebufferHeightBuf.get(0);
+            System.out.println("[MetalMod] window resolution: logical " + logicalWidth + "x" + logicalHeight
+                    + ", framebuffer " + framebufferWidth + "x" + framebufferHeight
+                    + ", Metal drawable " + this.width + "x" + this.height
+                    + ", backing scale " + (logicalWidth > 0
+                            ? String.format(java.util.Locale.ROOT, "%.2f", (double) framebufferWidth / logicalWidth)
+                            : "unknown")
+                    + (this.width == logicalWidth && this.height == logicalHeight
+                            ? " (drawable follows window resolution)"
+                            : this.width == framebufferWidth && this.height == framebufferHeight
+                                    ? " (drawable follows Retina backing)"
+                                    : " (drawable differs from both window and backing)"));
+        }
     }
 
     @Override
@@ -82,11 +135,8 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             throw new SurfaceException("CAMetalLayer nextDrawable returned nil");
         }
         this.drawable = drawable;
-        // The drawable the layer just handed back was on screen some frames ago, so its presentation
-        // time is set now - and this is the only moment it is safe to read, because the present path
-        // consumes the drawable and the layer owns it afterwards. Reading it there instead crashed the
-        // render thread.
-        MetalDevice.notePresent(((Number) result[3]).doubleValue());
+        // The presented handler records display time after this frame reaches the screen. Read its
+        // completed counters now, without touching a drawable after the present path consumes it.
         MetalDevice.pollPresentPacing();
     }
 

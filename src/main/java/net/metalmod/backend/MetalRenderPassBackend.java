@@ -258,6 +258,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             }
         }
         for (String name : this.pipeline.declaredBuffers()) {
+            // Native owns this tiny pass-state uniform and binds it with the pipeline.
+            if (net.metalmod.lighting.SpatialCoverageVariant.UNIFORM.equals(name)) continue;
             if (!this.uniforms.containsKey(name)) {
                 MetalDevice.reportUnboundBinding(this.pipelineName, "uniform buffer", name);
             }

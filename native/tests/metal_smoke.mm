@@ -16,6 +16,7 @@
 #include "metalmod/metalmod_metal.h"
 #include "metalmod/metalmod_metalfx.h"
 #include "metalmod/metalmod_motion.h"
+#include "metalmod/metalmod_aa.h"
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
 // on the Java side in one place.
@@ -123,7 +124,7 @@ static void test_surface(void) {
     double presentTime = 0.0;
     double presentInterval = 0.0;
     int rc = mmm_layer_acquire(layer, &drawable, &drawableTexture, &presentTime, &presentInterval);
-    check("acquire reports a presentation time (0 until the display has shown a frame)",
+    check("acquire leaves presentation timing to the displayed-frame callback",
           presentTime == 0.0 && presentInterval == 0.0, "");
     check("acquire drawable", rc == 0 && drawable != NULL && drawableTexture != NULL,
           rc != 0 ? "nextDrawable returned nil (expected without a display)" : "");
@@ -140,6 +141,10 @@ static void test_surface(void) {
         mmm_layer_present(layer, drawable);
         check("present drawable", true, "");
     }
+
+    double pacing[MMM_PRESENT_METRIC_COUNT] = {};
+    check("presentation metric ABI includes the last displayed interval",
+          mmm_present_read_reset(pacing, MMM_PRESENT_METRIC_COUNT) == MMM_PRESENT_METRIC_COUNT, "");
 
     mmm_queue_release(queue);
     mmm_layer_release(layer);
@@ -1706,6 +1711,52 @@ static void test_temporal_cost(void) {
     mmm_device_release(device);
 }
 
+static void test_world_aa(void) {
+    printf("\n== world FXAA ==\n");
+    void* device = mmm_device_create();
+    void* queue = mmm_queue_create(device);
+    constexpr int side = 32;
+    void* source = mmm_texture_create_full(device, 70, side, side, 1, 1, 2, true,
+            kUsageShaderRead | kUsageRenderTarget);
+    void* scratch = mmm_texture_create_full(device, 70, side, side, 1, 1, 2, true,
+            kUsageShaderRead | kUsageRenderTarget);
+    check("AA textures allocated", source != NULL && scratch != NULL, "");
+    if (source != NULL && scratch != NULL) {
+        unsigned char input[side * side * 4];
+        unsigned char output[side * side * 4];
+        for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
+            int at = (y * side + x) * 4;
+            unsigned char value = x + y < side - 1 ? 0 : 255;
+            input[at] = input[at + 1] = input[at + 2] = value;
+            input[at + 3] = 255;
+        }
+        check("AA source uploaded", mmm_texture_replace_region(source, 0, 0, 0, 0,
+                side, side, input, side * 4) == 0, "");
+        check("AA rejects in-place sampling", mmm_aa_run(device, queue, source, source) != 0, "");
+        check("AA pass submitted", mmm_aa_run(device, queue, source, scratch) == 0, "");
+        mmm_queue_synchronize(queue);
+        int rc = mmm_texture_read_region(source, 0, 0, 0, 0, side, side,
+                output, sizeof(output), side * 4);
+        check("AA output readable", rc == 0, "");
+        if (rc == 0) {
+            int blended = 0;
+            for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
+                unsigned char value = output[(y * side + x) * 4];
+                if (value > 0 && value < 255) blended++;
+            }
+            check("AA blends diagonal edge", blended > 0, "");
+            check("AA keeps flat corners and coverage",
+                    output[0] == 0 && output[3] == 255
+                    && output[(side * side - 1) * 4] == 255
+                    && output[(side * side - 1) * 4 + 3] == 255, "");
+        }
+    }
+    if (scratch != NULL) mmm_texture_release(scratch);
+    if (source != NULL) mmm_texture_release(source);
+    if (queue != NULL) mmm_queue_release(queue);
+    if (device != NULL) mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1731,6 +1782,7 @@ int main(void) {
         test_temporal_cost();
         test_metalfx_spatial();
         test_metalfx_temporal();
+        test_world_aa();
     }
     printf("\n==================================================\n");
     if (g_failures == 0) printf("ALL CHECKS PASSED\n");

@@ -61,11 +61,13 @@ public class MetalModUpscalingConfigScreen extends Screen {
     private double draftScale = RenderScaleSettings.renderScale();
     private String draftUpscaler = RenderScaleSettings.upscaler();
     private boolean draftNotice = RenderScaleSettings.showNotice();
+    private boolean draftAA = net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing;
 
     private Button scaleDownButton;
     private Button scaleUpButton;
     private Button upscalerCycleButton;
     private Button noticeButton;
+    private Button aaButton;
     private Button doneButton;
     private MultiLineTextWidget statusWidget;
 
@@ -106,7 +108,15 @@ public class MetalModUpscalingConfigScreen extends Screen {
                 b -> cycleUpscaler()).bounds(buttonX, y, 142, 20).build());
         y += ROW;
 
-        // 3. The in-world notice. On by default, and the reason this page can be checked without F3.
+        // 3. Full-resolution edge AA applies to the world even when render scale is 100%.
+        label(left, y, "World anti-aliasing");
+        this.aaButton = addRenderableWidget(Button.builder(Component.literal(""), b -> {
+            this.draftAA = !this.draftAA;
+            refresh();
+        }).bounds(buttonX, y, 142, 20).build());
+        y += ROW;
+
+        // 4. The in-world notice. On by default, and the reason this page can be checked without F3.
         label(left, y, "Show change notice");
         this.noticeButton = addRenderableWidget(Button.builder(Component.literal(""),
                 b -> {
@@ -184,7 +194,8 @@ public class MetalModUpscalingConfigScreen extends Screen {
 
     /** Whether the page is proposing anything at all, including the notice. */
     private boolean draftDiffers() {
-        return renderDraftDiffers() || this.draftNotice != RenderScaleSettings.showNotice();
+        return renderDraftDiffers() || this.draftNotice != RenderScaleSettings.showNotice()
+                || this.draftAA != net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing;
     }
 
     /**
@@ -200,6 +211,11 @@ public class MetalModUpscalingConfigScreen extends Screen {
         boolean renderChanged = false;
         if (this.draftNotice != RenderScaleSettings.showNotice()) {
             RenderScaleSettings.chooseNotice(this.draftNotice);
+        }
+        if (this.draftAA != net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing) {
+            net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing = this.draftAA;
+            net.metalmod.config.MetalConfig.INSTANCE.save();
+            renderChanged = true;
         }
         if (Math.abs(this.draftScale - RenderScaleSettings.renderScale()) > 1e-9) {
             RenderScaleSettings.chooseRenderScale(this.draftScale);
@@ -242,6 +258,10 @@ public class MetalModUpscalingConfigScreen extends Screen {
         if (this.noticeButton != null) {
             this.noticeButton.setMessage(Component.literal(this.draftNotice ? "ON" : "OFF"));
         }
+        if (this.aaButton != null) {
+            this.aaButton.setMessage(Component.literal(this.draftAA ? "FXAA ON" : "OFF"));
+            this.aaButton.active = System.getProperty("metalmod.postAA") == null;
+        }
         if (this.doneButton != null) {
             // Says what leaving does, because leaving is what applies.
             this.doneButton.setMessage(Component.literal(
@@ -270,13 +290,20 @@ public class MetalModUpscalingConfigScreen extends Screen {
         StringBuilder text = new StringBuilder();
         boolean metal = MetalDevice.active() != null;
         text.append("Renderer: ").append(metal ? "Metal" : "not Metal");
+        text.append("   World AA: ").append(!metal ? "requires Metal"
+                : net.metalmod.metalfx.WorldAntialiasing.enabled() ? "FXAA before HUD" : "off");
+        if (metal && net.metalmod.metalfx.WorldAntialiasing.enabled()
+                && !net.metalmod.metalfx.WorldAntialiasing.lastError().isEmpty()) {
+            text.append(" (").append(net.metalmod.metalfx.WorldAntialiasing.lastError())
+                    .append(")");
+        }
 
         boolean pending = renderDraftDiffers();
         if (pending) {
             text.append("   Pending: ").append(describeDraft())
                     .append(" - applied when you leave this page, by Done or Esc.");
         } else if (draftDiffers()) {
-            text.append("   Pending: the change notice - applied when you leave this page.");
+            text.append("   Pending: AA or change notice - applied when you leave this page.");
         }
 
         if (!RenderScaleSettings.active()) {
@@ -323,6 +350,11 @@ public class MetalModUpscalingConfigScreen extends Screen {
         // Temporal's own answers, from the effect that is running rather than from the draft.
         if (WorldRenderTarget.temporalActive()) {
             text.append("   Temporal: ").append(SceneMotion.summary());
+            int[] temporalOutput = WorldRenderTarget.temporalOutputSize();
+            if (temporalOutput != null) {
+                text.append("   Temporal output: ").append(temporalOutput[0]).append("x")
+                        .append(temporalOutput[1]).append("; Spatial finishes the native image.");
+            }
         } else if (WorldRenderTarget.temporalRequested()
                 && !WorldRenderTarget.temporalFallbackReason().isEmpty()) {
             text.append("   Temporal: unavailable - ")

@@ -5,6 +5,14 @@ How to build, verify, and check the Metal backend. `HANDOFF.md` is the current s
 
 ---
 
+Cleanup regressions (2026-09-29): after the canonical build, run
+`bash tools/jitter_check/run.sh` for the 64 depth/phase displacement cases, bob/portal removal and
+mode-plan checks. `tools/scaling_check/run.sh` now reports 124 passing assertions, adding eight
+replacement/retirement cycles, Off at a remembered 75% scale, and final-world teardown. Existing
+GPU/mixin gates remain required. These tests do not establish in-game image quality or resize UX.
+
+---
+
 ## 1. Build and install
 
 ```bash
@@ -22,15 +30,24 @@ Config lives at `$INST/config/metalmod.properties`. The current fields are:
 enableUnifiedMemoryPool=false
 enableMemoryPressureHandler=true
 preferMetalBackend=true
+syncWindowResolution=true
+postAntialiasing=false
 ```
 
 `preferMetalBackend=true` (or `-Dmetalmod.metalBackend=true`) makes `PreferredGraphicsApiMixin`
 prepend the Metal backend. It is chosen once at startup, so restart after changing it. With it off,
 normal play uses Vulkan/OpenGL.
+`syncWindowResolution=true` is the default lower-cost 2K drawable. Set it to `false` to compare
+against the Retina framebuffer used by the unmodified game and earlier MetalMod native builds;
+this is a startup choice. The 2K native image quality gap is tracked in BUG-040.
+`postAntialiasing=true` optionally runs world-only FXAA at the final output resolution, including
+when render scale is 100%. It is off by default because it softened the 2K image without restoring
+the lost samples. The Upscaling screen can toggle it live; `-Dmetalmod.postAA=true` overrides the
+saved value for an A/B run. HUD and text are drawn afterward.
 
 ## 2. Offline gates (no game required)
 
-Run all five; they are the cheap, deterministic checks.
+Run all seven; they are the cheap, deterministic checks.
 
 | Command | Pass condition |
 |---|---|
@@ -38,8 +55,8 @@ Run all five; they are the cheap, deterministic checks.
 | `./native/build/metalmod_smoke` (or `./scripts/run_smoke.sh`) | `ALL CHECKS PASSED` |
 | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics |
 | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (173 assertions) |
-| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (91 assertions) |
-| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks) |
+| `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (95 assertions) |
+| `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (80 checks) |
 | `net.metalmod.StandaloneTestRunner` | `ALL TESTS PASSED SUCCESSFULLY!` |
 
 The standalone runner needs the client classpath; `build_mod.sh` prints the exact command. The
@@ -59,15 +76,63 @@ The last two were added in Phase 7 and are worth knowing about:
   and pushed blocks), the reset lifecycle, and the effect's offscreen cost against the spatial path
   at the same sizes.
 - **`mixin_check`** resolves every mixin's target class, `@Inject`/`@Redirect` method, `@Shadow` member
-  and `@At` descriptor against the real client jar, without launching. `defaultRequire: 0` means a hook
+  and `@At` descriptor against the real client jar and GLFW library jar, without launching. `defaultRequire: 0` means a hook
   that names a method the client no longer has fails *quietly* - the feature it drives simply does
   nothing - so this is the cheap guard against the class of defect that has cost this project the most
   time. It cannot prove an injection applies, only that everything it names exists.
 
+### 2.1 Retina fullscreen resolution check
+
+After installing the new jar and restarting the Metal test instance, select the 2560x1440 fullscreen
+mode and leave **Retina Resolution** off for the default 2K test. Check `logs/latest.log`:
+`window resolution` should show a roughly 2560-wide logical window and Metal drawable, with a
+5120-wide physical framebuffer. Compare native Metal against the unmodified backend at the same
+viewpoint with FXAA off. Then use `-Dmetalmod.syncWindowResolution=false` after a restart for the
+5K Retina comparison; verify the drawable is roughly 5120 wide and inspect edges and foliage as
+well as FPS. Toggle fullscreen,
+resize in windowed mode, then return to fullscreen; check the sizes again and look for a stretched
+picture, shifted HUD, clipped scissor region or stale temporal history. Compare F8 captures of
+Spatial and Temporal at one spot under each output resolution that meets the frame budget.
+The fullscreen drawable height can be less than 1440 if macOS gives the window less vertical space;
+use the reported logical window height as the expected target height.
+
+### 2.2 Fast movement pacing check
+
+In the Metal test world at 2560x1440, VSync on, note the display refresh rate, the **in-world**
+`engine limit` in `latest.log`, and the F3 `pacing` line. On a 60 Hz display, VSync provides the
+effective 60 fps ceiling even when the engine limit is higher. The F3 line should now report nonzero
+intervals from drawable presentation callbacks. The reported drop occurs while turning around
+within a small area: first capture a stationary view, then turn in place through the same arc.
+Compare 50% Temporal with 50% Spatial at the same view and VSync setting. For the long frames in
+`debug/metalmod/.../frames.csv`, compare `draws`, `buffer_upload_bytes`, `texture_upload_bytes`,
+`fence_wait_ns`, `queue_wait_ns`, `drawable_wait_ns`, `pipeline_compiles` and GC columns. If turning
+in place produces 33 ms intervals without upload spikes, take a Metal GPU trace to separate scene
+rendering from draw submission and VSync pacing. Keep the cap, VSync, render distance, camera arc
+and render scale identical between Temporal and Spatial runs.
+
+For an unattended turn at a known position, launch the game with
+`-Dmetalmod.turnProbe=true`. Once a world is loaded and settled, the mod starts one F8 capture:
+10 seconds facing still, 40 seconds turning at 120 degrees per second, then 10 seconds still.
+The CSV's `route_stage` is 0, 1 or 2 for those three periods. Use
+`-Dmetalmod.turnProbeRouteStage=N` only in a **cloned test world** to teleport to waypoint N of
+the saved F7 route and enter spectator mode before the capture. The clone keeps the player's
+position and game mode changes out of the original save. The ten-second log line now includes
+`presented`, last and p95 display interval, and cumulative dropped refreshes; a nonzero
+`presented` count confirms the drawable callback is running.
+
+The 2026-09-26 cloned cave comparison at route stage 13 found 85% Temporal at 56.1 fps while
+turning and 51.3 fps in the final view, versus 59.8 and 59.7 fps for Spatial at the same scale.
+The Temporal pacing guard now switches to Spatial after at least 15 missed refreshes in a
+ten-second window with 300 or more presented frames and at least a 2.5% miss share. The fallback
+reason appears on F3 and in the log; the scale and output resolution do not change. Leaving the
+world or changing the requested configuration re-arms Temporal. For an A/B of the guard itself,
+launch with `-Dmetalmod.temporalPacingGuard=false`. In the live guard run, the three settled
+ten-second Spatial samples after fallback were 59.7–59.9 fps.
+
 Useful one-off: print the generated MSL for a shader pair, or all of them, by adding
 `-Dmetalmod.dumpMsl=<substring>` (or `=all`).
 
-### 2.1 Phase 6 lighting switches
+### 2.3 Phase 6 lighting switches
 
 Every lighting path is a JVM opt-in, so the default Vulkan path and the plain Metal path do no extra
 work at all. The lit variants are only built for the three vanilla terrain pipelines after both
@@ -693,7 +758,8 @@ counters usually say which part disagreed.
 
 ## 6. Phase 7 render scaling and upscaling
 
-Phase 7 has no in-game confirmation yet - neither 7A nor 7B. This section is what closes it: the
+Historical live performance runs exist for both 7A and 7B. The current cleanup needs a 2K
+in-game acceptance pass; neither phase has final visual sign-off. This section covers the
 wiring check, the visual checks, the temporal checks the motion producer makes possible, and the
 native-versus-scaled measurement the roadmap's exit criterion asks for. Nothing here needs code
 changes.
@@ -777,6 +843,13 @@ At 50% the terrain is genuinely softer - that is the trade, not a defect. What i
 
 ### D. Temporal (Phase 7B)
 
+At a 2560x1440, 60 Hz output, use 67% world scale for the measured M4 Pro performance route.
+F3 should show a 1715x965 world, a 1715x965 Temporal stage, and a Spatial finish to native. The
+status page reports the same stage sizes. The dense cave route's VSync-on reference is 59.3 fps
+while turning and 59.8 fps in the final view, with about 19,900 draws per frame. The offline
+scaling check verifies both the stage dimensions and the final native pixels. A diagnostic
+`-Dmetalmod.temporalOutputScale=1.0` restores direct Temporal output for an A/B run.
+
 Select `MetalFX temporal` at 50% and work through the checks that separate a motion source from a
 scaler that is merely running. The motion field covers the camera and static geometry, so the
 expected results are specific:
@@ -815,6 +888,17 @@ expected results are specific:
     and the F3 `frame` line's cost. The motion pass is a full-resolution read of the depth buffer plus one instanced draw
     per moving object, and neither has been timed in a scene; the number is the point of the
     comparison.
+
+### World FXAA visual check
+
+On **Options → MetalMod… → MetalFX Upscaling**, toggle **World anti-aliasing** and leave the page to
+apply it. First use 100% render scale and inspect a high-contrast diagonal block edge while still;
+the edge should look smoother with FXAA and the HUD text should remain unchanged. Repeat at 67%
+with Spatial and Temporal, then turn the camera around foliage and thin fences. Look for softened
+texture detail or remaining shimmer as well as improved edge stair steps. F3 should report
+`world AA FXAA` with a rising frame count. Compare F8 frame p95 with the toggle on and off on the
+same saved route. The synthetic diagonal, flat-color, alpha and native-scale checks are in the
+native smoke and scaling gates; they do not replace this visual judgement.
 
 ### D. The measured comparison
 

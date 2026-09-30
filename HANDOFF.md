@@ -51,36 +51,177 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | **7A done** (verified offline and in game); **7B implemented and measured** (camera reprojection **plus per-object stamps for entities, particles and pushed blocks**, live encode, resets; verified offline, and costs ~5.6 ms over spatial at 50%/5K - [why](docs/temporal-performance.md)); 7C not started |
+| 7 — MetalFX | **7A/7B implemented, offline gates pass; final acceptance pending.** Historical live performance measured; current cleanup still needs 2K visual/resize/reset validation. [Completion review](docs/phase7-completion-review.md). 7C not started |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
-## Temporal cost is settled (2026-09-26)
+## Temporal cost is measured and GPU work attributed (2026-09-26)
+
+**2026-09-29 native image regression (BUG-040):** The player reports the unmodified game and
+earlier MetalMod native builds looked clean, while the newer native 2K image is aliased even with
+FXAA. Resolution sync changed the 2560x1440 fullscreen window from a 5120x2880 Retina main target
+and drawable to 2560x1440; this removed four source samples per output pixel. At the same surface
+coordinates, a cloned Metal run with Retina sync disabled confirmed a 5120x2880 drawable and held
+59.6–60.0 fps in settled ten-second samples with FXAA off. Targeted window capture was denied by
+macOS, so visual parity remains unverified. At the user's request, 2K remains the default drawable
+and Retina 5K remains a restart-required quality option. Post-FXAA stays off by default because
+it did not restore the missing samples. The 2K native image quality gap remains open; the
+resolution difference is a strong candidate but has not been isolated as the only cause.
+The 5K Temporal budget in dense scenes is still a separate constraint.
+After restoring the 2K default, the real test instance's other current choices were preserved:
+85% world scale, Temporal requested, and post-FXAA off. The verified JAR is installed and all
+seven offline gates pass.
+
+**2026-09-29 image-quality follow-up:** A player screenshot at 75% world scale showed
+1920x1080 -> 2560x1440 Spatial, even though Temporal was requested. The guard had latched after
+missed refreshes, and the game's next Spatial samples also missed many refreshes. The guard now
+checks Spatial for ten seconds: if Spatial also misses the same threshold, it restores Temporal
+and leaves the guard suppressed for that world/configuration; if Spatial holds cadence, it keeps
+the performance fallback. FXAA's edge threshold, search reach and blend were made more conservative
+to retain distant foliage detail. Full-size or 90%-size Temporal output at 75% input lost cadence
+in the dense cave (about 55–57 fps in the later settled samples), so the two-stage default remains.
+All seven offline gates pass. In the live cloned cave, the guard switched at 57.9 fps, after which
+Spatial held 59.7–60.0 fps with only one further missed refresh in 30 seconds. The requested 75% world scale
+still limits source detail, irrespective of post-AA. The verified JAR was installed in the real
+MetalMod test instance. Its saved render scale was restored from 0.75 to 1.0 for that launch:
+the player's prior surface log showed native 2560x1440 near 60 fps, and this removes the 1080p
+world source visible in the screenshot. At the screenshot's coordinates, the cloned native-size
+surface view held 59.5–60.0 fps after loading, with one 58.2 fps movement interval. The window
+then became iconified and its later 10 fps background samples were discarded. See BUG-039.
+
+**2026-09-29 world AA:** A full-resolution FXAA pass now runs after the completed world image
+(native, Spatial, or Temporal plus Spatial) and before the HUD. It was initially on by default,
+but is now off by default after BUG-040. It has a live toggle on the Upscaling screen plus
+`-Dmetalmod.postAA=true` for comparison. Native smoke verifies
+edge blending and flat-region preservation; the scaling gate verifies the native-size path and off
+switch. At the 2560x1440 dense cave route with VSync on, AA on averaged 58.6 fps during the turn
+and 59.7 fps in the final view; the AA-off control averaged 58.9 and 59.8 fps. A 100% render-scale
+live run confirmed the FXAA pass at 2560x1440. All seven offline gates pass. Player judgement of
+fine-detail softness and shimmer remains open; window capture did not produce an image on this host.
+
+**2026-09-29 fix:** Temporal now reconstructs at the world render size, with a Spatial pass
+finishing the 2560x1440 output. The performance run used 67% world scale (1715x965); the user
+later changed the test instance to 100%/Spatial, which the AA installation preserved.
+In the cloned cave with VSync on, the dense-view result improved from 51.9 fps at the former 85%
+direct Temporal configuration to 59.8 fps, with a 18.14 ms p95. At the same 67% source resolution,
+direct Temporal was 59.4 fps with a 19.76 ms p95. All seven offline gates and the final live
+route pass. The pacing guard remains for scenes that still exceed the display budget. The change
+trades source detail for frame time while keeping the output and HUD at 2K. Full measurements:
+[docs/temporal-performance.md](docs/temporal-performance.md).
+
+**Fast movement / 60 Hz follow-up:** At 2560x1440 output in a cloned dense cave, 85% Temporal
+averaged 56.1 fps while turning and 51.3 fps facing the densest view; matched 85% Spatial held
+59.8 and 59.7 fps. Draw counts were comparable. A 70% Temporal control still fell to 55.1 fps in
+the dense final view. The corrected drawable presentation callback is live and reports 16.7/33.3 ms
+intervals. A new guard switches Temporal to Spatial at the same resolution/scale after sustained
+display misses; the live follow-up switched during the turn and then held 59.7–59.9 fps for three
+ten-second samples. Seven offline gates and the live run pass. This mitigates the stutter while
+BUG-035 remains open for Temporal cost reduction. See BUG-037.
+
+**2026-09-29 dense-cave repeat:** With VSync confirmed on in both F8 summaries, Temporal at
+2176x1224 -> 2560x1440 averaged **57.1 fps** while turning and **51.9 fps** in the final view;
+matched Spatial held **59.9** and **60.0 fps** at nearly equal draw counts. Separate Metal traces
+put Temporal preprocessing/middle/postprocessing at median **0.706/1.343/0.819 ms**, versus
+Spatial scale/sharpen at **0.280/0.085 ms**; motion reprojection was **0.050 ms**. This isolates
+about **2.5 ms of additional MetalFX GPU work** at the 2K output. Instruments disturbed later
+frame rates, so the unprofiled F8 captures are used for pacing. See the new 2K section of
+[docs/temporal-performance.md](docs/temporal-performance.md). This led to the two-stage 2K path
+and live frame-time comparison recorded above; visual quality still needs a player evaluation.
+
+A second clean pair with VSync **off** found, in the same final cave view, Spatial at
+**15.03 ms / 66.5 fps** and Temporal at **17.27 ms / 57.9 fps** with essentially identical
+19,880-draw workloads. Spatial had 1.64 ms of 60 Hz headroom; Temporal added 2.24 ms, crossing
+the 16.67 ms budget even before VSync. With VSync on it reached 51.9 fps as display refreshes
+were missed. The no-VSync Spatial value also matches the user's reported 60–70 fps. The three
+MetalFX Temporal stages explain the incremental cost. See the full
+four-run table in [docs/temporal-performance.md](docs/temporal-performance.md).
+
+**Unattended turn probe, same day:** The game was started from HMCL's recorded command with
+`--quickPlaySingleplayer` and an opt-in `-Dmetalmod.turnProbe=true` capture. At the saved viewpoint,
+50% and 85% Temporal turned at 120 degrees/s while holding about 59–60 fps. A cloned world at the
+recorded cave route's densest point also held roughly 59 fps while turning through 18,000–20,700
+draws. The 50% surface Metal trace put the three Temporal stages around 2 ms in total. Moving the
+same probe to 85% in the dense cave reproduced the frame-budget failure.
+
+**Retina resolution fix implemented and its 2K output verified in game.** The test instance requests a
+2560x1440 fullscreen mode, while the 5K display was giving Minecraft a 5120-wide framebuffer and
+MetalFX a 5K output. The Metal backend now latches a **Retina Resolution** choice at window
+creation and uses the GLFW window dimensions for Minecraft's cached framebuffer size, its resize
+callback and its surface configuration. The CAMetalLayer drawable therefore follows that effective
+size. The setting stays on by default at the user's request and needs a restart;
+`-Dmetalmod.syncWindowResolution=false` selects Retina-sized targets for comparison. All seven
+offline gates pass; the cloned game run
+reported a 2560-wide MetalFX output. Fullscreen/windowed resize and HUD alignment still need a
+direct visual pass. See BUG-036.
 
 **MetalFX temporal costs about 5.6 ms a frame more than spatial** at 50% scale on a 5120-wide output,
-and the cost is the temporal filter, not this project's motion pass - the motion dispatch is about
-**0.3 ms** of it. Measured two ways that agree: offscreen through the scaling check (spatial 1.64 ms
+and removing this project's motion pass saves about **0.3 ms**. Measured two ways that agree: offscreen through the scaling check (spatial 1.64 ms
 against temporal 7.26 ms, 40 iterations with the queue drained, uniform rather than spiky) and in game
 at one hilltop with F6 (12.7 ms / 91 fps against 17.3 ms / 58 fps, matching draw counts).
 
-The earlier 2.7 ms reading was never a floor: an isolated timing passes a **constant jitter**, and the
-temporal filter shortcuts when the history does not need resampling. A real frame advances the jitter
-phase every frame, which is the filter's actual work. The `temporal pass gpu` F3 line is therefore a
-split between the two passes, not a price for the mode; the F3 head line is the number that answers
-what the mode costs.
+The earlier 2.7 ms scaler GPU span captured only MetalFX's middle stage. A live 5K Metal System
+Trace showed median **1.69 ms preprocessing + 2.81 ms main + 2.56 ms postprocessing**; the three
+stages total about 7.06 ms, consistent with the full-path cost. Pre/post have MetalFX-owned
+command-buffer labels outside the caller's buffer. The spatial trace showed 0.401 ms scaling and
+0.099 ms sharpening. In separate, settled 5K game launches, temporal logged 19.4-19.8 ms and spatial
+12.9-13.7 ms at similar draw counts, excluding the later AFK cap. The previous jitter-shortcut theory
+was disproved by a fixed-phase A/B (7.087 against 7.059 ms). F3's temporal GPU span remains partial.
 
-Six hypotheses were tested. Four were falsified (the depth read, one command buffer against two, the
-motion texture's storage mode, the engine targets' storage mode) and **two were real defects now
+An independent resolution sweep found that both input and output pixels contribute. At essentially
+the same 2560x1332 input, the three temporal stages fell from **7.06 ms at 5120x2664 output** to
+**4.64 ms at 3840x1998** and **3.77 ms at 3200x1666**. At fixed 5K output, raising input from
+2560x1332 to 4096x2131 raised them to **9.46 ms**. This supports the next implementation experiment:
+temporal to a 3200- or 3840-wide intermediate, then spatial to 5K. The traces predict a 2-3 ms saving
+after the roughly 0.5 ms spatial pass, but the full two-stage chain and image quality are not measured.
+
+Seven hypotheses were tested. Five were falsified (the depth read, one command buffer against two, the
+motion texture's storage mode, the engine targets' storage mode, advancing jitter) and **two were real defects now
 fixed**: the scaler's content region was never set, and it was being built asynchronously, so it ran
-its interim upscaler. There is no knob on the temporal filter, so the mode is a **quality mode with a
+its interim upscaler. There is no exposed knob on the temporal filter, so the mode is currently a **quality mode with a
 measurable price**; spatial stays the default and the settings page and F6 label the trade. Full
-record, limits and reproduce steps: [docs/temporal-performance.md](docs/temporal-performance.md);
+record, resolution sweep, limits and reproduce steps: [docs/temporal-performance.md](docs/temporal-performance.md);
 defect entry: BUG-035.
 
 ## Agreed next priority
 
-**Judge Temporal's picture.** 7B runs end to end with both halves of the motion field - a native
+**User priority, 2026-09-29: fix Spatial distant-forest quality first (BUG-044).** The user reports
+unbearable far-forest aliasing that FXAA does not solve. Spatial is quality-blocked, rather than merely
+awaiting an optional preference check. Temporal is reported near native with blurred edges remaining;
+that is secondary, and its cause is not yet attributed to MetalFX itself. Keep 2K output. First isolate
+the world input, Spatial output and optional AA on a matched forest view; investigate cutout sampling,
+mip/LOD/coverage and source resolution based on that evidence. No new 5K Temporal test is needed.
+The report does not identify the exact build/scale, so current-cleanup validation remains pending.
+
+**2026-09-29 authorized cleanup implemented, verified offline:** `UpscalingPlan` snapshots output/
+world sizes and requested effect at extraction, before capability selection and jitter. Off now
+renders the world directly at output resolution while remembering the user's scale. Jitter application
+and motion removal share homogeneous clip-space helpers; the 64 depth/phase cases and bob/portal
+composition regression pass. External world/intermediate targets are explicitly owned and retired
+until a subsequent frame boundary plus GPU drain, then destroyed; teardown frees the final generation.
+Pacing observations are separated from capability checks. Temporal diagnostic launch flags and the
+unconfirmed BUG-029 reload workaround are isolated into dedicated helpers. History resets survive
+failed encoding, and explicit configuration changes clear the Temporal failure latch.
+All seven gates pass; scaling now has 124 passing assertions, including repeated target retirement,
+Off mode and teardown. The 2K default, optional post-FXAA and current Temporal-at-world-size/Spatial
+finish remain. No play-instance JAR was installed and no live visual quality claim is made.
+Next: in-game resize/toggle and image-quality evaluation at 2K; BUG-040 remains open.
+
+**Cleanup proposal, analysis only:** The user requested reconstruction of the existing code before
+implementation. [Proposal](docs/upscaling-cleanup-proposal.md) records current frame ordering,
+fix dispositions, a 2K architecture and staged tests. Source tracing also found that Off below 100%
+still executes Spatial; real client bytecode separates imported external resources from pooled
+internal resources, so the indefinite target-retention rationale requires correction. Rendering
+changes remain deferred; no runtime installation or new live run occurred in this analysis.
+
+**2026-09-29 read-only rendering audit:** Native at 100% still follows the default logical-size
+resolution override, so it is not a matched-resolution vanilla comparison. A new CPU projection
+test also confirms BUG-041: Temporal jitter is a view-space translation rather than a fixed
+clip-space displacement (64/64 cases fail; independent control passes). All seven existing offline
+gates were rerun and pass with host GPU access. Render code and installed runtime were left unchanged.
+See [quality audit](docs/upscaling-quality-audit.md) for the controlled visual comparison plan.
+
+**Earlier priority, superseded by Spatial quality above: judge Temporal's picture.** 7B runs end to end with both halves of the motion field - a native
 camera-reprojection kernel over the level depth, and a per-object overlay that stamps entities,
 particles and pushed blocks with their own previous positions (the engine interpolates all three every
 frame, so the information was already there) - and its cost is now known and explained. What remains
@@ -102,7 +243,7 @@ final verdict per gate, the carried-forward evidence items and the limits, and
 [docs/lighting-abi.md](docs/lighting-abi.md) for the published light-record contract that Phase 8
 builds on. `TESTING.md` §5.6 is the final-test checklist.
 
-Phase 7 (MetalFX) is **7A done, 7B implemented and measured, 7C not started**; see
+Phase 7 (MetalFX) is **7A/7B implemented and measured, final acceptance pending; 7C not started**; see
 [docs/phase7-plan.md](docs/phase7-plan.md) for the per-increment record, the integration contract,
 the defects the work found, and the in-game observations that close 7A. What that means in
 a session: **Options → MetalMod… → MetalFX Upscaling** steps the render scale and cycles the

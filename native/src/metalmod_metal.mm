@@ -7,6 +7,7 @@
 
 #include "metalmod/metalmod_metal.h"
 #include "metalmod/metalmod_metalfx.h"
+#include "metalmod/metalmod_msaa.h"
 
 #include <string.h>
 #include <chrono>
@@ -366,6 +367,7 @@ void* mmm_texture_create(void* device, int64_t pixelFormat, int32_t width, int32
 void mmm_texture_release(void* texture) {
     if (texture == NULL) return;
     @autoreleasepool {
+        mmm_msaa_forget((__bridge id<MTLTexture>)texture);
         id<MTLTexture> released = (__bridge_transfer id<MTLTexture>)texture;
         (void)released;
     }
@@ -449,6 +451,7 @@ int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
                                const void* data, size_t bytesPerRow) {
     MMMCaptureTimer timer(MMM_CAPTURE_UPLOAD_API_NS);
     id<MTLTexture> tex = mmm_texture(texture);
+    mmm_msaa_written(tex);
     if (tex == nil || data == NULL || width <= 0 || height <= 0) return -1;
     if (tex.storageMode == MTLStorageModePrivate) return -2;  // not CPU-writable
 
@@ -670,6 +673,9 @@ void mmm_library_release(void* library) {
 // A pipeline plus the depth-stencil state it must be used with (Metal keeps them separate).
 typedef struct MMMPipeline {
     void* pipelineState;
+    void* msaaState;
+    void* descriptor;
+    int32_t coverageBufferIndex;
     void* depthStencilState;
     int32_t topology;
     int32_t cullMode;
@@ -769,6 +775,8 @@ void* mmm_render_pipeline_create(
         MMMPipeline* pipeline = (MMMPipeline*)calloc(1, sizeof(MMMPipeline));
         if (pipeline == NULL) return NULL;
         pipeline->pipelineState = (__bridge_retained void*)state;
+        pipeline->descriptor = (__bridge_retained void*)descriptor;
+        pipeline->coverageBufferIndex = -1;
         pipeline->depthStencilState = depthState != nil ? (__bridge_retained void*)depthState : NULL;
         pipeline->topology = topology;
         pipeline->cullMode = cullMode;
@@ -787,12 +795,26 @@ void mmm_render_pipeline_release(void* pipeline) {
             id<MTLRenderPipelineState> released = (__bridge_transfer id<MTLRenderPipelineState>)metalPipeline->pipelineState;
             (void)released;
         }
+        if (metalPipeline->msaaState) {
+            id released = (__bridge_transfer id)metalPipeline->msaaState; (void)released;
+        }
+        if (metalPipeline->descriptor) {
+            id released = (__bridge_transfer id)metalPipeline->descriptor; (void)released;
+        }
         if (metalPipeline->depthStencilState) {
             id<MTLDepthStencilState> released = (__bridge_transfer id<MTLDepthStencilState>)metalPipeline->depthStencilState;
             (void)released;
         }
     }
     free(metalPipeline);
+}
+
+// Coverage buffer index is obtained from SPIRV-Cross reflection, never guessed.
+int32_t mmm_msaa_pipeline(void* handle, int32_t coverageBufferIndex) {
+    MMMPipeline* p = (MMMPipeline*)handle;
+    if (!p) return -1;
+    p->coverageBufferIndex = coverageBufferIndex;
+    return 0;
 }
 
 void* mmm_render_pass_begin(void* commandBuffer, int32_t colorCount, void* const* colorTextures,
@@ -831,8 +853,14 @@ void* mmm_render_pass_begin(void* commandBuffer, int32_t colorCount, void* const
             }
         }
 
+        bool multisampled = mmm_msaa_prepare(buffer, descriptor);
+        if (!multisampled) {
+            for (int32_t i = 0; i < colorCount && i < 8; i++) mmm_msaa_written(descriptor.colorAttachments[i].texture);
+            mmm_msaa_written(depth);
+        }
         id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(buffer, descriptor);
         if (encoder == nil) return NULL;
+        mmm_msaa_tag(encoder, multisampled);
         [encoder setViewport:(MTLViewport){0.0, 0.0, (double)width, (double)height, 0.0, 1.0}];
         [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
         return (__bridge_retained void*)encoder;
@@ -854,8 +882,29 @@ void mmm_render_pass_set_pipeline(void* encoder, void* pipeline) {
     MMMPipeline* metalPipeline = (MMMPipeline*)pipeline;
     if (metalEncoder == nil || metalPipeline == NULL) return;
     @autoreleasepool {
+        bool multisampled = mmm_msaa_encoder(metalEncoder);
+        if (multisampled && !metalPipeline->msaaState) {
+            MTLRenderPipelineDescriptor* descriptor = [(__bridge MTLRenderPipelineDescriptor*)metalPipeline->descriptor copy];
+            descriptor.rasterSampleCount = 4;
+            descriptor.alphaToCoverageEnabled = metalPipeline->coverageBufferIndex >= 0;
+            descriptor.alphaToOneEnabled = metalPipeline->coverageBufferIndex >= 0;
+            NSError* error = nil;
+            id<MTLRenderPipelineState> state = [descriptor.vertexFunction.device
+                newRenderPipelineStateWithDescriptor:descriptor error:&error];
+            if (!state) {
+                mmm_set_last_error([NSString stringWithFormat:@"MSAA pipeline: %@", error]);
+                NSLog(@"[MetalMod] MSAA pipeline: %@", error);
+                return;
+            }
+            metalPipeline->msaaState = (__bridge_retained void*)state;
+        }
         if (metalPipeline->pipelineState) {
-            [metalEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)metalPipeline->pipelineState];
+            [metalEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)(multisampled
+                ? metalPipeline->msaaState : metalPipeline->pipelineState)];
+        }
+        if (metalPipeline->coverageBufferIndex >= 0) {
+            float coverage[4] = {multisampled ? 1.0f : 0.0f, 0, 0, 0};
+            [metalEncoder setFragmentBytes:coverage length:sizeof(coverage) atIndex:metalPipeline->coverageBufferIndex];
         }
         id<MTLDepthStencilState> depthState = metalPipeline->depthStencilState
                 ? (__bridge id<MTLDepthStencilState>)metalPipeline->depthStencilState
@@ -1061,6 +1110,8 @@ int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     id<MTLTexture> color = mmm_texture(colorTexture);
     id<MTLTexture> depth = mmm_texture(depthTexture);
+    if (hasColor) mmm_msaa_written(color);
+    if (hasDepth) mmm_msaa_written(depth);
     if (metalQueue == nil) return -1;
     if (!hasColor && !hasDepth) return 0;
 
@@ -1194,6 +1245,8 @@ int mmm_clear_textures_region(void* queue, void* colorTexture, bool hasColor,
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     id<MTLTexture> color = mmm_texture(colorTexture);
     id<MTLTexture> depth = mmm_texture(depthTexture);
+    if (hasColor) mmm_msaa_written(color);
+    if (hasDepth) mmm_msaa_written(depth);
     if (metalQueue == nil) return -1;
     if (!hasColor && !hasDepth) return 0;
     if (width <= 0 || height <= 0) return 0;
@@ -1255,6 +1308,7 @@ int mmm_copy_texture_to_texture(void* queue, void* source, int32_t sourceSlice,
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
     id<MTLTexture> src = mmm_texture(source);
     id<MTLTexture> dst = mmm_texture(target);
+    mmm_msaa_written(dst);
     if (metalQueue == nil || src == nil || dst == nil) return -1;
     if (width <= 0 || height <= 0 || depth <= 0) return -2;
 
@@ -1436,11 +1490,7 @@ int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture,
         // The texture is owned by the drawable; hand it out borrowed.
         *outDrawable = (__bridge_retained void*)drawable;
         *outTexture = (__bridge void*)drawable.texture;
-        // Pacing, for the Phase 7C pacer: this drawable was presented some frames ago, so its
-        // presentation time is set now - and this is the only moment it is safe to read, because the
-        // present path consumes the drawable and the layer owns it from then on.
-        double presentTime = mmm_present_time(*outTexture, outPresentInterval);
-        if (outPresentTime != NULL) *outPresentTime = presentTime;
+        // Pacing is sampled by the drawable's presented handler after the display shows this frame.
     }
     return 0;
 }
@@ -1461,6 +1511,9 @@ void mmm_layer_present(void* layer, void* drawable) {
         }
         id<MTLCommandBuffer> presentBuffer = mmm_make_command_buffer(g_PresentQueue);
         presentBuffer.label = @"MetalMod present";
+        [metalDrawable addPresentedHandler:^(id<MTLDrawable> shown) {
+            mmm_present_time((__bridge void*)shown, NULL);
+        }];
         [presentBuffer presentDrawable:metalDrawable];
         mmm_commit_command_buffer(presentBuffer);
 
@@ -1650,6 +1703,9 @@ int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) 
         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
             mmm_note_command_buffer_completion(completed);
         }];
+        [metalDrawable addPresentedHandler:^(id<MTLDrawable> shown) {
+            mmm_present_time((__bridge void*)shown, NULL);
+        }];
         [commandBuffer presentDrawable:metalDrawable];
         mmm_commit_command_buffer(commandBuffer);
 
@@ -1684,6 +1740,9 @@ int mmm_layer_present_clear(void* layer, void* drawable,
         id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(commandBuffer, descriptor);
         [encoder endEncoding];
 
+        [metalDrawable addPresentedHandler:^(id<MTLDrawable> shown) {
+            mmm_present_time((__bridge void*)shown, NULL);
+        }];
         [commandBuffer presentDrawable:metalDrawable];
         mmm_commit_command_buffer(commandBuffer);
 

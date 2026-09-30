@@ -140,29 +140,25 @@ MMM_FX_API int mmm_fx_temporal_encode(void* scaler, void* commandBuffer,
 /// Record where the frame the layer last handed out actually landed, and how long after the one
 /// before it.
 ///
-/// Call *at acquire time*, passing the texture of the drawable the layer just handed out. Returns the
-/// presentation time in seconds on the display's own clock, or 0 when the display has not reported it
-/// yet. `outIntervalSeconds`, when non-NULL, receives the gap since the previously reported
-/// presentation - the number a pacer is judged by.
-///
-/// Why not at present time: a `CAMetalDrawable` reports its presentation time only once the display
-/// has shown it, so reading it immediately after `presentDrawable:` returns 0 - and the present path
-/// transfers ownership of the drawable, so touching it afterwards is a use-after-free. The drawable
-/// comes back around the rotation a frame or two later, which is when its time is both set and safe to
-/// read.
+/// Call from the drawable's presented handler, passing the presented drawable. Returns the display
+/// time in seconds, or 0 for a dropped/unreported frame. `outIntervalSeconds`, when non-NULL,
+/// receives the gap since the previous reported presentation. The handler owns the drawable while
+/// this read occurs, so the present path need not retain it after submission.
 ///
 /// This is the measurement a frame-generation pacer is built on and validated against: interpolation
 /// and a `CAMetalDisplayLink` only help if the delivered frames land on distinct refreshes, and this
 /// is the only place that is stated rather than inferred from a CPU timer.
-MMM_FX_API double mmm_present_time(void* drawableTexture, double* outIntervalSeconds);
+MMM_FX_API double mmm_present_time(void* drawable, double* outIntervalSeconds);
 
 /// Pacing counters since the last reset, in a fixed order:
-///   [0] frames noted, [1] frames with no reported presentation time,
+///   [0] frames with a reported presentation time, [1] samples without a usable time,
 ///   [2] intervals within 20% of the previous one (steady),
-///   [3] intervals at least 1.5x the previous one (a dropped refresh).
+///   [3] intervals at least 1.5x the previous one (a dropped refresh),
+///   [4] the most recent interval in seconds (0 if none since the last read).
 /// Returns the count, or -1 when the destination is too small.
 enum MMMPresentMetric {
     MMM_PRESENT_FRAMES, MMM_PRESENT_UNREPORTED, MMM_PRESENT_STEADY, MMM_PRESENT_DROPPED,
+    MMM_PRESENT_LAST_INTERVAL_SECONDS,
     MMM_PRESENT_METRIC_COUNT
 };
 MMM_FX_API int32_t mmm_present_read_reset(double* out, int32_t count);

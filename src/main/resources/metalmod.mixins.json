@@ -18,6 +18,7 @@
     "PistonMotionMixin",
     "PerformanceCaptureMixin",
     "PerformanceCaptureKeyMixin",
+    "MinecraftSurfaceResolutionMixin",
     "WindowMixin",
     "DebugScreenEntriesAccessor",
     "DebugScreenEntryListMixin",

@@ -16,7 +16,7 @@ public final class MetalFx {
     public static final String SPATIAL = "spatial";
     /** MetalFX temporal scaling (Phase 7B): needs colour, depth and motion, and keeps history. */
     public static final String TEMPORAL = "temporal";
-    /** No MetalFX: the backend's own linear blit still upscales, it just does not reconstruct. */
+    /** Render the world at output resolution without a MetalFX pass. */
     public static final String OFF = "off";
 
     private static volatile String unavailableReason = "not queried";

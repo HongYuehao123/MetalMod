@@ -72,6 +72,7 @@ public class LevelRendererScalingMixin {
         WorldRenderTarget.leaveLevel();
         RenderTarget main = this.gameRenderer.mainRenderTarget();
         WorldRenderTarget.upscale(main);
+        net.metalmod.metalfx.WorldAntialiasing.apply(main);
         net.metalmod.metalfx.ScaleHotkey.sampleIfRequested(
                 net.minecraft.client.Minecraft.getInstance());
     }

@@ -11,9 +11,8 @@ import java.lang.foreign.MemorySegment;
  * created, so a window resize replaces it. {@link #matches} is what lets the owner keep one scaler
  * across the frames where nothing changed instead of rebuilding it per frame.
  *
- * <p>Encoding is deliberately the owner's job - this class does not create or commit command
- * buffers. The upscale has to land in the frame's own commit order, behind the passes that wrote the
- * input and ahead of the blit that presents it, and only the caller knows where that is.
+ * <p>run submits a native command buffer on the device queue, after the world passes and before
+ * presentation. The caller controls the order of these queue submissions.
  */
 public final class MetalFxScaler implements AutoCloseable {
 

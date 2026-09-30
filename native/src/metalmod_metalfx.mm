@@ -14,6 +14,7 @@
 #include "metalmod/metalmod_metalfx.h"
 
 #include <string.h>
+#include <mutex>
 
 // The Java side keeps the GpuFormat -> MTLPixelFormat table; this layer is handed raw values, so it
 // only ever converts back for the MetalFX descriptor.
@@ -221,83 +222,63 @@ int mmm_fx_spatial_run(void* scaler, void* queue,
 // Presentation pacing (7C groundwork)
 // ---------------------------------------------------------------------------------------------
 
-// Only ever touched from the thread that presents.
+// Presentation callbacks can run on a Metal thread while the render thread reads and resets counts.
+static std::mutex g_PresentLock;
 static double g_LastPresentedTime = 0.0;
+static double g_PreviousPresentInterval = 0.0;
 static double g_PresentMetrics[MMM_PRESENT_METRIC_COUNT] = {0};
 
-// Where a drawable was last seen on screen, keyed by its texture. A layer rotates a handful of
-// drawables, so a small table is enough; the entry is refreshed every time the drawable comes back.
-static const int kPresentSlots = 8;
-static void* g_PresentTextures[kPresentSlots] = {nullptr};
-static double g_PresentTimes[kPresentSlots] = {0.0};
-
-double mmm_present_time(void* drawableTexture, double* outIntervalSeconds) {
+double mmm_present_time(void* drawableHandle, double* outIntervalSeconds) {
     if (outIntervalSeconds != NULL) *outIntervalSeconds = 0.0;
-    id<MTLTexture> texture = (__bridge id<MTLTexture>)drawableTexture;
-    if (texture == nil) return 0.0;
+    id<MTLDrawable> drawable = (__bridge id<MTLDrawable>)drawableHandle;
+    if (drawable == nil) return 0.0;
 
-    void* key = (__bridge void*)texture;
-    int slot = -1;
-    for (int i = 0; i < kPresentSlots; i++) {
-        if (g_PresentTextures[i] == key) { slot = i; break; }
-    }
-    if (slot < 0) {
-        for (int i = 0; i < kPresentSlots; i++) {
-            if (g_PresentTextures[i] == nullptr) { slot = i; break; }
-        }
-        // A full table means the layer has more drawables in rotation than this; reuse the oldest.
-        if (slot < 0) {
-            slot = 0;
-            for (int i = 1; i < kPresentSlots; i++) {
-                if (g_PresentTimes[i] < g_PresentTimes[slot]) slot = i;
-            }
-        }
-        g_PresentTextures[slot] = key;
-        g_PresentTimes[slot] = 0.0;
-    }
-
-    // The drawable's own report, asked of the object that actually implements it: CAMetalDrawable
-    // presents `presentedTime`, and a CAMetalLayer hands out a drawable whose `texture` is that same
-    // drawable. Asking by selector rather than by casting keeps this honest if a future layer hands
-    // out a plain texture - the count of "unreported" then says so instead of reading garbage.
+    // The handler gives us the drawable after display, when presentedTime is set. Its texture is a
+    // different object and does not implement this property.
     CFTimeInterval presented = 0.0;
-    if ([texture respondsToSelector:@selector(presentedTime)]) {
-        presented = ((id<CAMetalDrawable>)texture).presentedTime;
+    if ([drawable respondsToSelector:@selector(presentedTime)]) {
+        presented = drawable.presentedTime;
     }
+    std::lock_guard<std::mutex> guard(g_PresentLock);
     if (presented <= 0.0) {
         g_PresentMetrics[MMM_PRESENT_UNREPORTED] += 1.0;
         return 0.0;
     }
 
-    double previous = g_PresentTimes[slot];
-    g_PresentTimes[slot] = presented;
-    if (previous <= 0.0 || presented <= previous) {
-        // First time this drawable has been seen on screen: there is no interval yet.
+    double previous = g_LastPresentedTime;
+    if (previous <= 0.0) {
+        g_LastPresentedTime = presented;
+        g_PresentMetrics[MMM_PRESENT_FRAMES] += 1.0;
+        return presented;
+    }
+    if (presented <= previous) {
+        // An out-of-order report must not move the clock backwards and turn the next interval into
+        // a false hitch.
         g_PresentMetrics[MMM_PRESENT_UNREPORTED] += 1.0;
         return 0.0;
     }
 
     double interval = presented - previous;
+    g_LastPresentedTime = presented;
     g_PresentMetrics[MMM_PRESENT_FRAMES] += 1.0;
-    // The classification is relative to the previous interval rather than to a nominal refresh rate,
-    // because the refresh rate is not known here and the question the counters answer is "did this
-    // frame wait for an extra refresh", not "what is the display doing".
-    static double previousInterval = 0.0;
-    if (previousInterval > 0.0) {
-        double ratio = interval / previousInterval;
+    g_PresentMetrics[MMM_PRESENT_LAST_INTERVAL_SECONDS] = interval;
+    // The classification is relative to the previous interval because the refresh rate can change.
+    if (g_PreviousPresentInterval > 0.0) {
+        double ratio = interval / g_PreviousPresentInterval;
         if (ratio < 1.2) {
             g_PresentMetrics[MMM_PRESENT_STEADY] += 1.0;
         } else if (ratio >= 1.5) {
             g_PresentMetrics[MMM_PRESENT_DROPPED] += 1.0;
         }
     }
-    previousInterval = interval;
+    g_PreviousPresentInterval = interval;
     if (outIntervalSeconds != NULL) *outIntervalSeconds = interval;
     return presented;
 }
 
 int32_t mmm_present_read_reset(double* out, int32_t count) {
     if (out == NULL || count < MMM_PRESENT_METRIC_COUNT) return -1;
+    std::lock_guard<std::mutex> guard(g_PresentLock);
     memcpy(out, g_PresentMetrics, sizeof(g_PresentMetrics));
     memset(g_PresentMetrics, 0, sizeof(g_PresentMetrics));
     return MMM_PRESENT_METRIC_COUNT;

@@ -40,18 +40,17 @@ import java.util.concurrent.atomic.AtomicLong;
  *       anything imports a target. {@code LevelRenderer.render} imports the target into a frame graph
  *       at its head and the passes execute at the end of the same call, holding whatever they captured
  *       - so replacing the target in between hands a pass a buffer that no longer exists.</li>
- *   <li><b>A replaced target is never destroyed.</b> The engine's resource pool can serve the same
- *       physical target to two frame-graph descriptors of the same shape, so freeing one out from
- *       under it kills a pass that believes it still owns the buffers. Replaced targets are held and
- *       dropped by reference only.</li>
+ *   <li><b>Owned targets retire after a safe boundary.</b> External frame-graph imports borrow
+ *       attachments. Old generations are kept until the following extraction boundary, drained
+ *       on the GPU queue, then explicitly destroyed.</li>
  *   <li><b>A frame decides once whether it scales, and never changes its mind.</b>
  *       {@link #decideScalingForFrame} answers before anything is imported, and
  *       {@link #worldTargetIfRenderingLevel} reads nothing else. A frame that switches halfway through
  *       is a frame whose passes were built against one target and executed against another.</li>
  * </ol>
  *
- * <p>Everything here is a no-op while the render scale is 1.0. That is the feature-off path, and it
- * stays byte-for-byte the pre-Phase-7 frame rather than "the same but through an extra blit".
+ * <p>At 100% scale, or with Off selected, the world uses the engine's main target directly.
+ * Resolution policy and optional world AA are separate from this class's upscale bypass.
  */
 public final class WorldRenderTarget {
 
@@ -91,6 +90,9 @@ public final class WorldRenderTarget {
      */
     private static volatile MetalFxTemporalScaler temporalScaler;
 
+    /** Temporal history is kept at render resolution; Spatial finishes the native image. */
+    private static volatile RenderTarget temporalIntermediate;
+    private static volatile MetalFxScaler temporalFinishScaler;
     /** Whether the requested upscaler is temporal. Read from the settings at the frame boundary. */
     private static volatile boolean temporalRequested;
 
@@ -103,51 +105,29 @@ public final class WorldRenderTarget {
     /** Consecutive temporal failures. A persistent one stops the attempt instead of retrying forever. */
     private static int temporalFailures;
 
+    /** Guard the 60 Hz frame budget using actual drawable presentation intervals. */
+    private static final TemporalPacingGuard temporalPacingGuard = new TemporalPacingGuard();
+    private static final boolean GUARD_TEMPORAL_PACING =
+            !"false".equalsIgnoreCase(System.getProperty("metalmod.temporalPacingGuard", "true"));
+    private static double pacingGuardScale = DISABLED_SCALE;
+    private static String pacingGuardUpscaler = "";
+    private static int pacingGuardWidth;
+    private static int pacingGuardHeight;
+    private static String announcedTemporalFallback = "";
+
     private static final AtomicLong temporalFrames = new AtomicLong();
 
-    /**
-     * Whether the motion dispatch and the temporal scaler go into separate command buffers.
-     *
-     * <p>Off by default: one buffer is the better shape, and the default is what the frame uses. It is a
-     * flag rather than a constant because the split form is the only way to read each pass's own GPU
-     * span on F3, and those spans are how the temporal path's cost was attributed in the first place.
-     */
-    private static final boolean SPLIT_TEMPORAL_ENCODE =
-            Boolean.getBoolean("metalmod.splitTemporalEncode");
-
-    /**
-     * Skip the motion dispatch while still running the scaler. A diagnostic, off by default.
-     *
-     * <p>It exists to answer one question that the isolated per-pass timings cannot: whether the
-     * temporal path's cost is the scaler or the fact that a full-screen pass runs in front of it. With
-     * the dispatch removed the scaler reads a stale motion texture, so the two passes are no longer
-     * dependent on each other while everything else about the frame is unchanged. It is not a mode to
-     * run - the motion field would be wrong - and it is named for what it does rather than for a
-     * feature.
-     */
-    private static final boolean SKIP_MOTION_ENCODE =
-            Boolean.getBoolean("metalmod.skipMotionEncode");
+    private static final TemporalDiagnostics DIAGNOSTICS = TemporalDiagnostics.fromLaunch();
 
     /** Whether the temporal path is encoding each pass into its own command buffer. For F3 wording. */
     public static boolean temporalSplitEncode() {
-        return SPLIT_TEMPORAL_ENCODE;
+        return DIAGNOSTICS.splitEncode();
     }
 
     private static volatile double appliedScale = DISABLED_SCALE;
 
-    /**
-     * Targets replaced and no longer used.
-     *
-     * <p><b>Held, never destroyed.</b> A {@code RenderTarget} here has already been swapped out of the
-     * redirect, so nothing renders into it again - but the engine's {@code CrossFrameResourcePool} may
-     * have taken it, and two frame-graph descriptors with the same size and format are served the same
-     * physical target. Destroying one out from under that pool frees buffers the engine believes it
-     * still owns, and the next pass to use them dies with {@code colorTexture is null} - which is
-     * exactly the crash this class kept producing one frame after a resize.
-     *
-     * <p>The cost of holding them is one allocation per scale or window change, released when the
-     * device closes or when the collector gets to them. Two render targets of the same size and format
-     * are also physically interchangeable, so the pool gets real use out of them rather than waste.
+    /** Owned external targets retired until the following frame boundary and GPU completion.
+     * Importing into a frame graph borrows the target; it does not transfer it to the pool.
      */
     private static final List<RenderTarget> retired = new ArrayList<>();
 
@@ -155,57 +135,12 @@ public final class WorldRenderTarget {
     private static int requestedNativeWidth;
     private static int requestedNativeHeight;
     private static double requestedScale = DISABLED_SCALE;
+    private static volatile UpscalingPlan requestedPlan = UpscalingPlan.resolve(1, 1, 1.0, MetalFx.OFF);
     private static boolean pendingChange;
-
-    /**
-     * Ask the engine to reload its resources, the way F3+T does.
-     *
-     * <p>Added on evidence: toggling the render scale left the sky brighter and less saturated, and
-     * pressing F3+T fixed it. A resource reload clears the engine's pipeline cache and recompiles the
-     * static pipelines, so a pipeline built while the render target was a different size is replaced.
-     * Whatever else a reload refreshes, that is the effect that was demonstrably needed, and asking for
-     * the reload is cheaper than reasoning about which cached thing was stale.
-     *
-     * <p>Deferred through the engine rather than performed here: a reload touches resources the frame
-     * may be using, and {@code delayTextureReload} is the engine's own way to run one at a safe point.
-     * Requested once per scale change, not per frame.
-     */
-    private static void requestResourceReload() {
-        if (reloadRequested) {
-            return;
-        }
-        try {
-            net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
-            if (minecraft == null) {
-                return;
-            }
-            reloadRequested = true;
-            minecraft.delayTextureReload().whenComplete((unused, error) -> {
-                reloadRequested = false;
-                if (error != null) {
-                    System.err.println("[MetalMod] resource reload after the render-scale change failed: "
-                            + error);
-                } else {
-                    System.out.println("[MetalMod] resource reload completed after the render-scale"
-                            + " change");
-                }
-            });
-            System.out.println("[MetalMod] render scale changed: reloading resources so nothing cached"
-                    + " against the old target survives");
-        } catch (Throwable t) {
-            reloadRequested = false;
-            System.err.println("[MetalMod] could not request a resource reload: " + t);
-        }
-    }
-
-    /** Whether a reload has been asked for and not yet completed. */
-    private static volatile boolean reloadRequested;
-
-    /** Why scaling is not running, when it is configured but cannot be. Empty when all is well. */
-    private static volatile String unavailableReason = "";
 
     /** Whether MetalFX can scale at all in this session. Decided once per frame. */
     private static volatile boolean scalerUsable;
+    private static volatile String unavailableReason = "";
 
     /**
      * Whether the frame being rendered is scaled.
@@ -251,13 +186,15 @@ public final class WorldRenderTarget {
         requestedNativeWidth = nativeWidth;
         requestedNativeHeight = nativeHeight;
         double previousScale = requestedScale;
-        requestedScale = RenderScaleSettings.renderScale();
+        requestedPlan = UpscalingPlan.resolve(nativeWidth, nativeHeight,
+                RenderScaleSettings.renderScale(), RenderScaleSettings.upscaler());
+        requestedScale = requestedPlan.scale();
         // The render scale setting itself changed, as opposed to a window resize. That is a change in
         // how the whole frame is produced, and the engine caches resources against it, so the reload
         // the user can trigger by hand (F3+T) is requested here instead - deferred by the engine onto
         // the main thread, so it lands between frames rather than inside one.
         if (previousScale != requestedScale) {
-            requestResourceReload();
+            RenderScaleReloadCompatibility.request();
         }
 
         // The common case: what is built already agrees with what is asked for. This must stay free of
@@ -282,6 +219,7 @@ public final class WorldRenderTarget {
      * @return true when the target was replaced.
      */
     public static synchronized boolean applyPending() {
+        releaseRetiredTargets();
         if (!pendingChange) {
             return false;
         }
@@ -299,6 +237,7 @@ public final class WorldRenderTarget {
                     // report it, rather than failing later inside a pass.
                     System.err.println("[MetalMod] the scaled world target " + width + "x" + height
                             + " came back without attachments; rendering at native resolution");
+                    built.destroyBuffers();
                     built = null;
                 }
             } catch (Throwable t) {
@@ -315,10 +254,15 @@ public final class WorldRenderTarget {
         rebuiltForCaller = true;
         // A replaced target has no history, and neither does the scaler that consumed it.
         releaseScaler();
-        // Retired, never destroyed - see the field's comment. The engine's resource pool may have
-        // taken this target, and it is the pool's to free.
+        // Previous frames may still reference the old attachments. Release at the next boundary
+        // after their GPU work completes; external imports never become pool-owned allocations.
         if (previous != null) {
             retired.add(previous);
+        }
+        RenderTarget oldIntermediate = temporalIntermediate;
+        temporalIntermediate = null;
+        if (oldIntermediate != null) {
+            retired.add(oldIntermediate);
         }
         if (built != null) {
             System.out.println("[MetalMod] render scale " + String.format(java.util.Locale.ROOT,
@@ -352,6 +296,7 @@ public final class WorldRenderTarget {
                     + " is " + have + " against a window that wants " + want);
         }
         scaleThisFrame = usable;
+        SpatialInputAntialiasing.configure(current, usable && frameHasLevel() && !temporalUsable);
     }
 
     /**
@@ -373,15 +318,19 @@ public final class WorldRenderTarget {
     /** Record whether MetalFX can scale in this session. Called at the frame boundary. */
     public static void setScalingAvailable(boolean usable) {
         scalerUsable = usable;
-        if (!usable && RenderScaleSettings.active()) {
+        if (!usable && requestedPlan.scaled()) {
             System.out.println("[MetalMod] render scaling requested but MetalFX cannot run here ("
                     + (unavailableReason.isEmpty() ? "no usable scaler" : unavailableReason)
                     + "); rendering at native resolution");
             return;
         }
-        if (usable && temporalRequested && !temporalUsable && !temporalFallbackReason.isEmpty()) {
+        if (usable && temporalRequested && !temporalUsable && !temporalFallbackReason.isEmpty()
+                && !temporalFallbackReason.equals(announcedTemporalFallback)) {
             System.out.println("[MetalMod] temporal upscaling requested but unavailable: "
                     + temporalFallbackReason + "; Spatial will run instead");
+            announcedTemporalFallback = temporalFallbackReason;
+        } else if (temporalUsable) {
+            announcedTemporalFallback = "";
         }
     }
 
@@ -410,6 +359,35 @@ public final class WorldRenderTarget {
         return scalerUsable;
     }
 
+    /** Observe presentation policy separately from capability queries, once at extraction. */
+    public static void observePacing() {
+        double scale = requestedPlan.scale();
+        String upscaler = requestedPlan.requestedEffect();
+        if (scale != pacingGuardScale || !upscaler.equals(pacingGuardUpscaler)
+                || requestedNativeWidth != pacingGuardWidth
+                || requestedNativeHeight != pacingGuardHeight || !frameHasLevel()) {
+            temporalPacingGuard.reset();
+            temporalFailures = 0;
+            ProjectionJitter.requestReset();
+            pacingGuardScale = scale;
+            pacingGuardUpscaler = upscaler;
+            pacingGuardWidth = requestedNativeWidth;
+            pacingGuardHeight = requestedNativeHeight;
+        } else if (GUARD_TEMPORAL_PACING && requestedPlan.temporalRequested() && scaleThisFrame
+                && temporalPacingGuard.fallback()) {
+            MetalDevice.Pacing pacing = MetalDevice.presentPacing();
+            if (temporalPacingGuard.observeSpatial(System.nanoTime(), pacing.frames(), pacing.dropped())) {
+                ProjectionJitter.requestReset();
+            }
+        } else if (GUARD_TEMPORAL_PACING && requestedPlan.temporalRequested() && temporalUsable && scaleThisFrame) {
+            MetalDevice.Pacing pacing = MetalDevice.presentPacing();
+            if (temporalPacingGuard.observe(System.nanoTime(), pacing.frames(), pacing.dropped())) {
+                ProjectionJitter.requestReset();
+            }
+        }
+
+    }
+
     /**
      * Whether MetalFX can scale for the current configuration, and which effect it will be.
      *
@@ -423,12 +401,12 @@ public final class WorldRenderTarget {
      * supported, working upscaler, and the reason is recorded for F3 and the settings page.
      */
     public static boolean metalFxUsable(MetalDevice device) {
-        if (device == null || !RenderScaleSettings.active()) {
+        if (device == null || !requestedPlan.scaled()) {
             temporalRequested = false;
             temporalUsable = false;
             return false;
         }
-        temporalRequested = MetalFx.TEMPORAL.equals(RenderScaleSettings.upscaler());
+        temporalRequested = requestedPlan.temporalRequested();
 
         if (!MetalFxScaler.isSupported(device.deviceHandle(), NATIVE_FORMAT, NATIVE_FORMAT)) {
             if (unavailableReason.isEmpty()) {
@@ -448,6 +426,12 @@ public final class WorldRenderTarget {
             temporalUsable = false;
             temporalFallbackReason = "temporal failed " + temporalFailures
                     + " times; Spatial is running for this session";
+            return true;
+        }
+        if (temporalPacingGuard.fallback()) {
+            temporalUsable = false;
+            temporalFallbackReason = "Temporal missed at least 15 display refreshes in 10 seconds"
+                    + " at this render scale; comparing Spatial pacing";
             return true;
         }
         boolean supported = MetalNative.motionAvailable()
@@ -495,19 +479,37 @@ public final class WorldRenderTarget {
         return pendingChange;
     }
 
-    /**
-     * Drop every reference. Called when the device is torn down.
-     *
-     * <p>Deliberately does not destroy: the buffers belong to whichever {@code MainTarget} owns them,
-     * and the engine's resource pool may be one of the owners. Dropping the references is what this
-     * class is entitled to do; freeing is not.
-     */
+    /** Release scalers and every owned target after GPU completion at device teardown. */
     public static synchronized void close() {
+        SpatialInputAntialiasing.close();
+        if (target != null) retired.add(target);
+        if (temporalIntermediate != null) retired.add(temporalIntermediate);
         target = null;
+        temporalIntermediate = null;
         pendingChange = false;
         scaleThisFrame = false;
         releaseScaler();
+        releaseRetiredTargets();
+        ProjectionJitter.clear();
+        temporalFailures = 0;
+        temporalRequested = false;
+        temporalUsable = false;
+        temporalFallbackReason = "";
+        temporalPacingGuard.reset();
+    }
+
+    /** Called only between frames or at teardown. No per-frame wait when nothing is retired. */
+    private static void releaseRetiredTargets() {
+        if (retired.isEmpty()) return;
+        MetalDevice device = MetalDevice.active();
+        if (device != null) MetalNative.queueSynchronize(device.queueHandle());
+        for (RenderTarget old : retired) old.destroyBuffers();
         retired.clear();
+    }
+
+    /** Number of target generations awaiting the next safe boundary, for lifetime checks. */
+    public static int retiredTargetCount() {
+        return retired.size();
     }
 
     private static void releaseScaler() {
@@ -517,6 +519,11 @@ public final class WorldRenderTarget {
             existing.close();
         }
         temporalScalerRelease();
+        MetalFxScaler finish = temporalFinishScaler;
+        temporalFinishScaler = null;
+        if (finish != null) {
+            finish.close();
+        }
         // The motion resource is sized to the target that is going away, and its history belongs to
         // the frames that produced it.
         SceneMotion.close();
@@ -524,13 +531,11 @@ public final class WorldRenderTarget {
     }
 
     private static int scaledWidth() {
-        return RenderScaleSettings.active() ? RenderScaleSettings.scaledSize(requestedNativeWidth)
-                : requestedNativeWidth;
+        return requestedPlan.worldWidth();
     }
 
     private static int scaledHeight() {
-        return RenderScaleSettings.active() ? RenderScaleSettings.scaledSize(requestedNativeHeight)
-                : requestedNativeHeight;
+        return requestedPlan.worldHeight();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -656,6 +661,7 @@ public final class WorldRenderTarget {
             // counted - a frame that returned false here would leave the interface drawing over the
             // previous frame's world.
             temporalFailures++;
+            ProjectionJitter.requestReset();
             System.err.println("[MetalMod] temporal upscale failed (" + temporalFailures + "/"
                     + MAX_TEMPORAL_FAILURES + "): " + lastUpscaleError + "; using Spatial");
             temporalScalerRelease();
@@ -704,8 +710,8 @@ public final class WorldRenderTarget {
         // barrier inside Metal rather than a queue-level dependency between two buffers - which is the
         // difference the isolated GPU spans could not account for. The split form is kept behind a flag
         // because it is what produces the per-pass spans on F3, and those are how this was found.
-        boolean splitEncode = SPLIT_TEMPORAL_ENCODE;
-        if (splitEncode && !SKIP_MOTION_ENCODE && SceneMotion.dispatch(device, depth) != 0) {
+        boolean splitEncode = DIAGNOSTICS.splitEncode();
+        if (splitEncode && !DIAGNOSTICS.skipMotion() && SceneMotion.dispatch(device, depth) != 0) {
             lastUpscaleError = "motion dispatch: " + SceneMotion.lastFailure();
             return false;
         }
@@ -715,13 +721,20 @@ public final class WorldRenderTarget {
             return false;
         }
 
-        MetalFxTemporalScaler effect = ensureTemporalScaler(device, world, main.width, main.height);
+        RenderTarget output;
+        try {
+            output = temporalOutput(world, main);
+        } catch (Throwable t) {
+            lastUpscaleError = "could not create the temporal output: " + t;
+            return false;
+        }
+        MetalFxTemporalScaler effect = ensureTemporalScaler(device, world, output.width, output.height);
         if (effect == null) {
             lastUpscaleError = MetalFx.unavailableReason();
             return false;
         }
         MemorySegment source = textureHandle(world.getColorTextureView());
-        MemorySegment destination = textureHandle(main.getColorTextureView());
+        MemorySegment destination = textureHandle(output.getColorTextureView());
         if (source.address() == 0 || destination.address() == 0) {
             lastUpscaleError = "a colour view had no Metal texture behind it";
             return false;
@@ -730,7 +743,7 @@ public final class WorldRenderTarget {
         // One reset per encode, taken here so it cannot be applied twice or missed: the flag is set by
         // anything that makes the previous frames unrelated to this one, and it costs exactly one
         // frame of convergence to honour.
-        boolean reset = ProjectionJitter.consumeReset();
+        boolean reset = ProjectionJitter.resetPending();
         MemorySegment commandBuffer = MetalNative.commandBufferCreate(device.queueHandle());
         if (commandBuffer == null || commandBuffer.address() == 0) {
             lastUpscaleError = "could not create a command buffer for the temporal scaler";
@@ -738,7 +751,7 @@ public final class WorldRenderTarget {
         }
         boolean ok = false;
         try {
-            if (!splitEncode && !SKIP_MOTION_ENCODE) {
+            if (!splitEncode && !DIAGNOSTICS.skipMotion()) {
                 // The dispatch first, into this same buffer; Metal orders the compute encoder ahead of
                 // the scaler's own work on the motion texture without a queue boundary in between.
                 if (SceneMotion.encodeInto(commandBuffer, depth) != 0) {
@@ -760,13 +773,67 @@ public final class WorldRenderTarget {
             MetalNative.commandBufferRelease(commandBuffer);
         }
         if (!ok) {
+            ProjectionJitter.requestReset();
             return false;
+        }
+        if (reset) ProjectionJitter.consumeReset();
+        if (output != main) {
+            MetalFxScaler finish = ensureTemporalFinishScaler(device, output, main.width, main.height);
+            if (finish == null || finish.run(device.queueHandle(), destination,
+                    textureHandle(main.getColorTextureView())) != 0) {
+                lastUpscaleError = "MetalFX could not finish the temporal image at native resolution";
+                return false;
+            }
         }
         lastUpscaleError = "";
         temporalFailures = 0;
         scaledFrames.incrementAndGet();
         temporalFrames.incrementAndGet();
         return true;
+    }
+
+    private static RenderTarget temporalOutput(RenderTarget world, RenderTarget main) {
+        if (DIAGNOSTICS.outputScale() == 1.0) {
+            return main;
+        }
+        int width = Math.max(world.width, (int) Math.round(main.width * DIAGNOSTICS.outputScale()));
+        int height = Math.max(world.height, (int) Math.round(main.height * DIAGNOSTICS.outputScale()));
+        if (width >= main.width || height >= main.height) {
+            return main;
+        }
+        RenderTarget existing = temporalIntermediate;
+        if (existing != null && existing.width == width && existing.height == height) {
+            return existing;
+        }
+        if (existing != null) {
+            retired.add(existing);
+        }
+        temporalIntermediate = new MainTarget(width, height);
+        return temporalIntermediate;
+    }
+
+    /** The Temporal output's actual dimensions, for F3 and the offscreen contract check. */
+    public static int[] temporalOutputSize() {
+        RenderTarget intermediate = temporalIntermediate;
+        if (intermediate != null && temporalActive()) {
+            return new int[]{intermediate.width, intermediate.height};
+        }
+        return null;
+    }
+
+    private static MetalFxScaler ensureTemporalFinishScaler(MetalDevice device, RenderTarget input,
+                                                            int outputWidth, int outputHeight) {
+        MetalFxScaler existing = temporalFinishScaler;
+        if (existing != null && existing.matches(NATIVE_FORMAT, NATIVE_FORMAT,
+                input.width, input.height, outputWidth, outputHeight)) {
+            return existing;
+        }
+        if (existing != null) {
+            existing.close();
+        }
+        temporalFinishScaler = MetalFxScaler.create(device.deviceHandle(), NATIVE_FORMAT, NATIVE_FORMAT,
+                input.width, input.height, outputWidth, outputHeight, 0);
+        return temporalFinishScaler;
     }
 
     /** The spatial path, unchanged from Phase 7A. */
@@ -994,7 +1061,8 @@ public final class WorldRenderTarget {
      */
     public static double gpuTimeTemporal(MetalDevice device, RenderTarget world, RenderTarget main,
                                          int passes) {
-        MetalFxTemporalScaler effect = ensureTemporalScaler(device, world, main.width, main.height);
+        RenderTarget output = temporalOutput(world, main);
+        MetalFxTemporalScaler effect = ensureTemporalScaler(device, world, output.width, output.height);
         if (effect == null) {
             return -1.0;
         }
@@ -1006,7 +1074,7 @@ public final class WorldRenderTarget {
                 textureHandle(world.getColorTextureView()),
                 textureHandle(world.getDepthTextureView()),
                 motion,
-                textureHandle(main.getColorTextureView()),
+                textureHandle(output.getColorTextureView()),
                 ProjectionJitter.offsetX(), ProjectionJitter.offsetY(), passes);
     }
 
@@ -1148,8 +1216,12 @@ public final class WorldRenderTarget {
         if (world == null) {
             return nativeWidth + "x" + nativeHeight + " (native)";
         }
+        String path = temporalActive() && temporalIntermediate != null
+                ? " temporal " + temporalIntermediate.width + "x" + temporalIntermediate.height
+                    + " + spatial"
+                : " MetalFX " + effectName();
         return world.width + "x" + world.height + " -> " + nativeWidth + "x" + nativeHeight
-                + " MetalFX " + effectName();
+                + path;
     }
 
     /**

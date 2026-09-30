@@ -705,12 +705,15 @@ public final class MetalDevice implements GpuDeviceBackend {
         } catch (Throwable ignored) {
             // Not on the render thread, or the API moved; the counters below still stand.
         }
+        Pacing pacing = presentPacing();
         System.out.println(String.format(java.util.Locale.ROOT,
                 "[MetalMod] frame rate: %.1f fps over %.1fs | %s | drawable wait %.1f ms | draws %d"
-                        + " | frame %.1f ms p95 %.1f max %.1f | engine limit %d (%s)",
+                        + " | frame %.1f ms p95 %.1f max %.1f | engine limit %d (%s)"
+                        + " | presented %d last %.1f ms p95 %.1f dropped %d",
                 fps, elapsed, net.metalmod.metalfx.WorldRenderTarget.describeForLog(),
                 lastAcquireWaitMs, lastFrameDraws, lastFrameMs, lastFrameP95Ms, lastFrameMaxMs,
-                engineLimit, engineReason));
+                engineLimit, engineReason, pacing.frames(), pacing.lastIntervalMs(),
+                pacing.p95Ms(), pacing.dropped()));
     }
 
     /**
@@ -829,24 +832,6 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /**
-     * Fold one presented frame's display time into the pacing counters.
-     *
-     * <p>Called from the surface's present path. A zero interval means the system reported nothing -
-     * a detached layer, or a frame the display has not reached - and is counted rather than treated as
-     * a zero-length frame, which would make the average meaningless.
-     */
-    public static void notePresent(double intervalSeconds) {
-        if (intervalSeconds > 0.0) {
-            presentFrames++;
-            lastPresentIntervalMs = intervalSeconds * 1000.0;
-            pacingIntervals.add(intervalSeconds);
-            if (pacingIntervals.size() > PACING_WINDOW) {
-                pacingIntervals.pollFirst();
-            }
-        }
-    }
-
-    /**
      * The last few seconds of intervals, for a percentile.
      *
      * <p>Bounded on purpose: this is diagnostic output read once per F3 line, and an unbounded history
@@ -875,8 +860,18 @@ public final class MetalDevice implements GpuDeviceBackend {
                                 MetalNative.PRESENT_METRICS.size());
             }
             MetalNative.presentReadReset(presentMetricBuffer);
-            presentSteady = (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 2);
-            presentDropped = (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 3);
+            presentFrames += (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 0);
+            presentUnreported += (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 1);
+            presentSteady += (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 2);
+            presentDropped += (long) presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 3);
+            double interval = presentMetricBuffer.getAtIndex(ValueLayout.JAVA_DOUBLE, 4);
+            if (interval > 0.0) {
+                lastPresentIntervalMs = interval * 1000.0;
+                pacingIntervals.add(interval);
+                if (pacingIntervals.size() > PACING_WINDOW) {
+                    pacingIntervals.pollFirst();
+                }
+            }
         } catch (Throwable t) {
             // Diagnostics must never take the frame down; a failed read just leaves the counters.
             presentMetricBuffer = null;
@@ -1337,7 +1332,7 @@ public final class MetalDevice implements GpuDeviceBackend {
             throw new IllegalStateException("Failed to create a CAMetalLayer on the game window content view");
         }
         System.out.println("[MetalMod] CAMetalLayer attached to the GLFW NSWindow content view.");
-        return new MetalSurfaceBackend(this, layer);
+        return new MetalSurfaceBackend(this, layer, window);
     }
 
     @Override
@@ -1536,13 +1531,14 @@ public final class MetalDevice implements GpuDeviceBackend {
             return;
         }
         this.closed = true;
-        if (ACTIVE == this) {
-            ACTIVE = null;
-        }
         // Phase 7's render target and its MetalFX scaler are backend resources whose Metal objects are
         // not Java-reachable, so nothing collects them: without this a device teardown (the offline
         // tools create several) would leak the scaler and every one of its textures.
-        net.metalmod.metalfx.WorldRenderTarget.close();
+        if (ACTIVE == this) {
+            net.metalmod.metalfx.WorldAntialiasing.release();
+            net.metalmod.metalfx.WorldRenderTarget.close();
+            ACTIVE = null;
+        }
         if (this.queue != null && this.queue.address() != 0) {
             MetalNative.queueRelease(this.queue);
         }

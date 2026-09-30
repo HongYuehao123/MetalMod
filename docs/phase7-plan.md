@@ -1,10 +1,11 @@
 # Phase 7 — MetalFX
 
-Status: **7A complete and verified offline (2026-09-25, awaiting one in-game run); 7B implemented and
-verified offline, including a camera motion producer; 7C not implemented.** This document records what
-each increment actually delivers, what evidence backs it, and what is missing - in the same form as
-[the Phase 6 plan](phase6-plan.md), because a phase that reports "done" without naming its gaps is how
-a project accumulates claims it cannot support.
+Status (2026-09-29 completion review): **7A and 7B are implemented and verified offline,
+but neither is fully signed off against the quality/resize/history acceptance criteria.** Historical
+live performance runs exist for both. The latest cleanup build has not been installed or evaluated
+in game. 7C is not implemented. See [completion review](phase7-completion-review.md) for the
+current evidence and remaining 2K checks. Older sections below preserve the implementation history;
+statements that there has been no live run are historical, not the current verdict.
 
 Baseline reviewed: `280f3df`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro, macOS 27.
 
@@ -201,17 +202,23 @@ scene depth and asserts that the frame is untouched.
 | Gate | Command | Result |
 |---|---|---|
 | Native motion kernel and overlay | `./scripts/run_smoke.sh` | `ALL CHECKS PASSED`, including twenty motion assertions: an exact convention check (a one-NDC-unit shift is exactly half the texture in pixels, with y down), an unmoved camera producing zero motion on a perspective projection, uniform motion on a flat depth plane scaling as one over view depth with the documented sign, zero motion at the far plane, a mismatched depth size being refused, a stamp replacing the depth-derived motion exactly inside its box, a stamp the depth test rejects changing nothing, and the stamp table being clamped and counted rather than overrun. |
-| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (91 assertions), of which twenty-six are temporal or its cost: the resource is sized to the render resolution, the frame runs temporally, the scaler's output reaches the native target, a still camera gives zero motion, a moved camera gives uniform signed motion, **different jitter phases with a still camera still give zero motion**, an entity with no previous position contributing nothing, an entity's own movement being stamped while the rest of the frame keeps the depth-derived answer, **a stamp the depth buffer contradicts being rejected**, particles and pushed blocks being stamped, **two entities moving apart keeping their own motions** and a horizontal move carrying no vertical component, a first frame and a camera cut each requesting a reset while a continuous camera does not, and a resize keeping the path running. |
+| Frame shape and the live path | `./tools/scaling_check/run.sh` | `SCALING CHECK PASSED` (95 assertions), including the render-sized Temporal output and native Spatial finish, full-resolution world FXAA at native scale and its off switch, motion field, per-object stamps, reset lifecycle, resize, and full-path cost. |
 | Mixin injection points | `./tools/mixin_check/run.sh` | `MIXIN CHECK PASSED` (72 checks), including `GameRendererProjectionMixin`, `EntityMotionMixin`, `ParticleMotionMixin` and `PistonMotionMixin` with their exact targets and descriptors. |
 | Build, shaders, render check, standalone suite | `./scripts/build_mod.sh`, `./tools/shader_inventory/run.sh`, `./tools/render_check/run.sh`, `StandaloneTestRunner` | all green. |
 
 ### 3.4 What is not verified, and what remains
 
-1. **No in-game run of temporal.** The same caveat as 7A applies: the mixins are checked for targets
-   that exist, not for behaviour at runtime. A session has to confirm that a moving camera produces a
-   stable image, that turning the camera does not smear, that a dimension change does not blend two
-   worlds, and that the frame cost is what it is.
-2. **No in-game confirmation of the object path either.** The stamps are verified against synthetic
+The 2026-09-29 2K/60 Hz performance follow-up implemented render-sized Temporal output plus a
+Spatial finish to native resolution. A cloned cave run at 67% world scale held 59.3 fps during
+the turn and 59.8 fps in the dense final view with VSync; at the same world resolution, direct
+Temporal held 59.0 and 59.4 fps. The output remains 2560x1440. The new stage contract and final
+pixels pass the scaling gate; visual judgement of fine detail and higher-refresh performance
+remain future work. See [temporal-performance.md](temporal-performance.md).
+
+1. **Temporal has run in game and its cost is measured; visual quality is not signed off.** Live
+   sessions and Metal System Traces confirm that the path runs continuously, but a controlled moving
+   camera and dimension-change review still has to judge stability, smearing and history resets.
+2. **No in-game visual confirmation of the object path.** The stamps are verified against synthetic
    positions in the harness and their mixins are verified to resolve; whether a real mob's silhouette
    is covered tightly enough by its bounding box, and whether a piston's two moving halves are both
    inside one stamp, are observations only a session can make.
@@ -221,7 +228,7 @@ scene depth and asserts that the frame is untouched.
    would be a claim the code cannot back, so it stays off.
 4. **Transparency is unvalidated as a temporal case.** Water, particles and cutouts render correctly in
    the spatial path's pixel checks; what they do under accumulation has not been looked at.
-5. **The temporal cost is measured offscreen, not in a scene.** The scaling check times the whole
+5. **The temporal cost is measured offscreen and in a scene.** The scaling check times the whole
    upscale step with the queue drained after each iteration, at 1280x666 -> 2560x1332, and times the
    spatial path at the same sizes in the same run:
 
@@ -241,14 +248,13 @@ scene depth and asserts that the frame is untouched.
    | temporal with the motion dispatch removed | 6.99 ms | 6.89 | 6.99 |
 
    Uniform, not spiky - every iteration pays it. The motion pass is about **0.3 ms of a 5.6 ms
-   premium**, so the cost is the scaler, and the scaler's own span reads 2.7 ms only because the
-   isolated timing passes a **constant jitter** with unchanging inputs: a workload MetalFX can shortcut,
-   because there is nothing to resample. A frame advances the jitter phase every frame, exactly as the
-   game does, so the history is resampled at a new sub-pixel position every frame - and that resampling
-   *is* the filter's work.
+   premium**. A subsequent controlled full-path A/B fixed the jitter phase and measured 7.087 ms
+   against 7.059 ms with advancing jitter, so the earlier shortcut explanation was wrong for this
+   harness. A later live Metal System Trace resolved the timing gap: MetalFX preprocessing, main and
+   postprocessing had median GPU durations 1.69, 2.81 and 2.56 ms. The caller-owned buffer timer
+   covered only the middle stage; the other two were MetalFX-owned command buffers.
 
-   Four candidate fixes were tried and none moved the number, which is why the conclusion is about the
-   effect rather than about the integration: one command buffer instead of two (7.09 against 7.07), a
+   Four candidate fixes were tried and none moved the number: one command buffer instead of two (7.09 against 7.07), a
    private motion texture with a staging readback (7.26), private engine targets (the earlier pass), and
    two genuine omissions - the content region never being set and the scaler being built asynchronously
    - both now fixed and neither the cost.
@@ -259,6 +265,14 @@ scene depth and asserts that the frame is untouched.
    the scaling itself saves little, so the premium is close to pure addition. There is no knob on the
    temporal filter, so the mode is a **quality mode with a measurable price**, not a free upgrade;
    spatial stays the default, and the settings page should say what the price is.
+
+   A live independent-resolution sweep then separated the two pixel terms. At essentially the same
+   2560x1332 input, MetalFX's three temporal stages cost **7.06 ms at 5120x2664 output, 4.64 ms at
+   3840x1998 and 3.77 ms at 3200x1666**. At fixed 5K output, raising input to 4096x2131 raised them to
+   9.46 ms. Both sides matter and the 5K output is the larger contribution in the current setup. This
+   supports a diagnostic prototype that writes temporal to a 3200- or 3840-wide intermediate and then
+   uses Spatial for the final 5K step; its predicted 2-3 ms saving still needs an end-to-end measure and
+   quality comparison.
 
 ### 3.5 Anti-aliasing — optional separate work after Temporal
 
@@ -289,10 +303,19 @@ MetalFX frame interpolation needs three things this renderer does not currently 
 
 What *is* delivered is the measurement that pacer will be validated against, because it is useful on
 its own and it is the thing that cannot be added later without re-running every comparison:
-`mmm_present_note` reads each drawable's `presentedTime` and classifies the intervals, and F3 reports
+`mmm_present_time` reads each drawable's `presentedTime` and classifies the intervals, and F3 reports
 the last interval, its p95 over a rolling window, the share of intervals that did not wait for an
 extra refresh, and the dropped count. A CPU frame timer says when a frame was *submitted*; this says
 when it was *shown*, which is the only evidence that interpolation helped.
+
+The 2026-09-26 60 Hz cave test found 85% Temporal below budget while matched 85% Spatial held
+59.7–59.8 fps. A Temporal pacing guard now uses the same presentation counters: after at least
+15 missed intervals in ten seconds, with 300 presented frames and a 2.5% miss share, it selects
+Spatial at the same render scale. It then measures Spatial for ten seconds. If Spatial also misses
+the threshold, the guard restores Temporal and suppresses another fallback for that
+world/configuration; if Spatial holds cadence, the fallback remains. It reports the reason and
+resets when the world or requested configuration changes. This is a frame-budget fallback for 7B;
+it does not implement the 7C display-link pacer or reduce Temporal's own GPU cost.
 
 Frame generation is independently validated by the roadmap and is not an algorithmic prerequisite for
 ray tracing, so leaving it here does not block Phase 8 or 9.
@@ -362,18 +385,17 @@ shift at a render scale below 100%, is a ninth and is still open.
 | Increment | Verdict |
 |---|---|
 | **7A — Spatial upscaling** | **Delivered and now exercised in game.** Render-resolution controls, the level's own target, MetalFX spatial upscaling at native HUD resolution, resize handling, a measured feature-off path, and a measured in-session gain of about 20% of the frame at 50% scale (13.5 ms against native's 16.9 ms). Quality against native is still unmeasured. |
-| **7B — Temporal upscaling** | **Implemented and verified offline, with a camera motion producer.** The native kernel, the scene contract, the live encode, the jitter (corrected to render pixels) and the reset lifecycle are all in place and covered by the smoke and scaling checks. It is enabled as a setting, falls back to Spatial with a stated reason when it cannot run, and reports its own state on F3 and the settings page. The named remainder is **moving geometry**: independently moving objects reproject as if static and ghost, because the per-object previous transforms are Phase 8C's contract. No in-game run and no measured temporal cost yet. |
+| **7B — Temporal upscaling** | **Implemented, verified offline and performance-tested in game.** The native kernel, camera reprojection, per-object stamps for entities, particles and pushed blocks, scene contract, live encode, jitter and reset lifecycle are covered by the smoke and scaling checks. It runs in game, falls back to Spatial with a stated reason, and reports state on F3. At 50% on a 5120x2664 output its MetalFX stages cost 7.06 ms and the mode costs about 5.6 ms more than Spatial; the resolution sweep supports an intermediate-output prototype. Visual quality and real object-stamp coverage remain to be judged. |
 | **7C — Frame generation** | **Not implemented.** Blocked on 7B's per-object motion vectors and on frame-loop pacing; the pacing measurement is delivered as its groundwork, and the contract is recorded above. |
 
 The roadmap's 7A exit criterion - "spatial and temporal modes render correctly through resizing and
 history resets, with measured quality and performance" - is met for spatial in **performance** and
 **resize**, and for temporal in **resize**, **history resets** and the offline correctness of its
-motion source. It is not met for temporal quality, which needs a session, and moving geometry is a
-stated gap rather than a completed item. The in-game numbers in §2.5 come from one spot in one world,
+motion source. It is not met for temporal quality, which needs a controlled visual session; moving
+geometry has an implemented stamp path whose real silhouette coverage is not yet signed off. The in-game numbers in §2.5 come from one spot in one world,
 so they establish that the feature pays *here*, not a general figure.
 
-The next implementation priorities are the two visual checks 7A still owes (§2.4), then an in-game
-evaluation of Temporal, and then **per-object motion for moving geometry** - bringing forward the
-shared 8C previous-transform contract, which is now the only thing standing between this motion source
-and a complete one. Separate AA remains optional after that, only if the evaluation justifies it
-(§3.5), and 7C remains blocked on the same motion vectors plus a pacer.
+The next implementation priorities are the two visual checks 7A still owes (§2.4), a controlled
+quality evaluation of Temporal and the diagnostic intermediate-output prototype supported by the
+resolution sweep. Separate AA remains optional after that, only if the evaluation justifies it
+(§3.5), and 7C remains blocked on the pacer and on validating the motion field for interpolation.

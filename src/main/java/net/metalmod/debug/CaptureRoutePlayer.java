@@ -136,7 +136,7 @@ public final class CaptureRoutePlayer {
      * <p>The integrated server is preferred because its console source is already permitted: a
      * singleplayer world needs no cheats. Output is suppressed, so nothing lands in chat mid-capture.
      */
-    private static void run(Minecraft minecraft, String command) {
+    static void run(Minecraft minecraft, String command) {
         MinecraftServer server = minecraft.getSingleplayerServer();
         if (server == null) {
             if (minecraft.getConnection() != null) {

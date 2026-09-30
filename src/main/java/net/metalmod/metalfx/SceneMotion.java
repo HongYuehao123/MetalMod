@@ -277,13 +277,11 @@ public final class SceneMotion {
         }
 
         // The projection carried the sub-pixel jitter the frame was rendered with. MetalFX takes
-        // that offset separately, so it is removed here: post-multiplying by the inverse clip
-        // translation is exact up to the frame's bob rotation, which is a second-order term of a
-        // sub-pixel quantity.
+        // that offset separately. The engine composes bob/portal transforms on the right,
+        // so removing the left-hand translation preserves those transforms exactly.
         frameUnjittered.set(frameProjection);
         if (ProjectionJitter.appliedThisFrame()) {
-            frameUnjittered.translate(-ProjectionJitter.clipX(renderWidth),
-                    -ProjectionJitter.clipY(renderHeight), 0.0f);
+            ProjectionJitter.remove(frameUnjittered, renderWidth, renderHeight);
         }
 
         // The inverse the kernel reconstructs with, and the forward matrix it reprojects with, are

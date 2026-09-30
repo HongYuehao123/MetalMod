@@ -20,6 +20,7 @@ import net.metalmod.metalfx.ProjectionJitter;
 import net.metalmod.metalfx.RenderScaleSettings;
 import net.metalmod.metalfx.SceneMotion;
 import net.metalmod.metalfx.WorldRenderTarget;
+import net.metalmod.metalfx.WorldAntialiasing;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
@@ -90,12 +91,18 @@ public final class ScalingCheck {
             jitterCheck();
             fullSizeCostCheck(device);
             qualityCheck(device);
+            modeAndLifetimeCheck();
             disabledPathCheck();
+            nativeAntialiasingCheck(device);
             scaledPathCheck(device);
             temporalCheck(device);
             temporalCostCheck(device);
         } finally {
+            var finalWorld = WorldRenderTarget.worldTarget();
+            var finalColor = finalWorld == null ? null : finalWorld.getColorTexture();
             WorldRenderTarget.close();
+            check("teardown releases the final owned world", finalColor == null || finalColor.isClosed(), "");
+            check("teardown drains retirement generations", WorldRenderTarget.retiredTargetCount() == 0, "");
             device.close();
         }
 
@@ -105,6 +112,32 @@ public final class ScalingCheck {
         } else {
             System.out.println(failures + " CHECK(S) FAILED");
             System.exit(1);
+        }
+    }
+
+    /** The world AA hook still runs when render scaling is off, and never touches the HUD target later. */
+    private static void nativeAntialiasingCheck(MetalDevice device) {
+        section("native-resolution world anti-aliasing");
+        RenderScaleSettings.chooseRenderScale(1.0);
+        String previousOverride = System.getProperty("metalmod.postAA");
+        try {
+            System.setProperty("metalmod.postAA", "true");
+            MainTarget nativeTarget = new MainTarget(NATIVE_WIDTH, NATIVE_HEIGHT);
+            clearTo(device, nativeTarget, 20, 160, 200);
+            long before = WorldAntialiasing.frameCount();
+            check("world FXAA runs at native render scale", WorldAntialiasing.apply(nativeTarget)
+                    && WorldAntialiasing.frameCount() == before + 1,
+                    WorldAntialiasing.lastError());
+            check("native FXAA preserves a flat world colour",
+                    uniform(device, nativeTarget, 20, 160, 200, 6), "");
+            System.setProperty("metalmod.postAA", "false");
+            check("the AA launch override disables the pass",
+                    !WorldAntialiasing.apply(nativeTarget)
+                            && WorldAntialiasing.frameCount() == before + 1, "");
+        } finally {
+            if (previousOverride == null) System.clearProperty("metalmod.postAA");
+            else System.setProperty("metalmod.postAA", previousOverride);
+            RenderScaleSettings.chooseRenderScale(0.5);
         }
     }
 
@@ -230,6 +263,36 @@ public final class ScalingCheck {
         return resolved;
     }
 
+    /** Exercise Off semantics and native-handle retirement over repeated real target replacements. */
+    private static void modeAndLifetimeCheck() {
+        section("mode selection and target lifetime");
+        RenderScaleSettings.chooseRenderScale(0.75);
+        RenderScaleSettings.chooseUpscaler(MetalFx.SPATIAL);
+        WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
+        WorldRenderTarget.applyPending();
+        for (int i = 0; i < 8; i++) {
+            var old = WorldRenderTarget.worldTarget().getColorTexture();
+            WorldRenderTarget.refresh(NATIVE_WIDTH + (i + 1) * 4, NATIVE_HEIGHT + (i + 1) * 4);
+            WorldRenderTarget.applyPending();
+            check("old target survives replacement until safe boundary " + i, !old.isClosed(), "");
+            WorldRenderTarget.applyPending();
+            check("old target released after safe boundary " + i, old.isClosed(), "");
+            check("retirement queue drains " + i, WorldRenderTarget.retiredTargetCount() == 0, "");
+        }
+        var last = WorldRenderTarget.worldTarget().getColorTexture();
+        RenderScaleSettings.chooseUpscaler(MetalFx.OFF);
+        WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
+        WorldRenderTarget.applyPending();
+        WorldRenderTarget.decideScalingForFrame();
+        check("Off at 75% allocates no reduced world", WorldRenderTarget.worldTarget() == null, "");
+        check("Off is inactive even with a remembered reduced scale", !RenderScaleSettings.active()
+                && !WorldRenderTarget.active(), "");
+        WorldRenderTarget.applyPending();
+        check("Off releases the old world attachments", last.isClosed(), "");
+        RenderScaleSettings.chooseUpscaler(MetalFx.SPATIAL);
+        RenderScaleSettings.chooseRenderScale(0.5);
+    }
+
     /** At the default scale nothing is allocated and nothing is upscaled. */
     private static void disabledPathCheck() {
         section("feature-off path");
@@ -254,11 +317,11 @@ public final class ScalingCheck {
 
         // The redirect is gated on MetalFX being usable, which the frame boundary decides in game.
         // Offscreen there is no frame, so the availability the game would publish is set directly.
+        WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
+        WorldRenderTarget.applyPending();
         WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
         check("MetalFX is usable for the backend's format pair",
                 WorldRenderTarget.scalerAvailable(), WorldRenderTarget.unavailableReason());
-        WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
-        WorldRenderTarget.applyPending();
         // The frame boundary's own decision, which in game is made by the frame hook.
         WorldRenderTarget.decideScalingForFrame();
         var world = WorldRenderTarget.worldTarget();
@@ -382,9 +445,9 @@ public final class ScalingCheck {
         // which is the strongest form (it outranks the launch flag the harness seeded).
         RenderScaleSettings.chooseRenderScale(0.5);
         RenderScaleSettings.chooseUpscaler(MetalFx.TEMPORAL);
-        WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
         WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
         WorldRenderTarget.applyPending();
+        WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
         WorldRenderTarget.decideScalingForFrame();
         WorldRenderTarget.beginFrame(true);
 
@@ -426,6 +489,10 @@ public final class ScalingCheck {
         check("the temporal scaler produced a frame",
                 WorldRenderTarget.temporalFrameCount() > 0,
                 WorldRenderTarget.lastUpscaleError());
+        int[] temporalOutput = WorldRenderTarget.temporalOutputSize();
+        check("temporal history stays at render resolution before Spatial finishes",
+                temporalOutput != null && temporalOutput[0] == width && temporalOutput[1] == height,
+                temporalOutput == null ? "native output" : temporalOutput[0] + "x" + temporalOutput[1]);
         // The effect actually ran and the native target actually holds the frame. MetalFX's header
         // says the output texture should have private storage and this one is shared - which the
         // spatial path has always done - so the result is checked rather than the requirement assumed
@@ -639,8 +706,8 @@ public final class ScalingCheck {
         // projection the engine hands the device carries the offset the camera mixin added.
         ProjectionJitter.beginFrame();
         camera.pos = new Vec3(x, y, z);
-        Matrix4f rendered = new Matrix4f(projection).translate(
-                ProjectionJitter.clipX(world.width), ProjectionJitter.clipY(world.height), 0.0f);
+        Matrix4f rendered = new Matrix4f(projection);
+        ProjectionJitter.apply(rendered, world.width, world.height);
         SceneMotion.captureProjection(rendered);
         SceneMotion.captureCamera(camera);
     }
@@ -861,10 +928,20 @@ public final class ScalingCheck {
     /** Mean milliseconds per upscale step for one effect, with the queue drained after each. */
     private static double timePath(MetalDevice device, int nativeWidth, int nativeHeight,
                                    int iterations, String upscaler) throws Exception {
+        // Diagnostic A/B: preserve the entire fenced path, including motion and MetalFX history,
+        // while holding only the projection jitter phase constant. Run in a separate JVM so the
+        // static history and scaler never cross from one case into the other.
+        boolean fixedJitter = MetalFx.TEMPORAL.equals(upscaler)
+                && Boolean.getBoolean("metalmod.scalingCheckFixedJitter");
+        java.lang.reflect.Field jitterPhase = null;
+        if (fixedJitter) {
+            jitterPhase = ProjectionJitter.class.getDeclaredField("frameIndex");
+            jitterPhase.setAccessible(true);
+        }
         RenderScaleSettings.chooseUpscaler(upscaler);
-        WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
         WorldRenderTarget.refresh(nativeWidth, nativeHeight);
         WorldRenderTarget.applyPending();
+        WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
         WorldRenderTarget.decideScalingForFrame();
         WorldRenderTarget.beginFrame(true);
         var world = WorldRenderTarget.worldTarget();
@@ -885,6 +962,7 @@ public final class ScalingCheck {
 
         // Warm-up, so the first iteration's scaler creation and pipeline compilation are not counted.
         for (int i = 0; i < 5; i++) {
+            if (fixedJitter) jitterPhase.setInt(null, 0);
             temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
             MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
                     ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true,
@@ -900,6 +978,7 @@ public final class ScalingCheck {
         double[] samples = new double[iterations];
         for (int i = 0; i < iterations; i++) {
             long started = System.nanoTime();
+            if (fixedJitter) jitterPhase.setInt(null, 0);
             temporalCapture(world, camera, projection, 0.0, 0.0, 0.0);
             MetalNative.clearTextures(device.queueHandle(), null, false, 0, 0, 0, 0,
                     ((net.metalmod.backend.MetalTexture) world.getDepthTexture()).handle(), true,
@@ -911,8 +990,8 @@ public final class ScalingCheck {
         }
         java.util.Arrays.sort(samples);
         System.out.println(String.format(java.util.Locale.ROOT,
-                "       %s at %dx%d: min %.3f, median %.3f, mean %.3f, max %.3f ms",
-                upscaler, nativeWidth / 2, nativeHeight / 2, samples[0],
+                "       %s%s at %dx%d: min %.3f, median %.3f, mean %.3f, max %.3f ms",
+                upscaler, fixedJitter ? " (fixed jitter)" : "", nativeWidth / 2, nativeHeight / 2, samples[0],
                 samples[samples.length / 2],
                 java.util.Arrays.stream(samples).average().orElse(Double.NaN),
                 samples[samples.length - 1]));

@@ -447,18 +447,19 @@ procedure. Phase 7A itself needs no further code for it.
 
 ### Phase 7 — MetalFX, natively  · **M–L**
 
-**7A complete and verified offline (2026-09-25); 7B implemented and verified offline, with a camera
-motion producer; 7C not implemented.** The per-increment record, the evidence and the gaps are in
-[the Phase 7 plan](docs/phase7-plan.md).
+**Completion review (2026-09-29): 7A and 7B implemented and verified offline; final acceptance
+pending.** Historical live performance evidence exists for both; visual quality is not signed off,
+and the cleanup's Off/jitter/lifetime changes need a current-build in-game check at 2K. See
+[completion review](docs/phase7-completion-review.md). 7C is not implemented. The detailed status
+paragraphs below include historical milestones and do not supersede this verdict.
 MetalMod owns the device, textures and swapchain, so MetalFX operates on its own resources with no
 interop and no presentation conflict - which is what the retired MoltenVK design could never do.
 
-- **7A — Spatial upscaling. DONE.** Render-resolution presets, a level render target of its own,
+- **7A — Spatial upscaling. IMPLEMENTED; ACCEPTANCE PENDING.** Render-resolution presets, a level render target of its own,
   MetalFX spatial upscaling into the native target, the interface still drawn at native resolution,
   resize handling, live settings and an F3 line. Verified by a native smoke test, a scaling harness
   that drives the engine's own `MainTarget` and `FrameGraphBuilder`, a mixin-target check, and pixel
-  assertions in the render check. **Not yet confirmed in game** - see the plan's §2.4 for the six
-  observations that settle it.
+  assertions in the render check. **Current cleanup build needs in-game confirmation** - see the completion review.
 - **7B — Temporal upscaling. IMPLEMENTED, with per-object motion.** The native temporal scaler, the
   mean-centred Halton projection jitter, the live temporal encode and the history-reset lifecycle are
   in place, driven by two producers on one motion texture. Depth reprojection covers a moving camera
@@ -466,7 +467,8 @@ interop and no presentation conflict - which is what the retired MoltenVK design
   own previous positions, which the engine already interpolates every frame, over a depth test that
   keeps them off surfaces they are not in front of. The current/previous-transform contract is
   `metalfx/SceneMotion`, shared with 8C. Verified by twenty new native smoke assertions, twenty-two
-  new scaling-check assertions and the mixin check; no in-game run and no measured temporal cost yet.
+  new scaling-check assertions and the mixin check. Later live runs measured Temporal cost; the
+  current build still needs visual acceptance.
 - **7C — Frame generation. Not implemented.** Blocked on 7B's per-object motion vectors and on
   frame-loop pacing; a stub would misrepresent that. What is delivered is the pacing measurement
   (`presentedTime` intervals, p95, dropped count) that a `CAMetalDisplayLink` pacer is validated
@@ -480,11 +482,10 @@ fallback is when the requested effect cannot run.
 
 **Done when:** spatial and temporal modes render correctly through resizing and history resets, with
 measured quality and performance; frame generation passes its separate pacing and latency checks.
-**7A meets this for spatial** (correctness verified offline, quality and performance measurement
-procedured in TESTING.md §6 but not yet run; no in-game confirmation). **7B meets the resize and
-history-reset halves and has a verified motion source for both the camera and the moving objects the
-engine extracts**, but not measured quality and not in-game confirmation, and geometry whose change is
-not a position is deliberately left with the camera's answer. Frame generation does not.
+**Neither 7A nor 7B is fully closed against this criterion.** Spatial performance and historical
+live operation are established, but controlled image-quality acceptance remains open. Temporal's
+motion and history mechanics pass offline; moving-object/transparency quality and current-build
+resize/reset behavior require in-game validation. Frame generation remains separate.
 
 **Dependencies:** builds on Phase 5's rendering and presentation foundations. Frame generation is
 independently validated and is not an algorithmic prerequisite for ray tracing; neither is temporal
@@ -497,16 +498,24 @@ the roadmap named first: the HUD. Because the level gets its own target rather t
 being resized, the interface never changes resolution, and the scissor-rectangle failure that
 reverted the pre-Phase-5 attempt cannot occur by construction.
 
-### Anti-aliasing — Temporal first; separate AA optional afterward
+### Anti-aliasing — Spatial foliage quality first
+
+**Priority update (2026-09-29): BUG-044 blocks Spatial acceptance.** The user reports unbearable
+far-forest aliasing despite FXAA. Diagnose world-input cutout sampling/coverage and Spatial output
+at fixed 2K before choosing a remedy. Temporal's reported near-native image with soft edges is the
+secondary quality issue; its cause is unisolated. This supersedes the earlier Temporal-first ordering.
+
 
 Temporal is implemented with per-object motion built on the current/previous-frame scene contract
-shared with 8C; what remains is an in-game evaluation. Temporal combines AA and upscaling.
+shared with 8C. A separate full-resolution FXAA pass now runs on the completed world image before
+the HUD in native, Spatial and Temporal modes. Its edge pixels and live cost were verified; subjective
+fine-detail and motion quality remain to be evaluated.
 
 [The anti-aliasing plan](docs/antialiasing-plan.md) records the corrected alternatives. Apple recommends
 antialiased input for Spatial, so optional FXAA/SMAA before Spatial is a valid later experiment.
 MSAA adds geometric coverage information, but requires attachment, resolve and depth-path work;
 4× MSAA does not imply fourfold fragment shading or automatically consume the scaling gain.
-Separate AA work is deferred until after Temporal evaluation, and only if time remains.
+Further AA work, such as pre-Spatial filtering or MSAA coverage, depends on that image evaluation.
 
 ### Phase 8 — Native material and lighting foundations  · **M–L**
 
@@ -596,8 +605,9 @@ native, Spatial and Temporal, including mobs, particles and a piston, which is
 [TESTING.md](TESTING.md) §6.D. Retain the outstanding 7A visual checks and BUG-029 verification; this
 scheduling decision does not establish that they passed.
 
-Temporal already includes AA. A later separate AA experiment would primarily improve the Spatial
-fallback if evaluation establishes a need. Frame generation remains separate work.
+Temporal already includes AA, and the separate final-image FXAA pass now covers native and Spatial
+as well. Judge edge smoothing and fine-detail softness in game before choosing further AA work.
+Frame generation remains separate work.
 
 Phase 6's own carryovers are unchanged and stay named in
 [the Phase 6 plan](docs/phase6-plan.md#phase-6-closed-2026-09-25) - occlusion and linear composition

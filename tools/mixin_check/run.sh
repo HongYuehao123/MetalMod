@@ -46,12 +46,18 @@ pick_newest() {
 }
 ASM_JAR="$(pick_newest asm)"
 ASM_TREE_JAR="$(pick_newest asm-tree)"
+GLFW_JAR="$(ls -1 "$HOME/Documents/.minecraft/libraries/org/lwjgl/lwjgl-glfw"/*/lwjgl-glfw-*.jar 2>/dev/null | rg -v 'natives' | sort -V | tail -1 || true)"
 if [ -z "${ASM_JAR}" ]; then
   echo "ERROR: ASM not found under ~/Documents/.minecraft/libraries; cannot read the client jar." >&2
   exit 2
 fi
+if [ -z "${GLFW_JAR}" ]; then
+  echo "ERROR: lwjgl-glfw jar not found; cannot check GLFW injection targets." >&2
+  exit 2
+fi
 ASM="${ASM_JAR}${ASM_TREE_JAR:+:${ASM_TREE_JAR}}"
 echo "  asm    : $(basename "${ASM_JAR}")"
+echo "  glfw   : $(basename "${GLFW_JAR}")"
 
 cd "${ROOT_DIR}"
-exec "${JAVA}" --source 22 -cp "${ASM}" "${SCRIPT_DIR}/MixinCheck.java" "${INSTANCE}"
+exec "${JAVA}" --source 22 -cp "${ASM}" "${SCRIPT_DIR}/MixinCheck.java" "${INSTANCE}" "${GLFW_JAR}"
