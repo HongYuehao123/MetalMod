@@ -17,6 +17,7 @@
 #include "metalmod/metalmod_metalfx.h"
 #include "metalmod/metalmod_motion.h"
 #include "metalmod/metalmod_aa.h"
+#include "metalmod/metalmod_msaa.h"
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
 // on the Java side in one place.
@@ -1757,7 +1758,153 @@ static void test_world_aa(void) {
     if (device != NULL) mmm_device_release(device);
 }
 
-int main(void) {
+static void test_spatial_coverage(void) {
+    printf("\n== Spatial input coverage and multipass depth ==\n");
+    void* device = mmm_device_create();
+    if (!device) { check("coverage device", false, "no device"); return; }
+    void* queue = mmm_queue_create(device);
+    constexpr int size = 16;
+    void* color = mmm_texture_create(device,70,size,size,true,5);
+    void* depth = mmm_texture_create(device,252,size,size,true,5);
+    void* copyDepth = mmm_texture_create(device,252,size,size,true,5);
+    const char* msl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+struct V { float4 pos [[position]]; };
+vertex V vmain(uint id [[vertex_id]], constant float& z [[buffer(1)]]) {
+    float2 p = float2((id << 1) & 2, id & 2); return {float4(p*2-1,z,1)};
+}
+fragment float4 fmain(constant float4& color [[buffer(1)]]) { return color; }
+)MSL";
+    void* library = mmm_library_create(device,msl,strlen(msl));
+    auto pipeline = [&](int coverage) {
+        void* p = mmm_render_pipeline_create(device,library,"vmain",library,"fmain",
+            70,15,0,0,0,0,0,0,0,252,6,1,3,1,0,0,0,0,NULL,0,NULL,0);
+        mmm_msaa_pipeline(p,coverage); return p;
+    };
+    void* leaf = pipeline(0), *opaque = pipeline(-1);
+    check("coverage pipeline states", leaf && opaque, "");
+    check("coverage registration", mmm_msaa_world(color,depth)==4, "");
+    bool registered = true;
+    auto pass = [&](bool clear, void* state, float z, float r, float g, float b, float a,
+                    bool draw, bool onlyColor=false, bool onlyDepth=false) {
+        void* cb = mmm_command_buffer_create(queue);
+        int loadClear = clear ? 1 : 0; float black[4] = {0,0,0,1};
+        void* e = mmm_render_pass_begin(cb,onlyDepth ? 0 : 1,&color,&loadClear,black,
+            onlyColor ? NULL : depth,loadClear,0,size,size);
+        check("coverage pass encoder", e != NULL, "");
+        check("coverage pass sample count matches registration", e && mmm_msaa_encoder((__bridge id<MTLRenderCommandEncoder>)e) == registered, "");
+        if (draw && e) {
+            mmm_render_pass_set_pipeline(e,state);
+            float tint[4] = {r,g,b,a};
+            [(__bridge id<MTLRenderCommandEncoder>)e setVertexBytes:&z length:sizeof(z) atIndex:1];
+            [(__bridge id<MTLRenderCommandEncoder>)e setFragmentBytes:tint length:sizeof(tint) atIndex:1];
+            mmm_render_pass_draw(e,3,0,3,1,0);
+        }
+        mmm_render_pass_end(e); mmm_command_buffer_commit(cb); mmm_command_buffer_wait(cb);
+        id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)cb;
+        check("coverage command buffer completed", buffer.status==MTLCommandBufferStatusCompleted,
+            buffer.error ? buffer.error.localizedDescription.UTF8String : "");
+        mmm_command_buffer_release(cb);
+    };
+    auto pixel = [&]() {
+        static unsigned char bytes[size*size*4];
+        mmm_texture_read(color,bytes,sizeof(bytes),size*4); return bytes;
+    };
+    pass(true,leaf,.8,1,0,0,.5,true);
+    auto p = pixel();
+    check("alpha-to-coverage resolves half coverage, opaque alpha", abs((int)p[0]-128)<=2 && p[3]==255, "");
+    float depths[size*size]; mmm_texture_read(depth,depths,sizeof(depths),size*4);
+    check("reversed-Z depth resolve keeps near covered sample", fabs(depths[0]-.8)<.001, "");
+    pass(false,opaque,.4,0,0,1,1,true);
+    p = pixel();
+    check("LOAD retains sample depth: background fills uncovered leaf samples",
+        abs((int)p[0]-128)<=2 && abs((int)p[2]-128)<=2, "");
+    mmm_clear_textures(queue,color,true,0,1,0,1,NULL,false,0);
+    pass(false,opaque,0,0,0,0,0,false,true,false);
+    p = pixel(); check("utility color clear visible to color-only LOAD",p[1]==255 && p[0]==0 && p[2]==0, "");
+    void* clearBuffer = mmm_command_buffer_create(queue);
+    void* clearEncoder = mmm_begin_clear_pass(clearBuffer,color,0,1,0,1);
+    mmm_end_encoding(clearEncoder);mmm_command_buffer_commit(clearBuffer);mmm_command_buffer_wait(clearBuffer);
+    mmm_command_buffer_release(clearBuffer);
+    pass(false,opaque,0,0,0,0,0,false,true,false);
+    p=pixel();check("direct clear-pass API invalidates the coverage companion",p[1]==255 && p[0]==0,"");
+    mmm_clear_textures(queue,NULL,false,0,0,0,0,depth,true,1);
+    pass(false,opaque,0,0,0,0,0,false,false,true);
+    mmm_texture_read(depth,depths,sizeof(depths),size*4);
+    check("utility depth clear visible to depth-only LOAD",fabs(depths[0]-1)<.001," ");
+    pass(false,opaque,.4,0,0,1,1,true);
+    p = pixel(); check("seeded near depth occludes later geometry",p[1]==255 && p[2]==0," ");
+    mmm_clear_textures(queue,NULL,false,0,0,0,0,copyDepth,true,.2);
+    check("external depth copy",mmm_copy_texture_to_texture(queue,copyDepth,0,0,0,0,depth,0,0,0,0,size,size,1)==0,"");
+    pass(false,opaque,.4,0,0,1,1,true);
+    p = pixel(); check("copied depth replaces companion before next draw",p[2]==255 && p[1]==0,"");
+    mmm_queue_synchronize(queue);
+    void* view = mmm_texture_create_view(color,70,2,0,1,0,1);
+    mmm_texture_release(view);
+    check("releasing a view retains registered parent",mmm_msaa_world(color,depth)==4,"");
+    check("coverage disable",mmm_msaa_world(NULL,NULL)==0,"");
+    registered = false;
+    pass(true,leaf,.8,1,0,0,.5,true);
+    p=pixel();check("disabled coverage uses single-sample pipeline",p[0]==255 && abs((int)p[3]-128)<=2,"");
+    mmm_texture_release(color);mmm_texture_release(depth);mmm_texture_release(copyDepth);
+    mmm_render_pipeline_release(leaf);mmm_render_pipeline_release(opaque);mmm_library_release(library);
+    mmm_queue_release(queue);mmm_device_release(device);
+}
+
+// Synthetic raster/resolve cost at the 75%-of-2K world input. This is a pass-cost measurement,
+// not an in-game forest frame-time claim. Keep shader work identical between one and four samples.
+static void test_spatial_coverage_cost(void) {
+    printf("\n== Spatial coverage pass cost (1920x1080 input, 2K output budget) ==\n");
+    void* device = mmm_device_create();
+    if (!device) { check("coverage cost device",false,"no device");return; }
+    void* queue = mmm_queue_create(device);
+    void* color = mmm_texture_create(device,70,1920,1080,true,5);
+    void* depth = mmm_texture_create(device,252,1920,1080,true,5);
+    const char* msl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+struct V { float4 pos [[position]]; };
+vertex V vmain(uint id [[vertex_id]]) {
+    float2 p = float2((id << 1) & 2, id & 2);return {float4(p*2-1,.8,1)};
+}
+fragment float4 fmain() { return float4(.2,.8,.1,.5); }
+)MSL";
+    void* lib = mmm_library_create(device,msl,strlen(msl));
+    void* pipeline = mmm_render_pipeline_create(device,lib,"vmain",lib,"fmain",
+        70,15,0,0,0,0,0,0,0,252,6,1,3,1,0,0,0,0,NULL,0,NULL,0);
+    mmm_msaa_pipeline(pipeline,0);
+    double times[2]={};
+    for (int mode=0;mode<2;mode++) {
+        mmm_msaa_world(mode ? color : NULL, mode ? depth : NULL);
+        for(int frame=0;frame<40;frame++) {
+            void* cb=mmm_command_buffer_create(queue);
+            for(int step=0;step<3;step++) {
+                int clear=step==0;float rgba[4]={0,0,0,1};
+                void* e=mmm_render_pass_begin(cb,1,&color,&clear,rgba,depth,clear,0,1920,1080);
+                mmm_render_pass_set_pipeline(e,pipeline);
+                mmm_render_pass_draw(e,3,0,3,1,0);
+                mmm_render_pass_end(e);
+            }
+            mmm_command_buffer_commit(cb);mmm_command_buffer_wait(cb);
+            id<MTLCommandBuffer> b=(__bridge id<MTLCommandBuffer>)cb;
+            if(frame>=8) times[mode] += (b.GPUEndTime-b.GPUStartTime)*1000.0/32.0;
+            mmm_command_buffer_release(cb);
+        }
+        mmm_queue_synchronize(queue);
+    }
+    printf("     three raster passes: single %.3f ms, coverage4 %.3f ms, added %.3f ms\n",
+        times[0],times[1],times[1]-times[0]);
+    check("coverage pass GPU timings available",times[0]>0 && times[1]>0,"");
+    mmm_msaa_world(NULL,NULL);mmm_render_pipeline_release(pipeline);mmm_library_release(lib);
+    mmm_texture_release(color);mmm_texture_release(depth);mmm_queue_release(queue);mmm_device_release(device);
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--spatial-coverage-only") == 0) {
+        @autoreleasepool { test_spatial_coverage(); }
+        return g_failures == 0 ? 0 : 1;
+    }
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
     printf("==================================================\n");
@@ -1783,6 +1930,8 @@ int main(void) {
         test_metalfx_spatial();
         test_metalfx_temporal();
         test_world_aa();
+        test_spatial_coverage();
+        test_spatial_coverage_cost();
     }
     printf("\n==================================================\n");
     if (g_failures == 0) printf("ALL CHECKS PASSED\n");

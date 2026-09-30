@@ -9,8 +9,6 @@ import java.lang.foreign.MemorySegment;
 /** Owns the frame-boundary registration for 4x Spatial input coverage. Never touches the HUD,
  * native target or Temporal input. Queue completion precedes replacement of private companions. */
 public final class SpatialInputAntialiasing {
-    private static final boolean ENABLED = !"false".equalsIgnoreCase(
-            System.getProperty("metalmod.spatialAA", "true"));
     private static long registeredColor, registeredDepth;
     private static int samples;
 
@@ -18,7 +16,7 @@ public final class SpatialInputAntialiasing {
 
     public static void configure(RenderTarget target, boolean spatial) {
         MemorySegment color = MemorySegment.NULL, depth = MemorySegment.NULL;
-        if (ENABLED && spatial && target != null
+        if (net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing() && spatial && target != null
                 && target.getColorTextureView() instanceof MetalTextureView c
                 && target.getDepthTextureView() instanceof MetalTextureView d) {
             color = c.handle(); depth = d.handle();

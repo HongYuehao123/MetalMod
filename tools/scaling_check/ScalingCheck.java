@@ -284,6 +284,7 @@ public final class ScalingCheck {
         WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
         WorldRenderTarget.applyPending();
         WorldRenderTarget.decideScalingForFrame();
+        check("Off bypasses Spatial coverage AA", net.metalmod.metalfx.SpatialInputAntialiasing.samples() == 0, "");
         check("Off at 75% allocates no reduced world", WorldRenderTarget.worldTarget() == null, "");
         check("Off is inactive even with a remembered reduced scale", !RenderScaleSettings.active()
                 && !WorldRenderTarget.active(), "");
@@ -323,7 +324,16 @@ public final class ScalingCheck {
         check("MetalFX is usable for the backend's format pair",
                 WorldRenderTarget.scalerAvailable(), WorldRenderTarget.unavailableReason());
         // The frame boundary's own decision, which in game is made by the frame hook.
+        WorldRenderTarget.beginFrame(true);
         WorldRenderTarget.decideScalingForFrame();
+        check("Spatial registers 4x input coverage", net.metalmod.metalfx.SpatialInputAntialiasing.samples() == 4, "");
+        boolean savedCoverage = net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing;
+        net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing = false;
+        WorldRenderTarget.decideScalingForFrame();
+        check("Spatial coverage off switch takes effect at boundary", net.metalmod.metalfx.SpatialInputAntialiasing.samples() == 0, "");
+        net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing = savedCoverage;
+        WorldRenderTarget.decideScalingForFrame();
+        check("Spatial coverage re-enables without replacing world target", net.metalmod.metalfx.SpatialInputAntialiasing.samples() == 4, "");
         var world = WorldRenderTarget.worldTarget();
         check("a level target exists", world != null, "");
         if (world == null) {
@@ -350,9 +360,12 @@ public final class ScalingCheck {
         // that draws only the interface must not clear the small target and leave the large one
         // holding the previous frame.
         WorldRenderTarget.beginFrame(false);
+        WorldRenderTarget.decideScalingForFrame();
+        check("menu frames bypass Spatial coverage", net.metalmod.metalfx.SpatialInputAntialiasing.samples() == 0, "");
         check("a frame with no level reports that, before anything is cleared",
                 !WorldRenderTarget.frameHasLevel(), "");
         WorldRenderTarget.beginFrame(true);
+        WorldRenderTarget.decideScalingForFrame();
         check("a frame with a level reports that", WorldRenderTarget.frameHasLevel(), "");
 
         // The engine's own main target, at native size, as the destination of the upscale.
@@ -448,14 +461,15 @@ public final class ScalingCheck {
         WorldRenderTarget.refresh(NATIVE_WIDTH, NATIVE_HEIGHT);
         WorldRenderTarget.applyPending();
         WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
-        WorldRenderTarget.decideScalingForFrame();
         WorldRenderTarget.beginFrame(true);
+        WorldRenderTarget.decideScalingForFrame();
 
         var world = WorldRenderTarget.worldTarget();
         check("a level target exists for the temporal path", world != null, "");
         if (world == null) {
             return;
         }
+        check("Temporal bypasses Spatial coverage AA", net.metalmod.metalfx.SpatialInputAntialiasing.samples() == 0, "");
         check("the frame runs temporally", WorldRenderTarget.temporalActive(),
                 WorldRenderTarget.temporalFallbackReason());
         if (!WorldRenderTarget.temporalActive()) {
@@ -654,8 +668,8 @@ public final class ScalingCheck {
         WorldRenderTarget.refresh(NATIVE_WIDTH + 100, NATIVE_HEIGHT + 100);
         WorldRenderTarget.applyPending();
         WorldRenderTarget.refresh(NATIVE_WIDTH + 100, NATIVE_HEIGHT + 100);
-        WorldRenderTarget.decideScalingForFrame();
         WorldRenderTarget.beginFrame(true);
+        WorldRenderTarget.decideScalingForFrame();
         if (WorldRenderTarget.temporalActive() && WorldRenderTarget.worldTarget() != null) {
             MainTarget resized = new MainTarget(NATIVE_WIDTH + 100, NATIVE_HEIGHT + 100);
             temporalFrame(device, WorldRenderTarget.worldTarget(), resized, camera, projection,
@@ -942,8 +956,8 @@ public final class ScalingCheck {
         WorldRenderTarget.refresh(nativeWidth, nativeHeight);
         WorldRenderTarget.applyPending();
         WorldRenderTarget.setScalingAvailable(WorldRenderTarget.metalFxUsable(device));
-        WorldRenderTarget.decideScalingForFrame();
         WorldRenderTarget.beginFrame(true);
+        WorldRenderTarget.decideScalingForFrame();
         var world = WorldRenderTarget.worldTarget();
         if (world == null || !WorldRenderTarget.scalingThisFrame()) {
             return Double.NaN;

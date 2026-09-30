@@ -22,7 +22,7 @@ public final class MetalNative {
     private static boolean available = false;
     private static String loadError = null;
     private static MethodHandle mhCaptureSetEnabled, mhCaptureReadReset;
-    private static MethodHandle mhAaRun, mhMsaaWorld, mhMsaaPipeline;
+    private static MethodHandle mhAaRun, mhMsaaWorld, mhMsaaPipeline, mhMsaaPipelineReady;
     private static boolean capturing;
     private static Thread captureThread;
     private static long capturePipelineNanos, capturePipelineCount;
@@ -123,6 +123,7 @@ public final class MetalNative {
                 .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, A, A, A)))
                 .orElse(null);
 
+        mhMsaaPipelineReady = optional(lookup, linker, "mmm_msaa_pipeline_ready", FunctionDescriptor.of(I, A));
         mhMsaaWorld = optional(lookup, linker, "mmm_msaa_world", FunctionDescriptor.of(I, A, A));
         mhMsaaPipeline = optional(lookup, linker, "mmm_msaa_pipeline", FunctionDescriptor.of(I, A, I));
         mhDeviceCreate = linker.downcallHandle(symbol(lookup, "mmm_device_create"), FunctionDescriptor.of(A));
@@ -399,6 +400,9 @@ public final class MetalNative {
     public static boolean msaaAvailable() { return mhMsaaWorld != null && mhMsaaPipeline != null; }
     public static int msaaWorld(MemorySegment color, MemorySegment depth) {
         return mhMsaaWorld == null ? -1 : i(mhMsaaWorld, color, depth);
+    }
+    public static int msaaPipelineReady(MemorySegment pipeline) {
+        return mhMsaaPipelineReady == null ? -1 : i(mhMsaaPipelineReady, pipeline);
     }
     public static int msaaPipeline(MemorySegment pipeline, int coverageIndex) {
         return mhMsaaPipeline == null ? -1 : i(mhMsaaPipeline, pipeline, coverageIndex);

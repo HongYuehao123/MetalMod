@@ -151,6 +151,9 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                     + net.metalmod.metalfx.WorldRenderTarget.unavailableReason()
                     + " - rendering at native resolution§r");
         }
+        if (metalActive && net.metalmod.metalfx.SpatialInputAntialiasing.samples() > 1) {
+            displayer.addLine("§6[MetalMod]§r Spatial input AA §b4x MSAA + cutout coverage§r");
+        }
         if (metalActive && net.metalmod.metalfx.WorldAntialiasing.enabled()) {
             String aaError = net.metalmod.metalfx.WorldAntialiasing.lastError();
             displayer.addLine("§6[MetalMod]§r world AA §bFXAA§r before HUD, frames §b"

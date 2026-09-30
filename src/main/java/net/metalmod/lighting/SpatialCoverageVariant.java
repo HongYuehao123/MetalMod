@@ -29,7 +29,13 @@ public final class SpatialCoverageVariant {
                 .replace(CUTOUT, "if (MetalModCoverageState.x > 0.5) {\n"
                     + "        // Recover fractional threshold coverage before the MSAA resolve.\n"
                     + "        float width = max(fwidth(color.a), 1.0 / 255.0);\n"
-                    + "        color.a = clamp((color.a - ALPHA_CUTOUT) / width + 0.5, 0.0, 1.0);\n"
+                    + "        float thresholdCoverage = clamp((color.a - ALPHA_CUTOUT) / width + 0.5, 0.0, 1.0);\n"
+                    + "        // A minified alpha mip already estimates leaf area. Hard-thresholding it\n"
+                    + "        // loses that area, including constant distant mips with zero derivative.\n"
+                    + "        float footprint = max(length(dFdx(texCoord0) * vec2(TextureSize)),\n"
+                    + "                              length(dFdy(texCoord0) * vec2(TextureSize)));\n"
+                    + "        float minified = clamp(log2(max(footprint, 1.0)), 0.0, 1.0);\n"
+                    + "        color.a = mix(thresholdCoverage, color.a, minified);\n"
                     + "        if (color.a <= 0.0) discard;\n"
                     + "    } else " + CUTOUT);
     }

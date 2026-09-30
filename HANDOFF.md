@@ -183,6 +183,20 @@ measurable price**; spatial stays the default and the settings page and F6 label
 record, resolution sweep, limits and reproduce steps: [docs/temporal-performance.md](docs/temporal-performance.md);
 defect entry: BUG-035.
 
+## Spatial foliage correction implemented (2026-09-29)
+
+Spatial uses 4x MSAA input with alpha-to-coverage for hash-verified vanilla cutout terrain, including
+minified alpha-mip area. Single-sample engine attachments receive color/depth resolves after passes;
+per-sample reversed-Z depth survives ordinary LOADs, and external clears/copies invalidate companions.
+The staged **Spatial foliage AA** control defaults on and supports live A/B; F3 shows active coverage.
+Native, Temporal and menu paths bypass it. See [contract and evidence](docs/spatial-input-aa.md).
+
+Offline tests pass: real-shader foliage reference error drops about 28%, excess motion variation 58%,
+and distant-mip error 69% in the synthetic fixture. All 87+9 pipelines compile at both sample counts;
+new native multipass tests pass Metal validation in isolation. Synthetic three-pass 1080p-input cost
+was approximately 1.53 ms extra in the final run. Actual forest acceptance and frame-time evaluation remain
+pending; BUG-044 stays open. The built JAR has not been installed in the play instance.
+
 ## Agreed next priority
 
 **User priority, 2026-09-29: fix Spatial distant-forest quality first (BUG-044).** The user reports

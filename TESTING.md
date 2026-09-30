@@ -5,6 +5,16 @@ How to build, verify, and check the Metal backend. `HANDOFF.md` is the current s
 
 ---
 
+Spatial foliage regression (2026-09-29): the render check now has **205 pixel/contract assertions**,
+including a real cutout/RGSS mipmapped leaf mask, eight camera phases, actual Spatial outputs and a
+supersampled reference. Images go to `build/foliage-check/`. Shader inventory verifies all 87+9
+pipelines at sample counts 1 and 4. The native smoke adds coverage/depth/load/copy/lifetime tests
+and a synthetic 1920x1080-input pass-cost benchmark. Run `MTL_DEBUG_LAYER=1
+native/build/metalmod_smoke --spatial-coverage-only` for isolated validation (full-suite validation
+still hits BUG-032). Scaling now has **130 assertions**, including Spatial registration/live off-on,
+menu/Off/Temporal bypass. Actual forest quality/cost remains a live acceptance gate; compare the
+**Spatial foliage AA** setting off/on at fixed 2K with FXAA off. See [details](docs/spatial-input-aa.md).
+
 Cleanup regressions (2026-09-29): after the canonical build, run
 `bash tools/jitter_check/run.sh` for the 64 depth/phase displacement cases, bob/portal removal and
 mode-plan checks. `tools/scaling_check/run.sh` now reports 124 passing assertions, adding eight

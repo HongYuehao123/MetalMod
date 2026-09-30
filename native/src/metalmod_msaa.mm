@@ -40,6 +40,7 @@ int32_t mmm_msaa_world(void* color, void* depth) {
     @autoreleasepool {
         id<MTLTexture> c = root((__bridge id<MTLTexture>)color);
         id<MTLTexture> d = root((__bridge id<MTLTexture>)depth);
+        if (!c && !d) { gSeedLibrary = nil; gSeedStates = nil; gSeedDepth = nil; }
         if (c == gColor && d == gDepth) return c ? 4 : 0;
         // Caller changes registrations only at a drained frame boundary.
         gColor = nil; gDepth = nil; gCompanions = nil; gInvalid = nil;
@@ -95,9 +96,10 @@ fragment CD seedBoth(V v [[stage_in]], texture2d<float, access::read> c [[textur
 }
 fragment float4 seedColor(V v [[stage_in]], texture2d<float, access::read> c [[texture(0)]],
     constant Flags& f [[buffer(0)]]) { return f.colorLoad ? c.read(uint2(v.position.xy)) : f.colorClear; }
-fragment float seedDepth(V v [[stage_in]], depth2d<float, access::read> d [[texture(1)]],
-    constant Flags& f [[buffer(0)]]) [[depth(any)]] {
-    return f.depthLoad ? d.read(uint2(v.position.xy)) : f.depthClear;
+struct D { float depth [[depth(any)]]; };
+fragment D seedDepth(V v [[stage_in]], depth2d<float, access::read> d [[texture(1)]],
+    constant Flags& f [[buffer(0)]]) {
+    return {f.depthLoad ? d.read(uint2(v.position.xy)) : f.depthClear};
 }
 )MSL";
         NSError* error = nil;

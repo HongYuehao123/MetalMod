@@ -7,6 +7,11 @@ in game. 7C is not implemented. See [completion review](phase7-completion-review
 current evidence and remaining 2K checks. Older sections below preserve the implementation history;
 statements that there has been no live run are historical, not the current verdict.
 
+Spatial foliage correction (2026-09-29): 4x input coverage with a guarded vanilla cutout adapter,
+resolved engine attachments, reversed-Z multipass depth, live AA controls and new foliage tests are
+implemented. [Contract and evidence](spatial-input-aa.md). Offline gates pass; BUG-044 remains open
+pending the matched 2K forest quality/performance comparison.
+
 Baseline reviewed: `280f3df`, Minecraft 26.2 client in `MetalMod_Test_26.2`, Apple M4 Pro, macOS 27.
 
 ---

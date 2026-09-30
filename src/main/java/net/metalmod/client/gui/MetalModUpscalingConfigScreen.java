@@ -61,6 +61,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
     private double draftScale = RenderScaleSettings.renderScale();
     private String draftUpscaler = RenderScaleSettings.upscaler();
     private boolean draftNotice = RenderScaleSettings.showNotice();
+    private boolean draftSpatialAA = net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing();
     private boolean draftAA = net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing;
 
     private Button scaleDownButton;
@@ -68,6 +69,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
     private Button upscalerCycleButton;
     private Button noticeButton;
     private Button aaButton;
+    private Button spatialAAButton;
     private Button doneButton;
     private MultiLineTextWidget statusWidget;
 
@@ -108,6 +110,13 @@ public class MetalModUpscalingConfigScreen extends Screen {
                 b -> cycleUpscaler()).bounds(buttonX, y, 142, 20).build());
         y += ROW;
 
+        label(left, y, "Spatial foliage AA");
+        this.spatialAAButton = addRenderableWidget(Button.builder(Component.literal(""), b -> {
+            this.draftSpatialAA = !this.draftSpatialAA;
+            refresh();
+        }).bounds(buttonX, y, 142, 20).build());
+        y += ROW;
+
         // 3. Full-resolution edge AA applies to the world even when render scale is 100%.
         label(left, y, "World anti-aliasing");
         this.aaButton = addRenderableWidget(Button.builder(Component.literal(""), b -> {
@@ -127,7 +136,7 @@ public class MetalModUpscalingConfigScreen extends Screen {
 
         // 4. Live status: the answers, not the settings.
         this.statusWidget = this.addRenderableWidget(new MultiLineTextWidget(left, y,
-                Component.literal(""), this.font).setMaxWidth(360).setMaxRows(8));
+                Component.literal(""), this.font).setMaxWidth(360).setMaxRows(Math.max(2, Math.min(8, (this.height - y - 42) / Math.max(1, this.font.lineHeight)))));
         y += 104;
 
         this.doneButton = addRenderableWidget(Button.builder(Component.literal("Done"),
@@ -195,7 +204,8 @@ public class MetalModUpscalingConfigScreen extends Screen {
     /** Whether the page is proposing anything at all, including the notice. */
     private boolean draftDiffers() {
         return renderDraftDiffers() || this.draftNotice != RenderScaleSettings.showNotice()
-                || this.draftAA != net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing;
+                || this.draftAA != net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing
+                || this.draftSpatialAA != net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing();
     }
 
     /**
@@ -211,6 +221,11 @@ public class MetalModUpscalingConfigScreen extends Screen {
         boolean renderChanged = false;
         if (this.draftNotice != RenderScaleSettings.showNotice()) {
             RenderScaleSettings.chooseNotice(this.draftNotice);
+        }
+        if (this.draftSpatialAA != net.metalmod.config.MetalConfig.INSTANCE.spatialAntialiasing()) {
+            net.metalmod.config.MetalConfig.INSTANCE.chooseSpatialAntialiasing(this.draftSpatialAA);
+            net.metalmod.config.MetalConfig.INSTANCE.save();
+            renderChanged = true;
         }
         if (this.draftAA != net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing) {
             net.metalmod.config.MetalConfig.INSTANCE.postAntialiasing = this.draftAA;
@@ -257,6 +272,10 @@ public class MetalModUpscalingConfigScreen extends Screen {
         }
         if (this.noticeButton != null) {
             this.noticeButton.setMessage(Component.literal(this.draftNotice ? "ON" : "OFF"));
+        }
+        if (this.spatialAAButton != null) {
+            this.spatialAAButton.setMessage(Component.literal(this.draftSpatialAA ? "ON (Spatial)" : "OFF"));
+            this.spatialAAButton.active = true;
         }
         if (this.aaButton != null) {
             this.aaButton.setMessage(Component.literal(this.draftAA ? "FXAA ON" : "OFF"));

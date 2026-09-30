@@ -813,7 +813,32 @@ void mmm_render_pipeline_release(void* pipeline) {
 int32_t mmm_msaa_pipeline(void* handle, int32_t coverageBufferIndex) {
     MMMPipeline* p = (MMMPipeline*)handle;
     if (!p) return -1;
+    if (p->msaaState && p->coverageBufferIndex != coverageBufferIndex) return -1;
     p->coverageBufferIndex = coverageBufferIndex;
+    return 0;
+}
+
+int32_t mmm_msaa_pipeline_ready(void* handle) {
+    MMMPipeline* metalPipeline = (MMMPipeline*)handle;
+    if (!metalPipeline) return -1;
+    @autoreleasepool {
+        if (!metalPipeline->msaaState) {
+            MTLRenderPipelineDescriptor* descriptor = [(__bridge MTLRenderPipelineDescriptor*)metalPipeline->descriptor copy];
+            descriptor.rasterSampleCount = 4;
+            descriptor.alphaToCoverageEnabled = metalPipeline->coverageBufferIndex >= 0;
+            descriptor.alphaToOneEnabled = metalPipeline->coverageBufferIndex >= 0;
+            NSError* error = nil;
+            id<MTLRenderPipelineState> state = [descriptor.vertexFunction.device
+                newRenderPipelineStateWithDescriptor:descriptor error:&error];
+            if (!state) {
+                mmm_set_last_error([NSString stringWithFormat:@"MSAA pipeline: %@", error]);
+                NSLog(@"[MetalMod] MSAA pipeline: %@", error);
+                return -1;
+            }
+            metalPipeline->msaaState = (__bridge_retained void*)state;
+        }
+    }
+    mmm_set_last_error(nil);
     return 0;
 }
 
@@ -883,21 +908,7 @@ void mmm_render_pass_set_pipeline(void* encoder, void* pipeline) {
     if (metalEncoder == nil || metalPipeline == NULL) return;
     @autoreleasepool {
         bool multisampled = mmm_msaa_encoder(metalEncoder);
-        if (multisampled && !metalPipeline->msaaState) {
-            MTLRenderPipelineDescriptor* descriptor = [(__bridge MTLRenderPipelineDescriptor*)metalPipeline->descriptor copy];
-            descriptor.rasterSampleCount = 4;
-            descriptor.alphaToCoverageEnabled = metalPipeline->coverageBufferIndex >= 0;
-            descriptor.alphaToOneEnabled = metalPipeline->coverageBufferIndex >= 0;
-            NSError* error = nil;
-            id<MTLRenderPipelineState> state = [descriptor.vertexFunction.device
-                newRenderPipelineStateWithDescriptor:descriptor error:&error];
-            if (!state) {
-                mmm_set_last_error([NSString stringWithFormat:@"MSAA pipeline: %@", error]);
-                NSLog(@"[MetalMod] MSAA pipeline: %@", error);
-                return;
-            }
-            metalPipeline->msaaState = (__bridge_retained void*)state;
-        }
+        if (multisampled && mmm_msaa_pipeline_ready(pipeline) != 0) return;
         if (metalPipeline->pipelineState) {
             [metalEncoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)(multisampled
                 ? metalPipeline->msaaState : metalPipeline->pipelineState)];
@@ -1571,6 +1582,7 @@ void* mmm_begin_clear_pass(void* commandBuffer, void* texture,
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
     id<MTLTexture> target = mmm_texture(texture);
     if (buffer == nil || target == nil) return NULL;
+    mmm_msaa_written(target);
 
     @autoreleasepool {
         MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];

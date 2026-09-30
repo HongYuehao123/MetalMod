@@ -137,7 +137,10 @@ public final class ShaderInventory {
             detail = detail.substring(marker);
         }
         if (compiled != null) {
+            int multisample = net.metalmod.backend.MetalNative.msaaPipelineReady(compiled.handle());
             compiled.close();
+            if (multisample != 0) return new Result(location, Status.FAILED, "4x pipeline: "
+                    + net.metalmod.backend.MetalNative.lastError());
             // A successful compile can still have produced diagnostics (a binding-kind mismatch, a
             // slot collision). They are the point of running this, so keep them rather than
             // discarding everything that is not a failure.

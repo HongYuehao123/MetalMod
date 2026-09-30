@@ -5,6 +5,13 @@ reports unacceptable output that final FXAA does not solve. Temporal is near nat
 assessment, with edge softness remaining as a secondary issue. 2K remains the performance target;
 the separate native quality gap (BUG-040) remains open.
 
+## Implemented Spatial input correction
+
+4x world MSAA plus verified vanilla cutout coverage is implemented. Nonuniform real-shader tests
+show reduced reconstruction error and excess motion variation; distant alpha mips retain area before
+Spatial. The live foliage-AA control permits matched comparisons. See [implementation and evidence](spatial-input-aa.md).
+All applicable offline gates pass; actual forest quality/frame cost remain pending, so BUG-044 is open.
+
 ## Current priority: Spatial foliage reconstruction
 
 At a fixed forest view, record actual output/world dimensions, effective scaler, mipmap settings,
@@ -17,7 +24,8 @@ Investigate mip/LOD and alpha-cutout sampling/coverage, world scale, and input a
 that comparison. These are hypotheses, not identified causes. A final-image edge blend cannot be the
 acceptance test for a distant forest. Retain detail and reduce aliasing/shimmer within the 2K budget;
 do not replace the defect with broad blur or assume more sharpening repairs missing samples.
-The next work is input/reconstruction diagnosis, not another post-FXAA parameter adjustment.
+The input/reconstruction correction is implemented; the next acceptance step is the matched forest
+comparison, rather than another post-FXAA parameter adjustment.
 
 Do not assume ordinary MSAA fixes leaf alpha-test boundaries, or choose an AA architecture before
 isolating the failure. No new 5K Temporal benchmark is part of this priority. Temporal remains a
@@ -76,8 +84,8 @@ input pixel covers the area of four output pixels. The result can have both soft
 jagged edges; shimmering during movement is a further temporal stability problem.
 
 Apple recommends antialiased, noise-free input for Spatial. Adding AA before it is therefore
-compatible with its intended use. The MetalMod world path renders single-sampled and now runs a
-final-image FXAA stage. Mipmaps help texture minification,
+compatible with its intended use. Native and Temporal remain single-sampled; Spatial now uses the coverage input described above.
+The optional final-image FXAA stage remains separate. Mipmaps help texture minification,
 but do not antialias geometry silhouettes.
 
 Source: [Apple — Boost performance with MetalFX Upscaling](https://developer.apple.com/videos/play/wwdc2022/10103/).

@@ -120,6 +120,8 @@ public final class RenderCheck {
                 terrainCheck(device, terrain);
             }
 
+            foliageCoverageCheck(device, source);
+
             // Entities. ENTITY_CUTOUT is compiled with PER_FACE_LIGHTING, so gl_FrontFacing picks
             // between the front and the back light colour - which makes a winding regression visible
             // as the dim back colour rather than as nothing. It also carries four uniform blocks
@@ -460,6 +462,175 @@ public final class RenderCheck {
      * {@code Globals} - if it were still sharing a Metal slot with {@code Fog}, the camera position
      * would be fog data and the quad would be somewhere else entirely.
      */
+    /** Dense, nonuniform alpha masks with a real mip chain and the real RGSS/cutout terrain shader.
+     * Compare Spatial output to a 4x raster reference over subpixel camera phases, with FXAA absent. */
+    private static void foliageCoverageCheck(MetalDevice device, ShaderSource source) throws Exception {
+        RenderPipeline cutout = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines")
+                .getField("CUTOUT_TERRAIN").get(null);
+        device.precompilePipeline(cutout, source);
+        check("verified cutout declares native coverage state", device.pipelineFor(cutout) != null
+                && device.pipelineFor(cutout).fragmentBuffer("MetalModCoverage") >= 0, "");
+        check("resource-pack cutout remains unmodified", !net.metalmod.lighting.SpatialCoverageVariant.verified(
+                cutout, source.get(cutout.getVertexShader(), ShaderType.VERTEX),
+                source.get(cutout.getFragmentShader(), ShaderType.FRAGMENT).replace("discard;", "discard; color.r = 0.0;")), "");
+        GpuTexture atlas = device.createTexture("foliage mask", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 128, 128, 1, 8);
+        int[] alpha = new int[128 * 128];
+        for (int y = 0; y < 128; y++) for (int x = 0; x < 128; x++) {
+            double dx = (x % 16) - 7.4, dy = (y % 16) - 7.1;
+            double u = dx * .8 + dy * .6, v = -dx * .6 + dy * .8;
+            alpha[y * 128 + x] = u*u/58 + v*v/24 < 1 ? 255 : 0;
+        }
+        for (int mip = 0, extent = 128; mip < 8; mip++, extent /= 2) {
+            ByteBuffer bytes = ByteBuffer.allocateDirect(extent * extent * 4);
+            for (int a : alpha) bytes.put((byte)255).put((byte)255).put((byte)255).put((byte)a);
+            bytes.flip();
+            MetalNative.textureReplaceRegion(((MetalTexture)atlas).handle(), mip, 0, 0, 0, extent, extent,
+                    bytes, extent * 4L);
+            if (extent > 1) {
+                int[] next = new int[extent * extent / 4];
+                for (int y = 0; y < extent/2; y++) for (int x = 0; x < extent/2; x++) {
+                    int p = (2*y)*extent+2*x;
+                    next[y*(extent/2)+x] = (alpha[p]+alpha[p+1]+alpha[p+extent]+alpha[p+extent+1]+2)/4;
+                }
+                alpha = next;
+            }
+        }
+        GpuTexture light = device.createTexture("foliage lightmap", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        solid(light, 255, 255, 255, 255);
+        GpuTextureView av = device.createTextureView(atlas), lv = device.createTextureView(light);
+        double oldError = 0, coverageError = 0;
+        byte[] oldPrevious = null, aaPrevious = null, refPrevious = null;
+        double oldMotionError = 0, aaMotionError = 0;
+        Path output = Paths.get("build/foliage-check"); Files.createDirectories(output);
+        for (int phase = 0; phase < 8; phase++) {
+            float shift = phase / 512f;
+            byte[] referenceHigh = foliageImage(device, cutout, av, lv, 512, 128, shift, false, .48f);
+            byte[] reference = boxReduce(referenceHigh, 512, 128);
+            byte[] old = foliageImage(device, cutout, av, lv, 64, 128, shift, false, .48f);
+            byte[] aa = foliageImage(device, cutout, av, lv, 64, 128, shift, true, .48f);
+            oldError += imageError(old, reference); coverageError += imageError(aa, reference);
+            if (phase > 0) {
+                oldMotionError += motionError(oldPrevious, old, refPrevious, reference);
+                aaMotionError += motionError(aaPrevious, aa, refPrevious, reference);
+            }
+            if (phase == 0) {
+                writeImage(output.resolve("single-sample.png"), old, 128);
+                writeImage(output.resolve("coverage-4x.png"), aa, 128);
+                writeImage(output.resolve("reference.png"), reference, 128);
+            }
+            oldPrevious = old; aaPrevious = aa; refPrevious = reference;
+        }
+        System.out.printf("  foliage Spatial/reference MSE: single %.2f, coverage %.2f; motion residual %.2f -> %.2f%n",
+                oldError/8, coverageError/8, oldMotionError/7, aaMotionError/7);
+        check("Spatial foliage coverage reduces raster-reference error over 8 camera phases",
+                coverageError < oldError * .95, "single=" + oldError + " coverage=" + coverageError);
+        check("Spatial foliage coverage reduces excess motion variation",
+                aaMotionError < oldMotionError, "single=" + oldMotionError + " coverage=" + aaMotionError);
+        // Farther leaves: the alpha mip approaches a constant fractional area. A derivative-only
+        // threshold smooth still discards that mip wholesale; coverage must retain its leaf area.
+        byte[] farReference = boxReduce(foliageImage(device,cutout,av,lv,512,128,0,false,4.0f),512,128);
+        byte[] farOld = foliageImage(device,cutout,av,lv,64,128,0,false,4.0f);
+        byte[] farAA = foliageImage(device,cutout,av,lv,64,128,0,true,4.0f);
+        double farOldError = imageError(farOld,farReference), farAAError = imageError(farAA,farReference);
+        System.out.printf("  far mip/reference MSE: single %.2f, coverage %.2f%n",farOldError,farAAError);
+        check("constant distant alpha mips retain coverage rather than disappearing",
+                farAAError < farOldError * .5, "single="+farOldError+" coverage="+farAAError);
+        writeImage(output.resolve("far-single-sample.png"),farOld,128);
+        writeImage(output.resolve("far-coverage-4x.png"),farAA,128);
+        writeImage(output.resolve("far-reference.png"),farReference,128);
+        av.close(); lv.close(); atlas.close(); light.close();
+    }
+    private static byte[] foliageImage(MetalDevice device, RenderPipeline pipeline, GpuTextureView atlas,
+            GpuTextureView light, int size, int outputSize, float phase, boolean msaa, float uvScale) throws Exception {
+        GpuTexture color = device.createTexture("foliage world", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_SRC,
+                GpuFormat.RGBA8_UNORM, size, size, 1, 1);
+        GpuTexture depth = device.createTexture("foliage depth", GpuTexture.USAGE_RENDER_ATTACHMENT
+                | GpuTexture.USAGE_TEXTURE_BINDING, GpuFormat.D32_FLOAT, size, size, 1, 1);
+        GpuTextureView cv = device.createTextureView(color), dv = device.createTextureView(depth);
+        if (msaa) check("4x foliage attachments registered", MetalNative.msaaWorld(
+                ((MetalTexture)color).handle(), ((MetalTexture)depth).handle()) == 4, "");
+        ByteBuffer verts = terrainVertices();
+        // Rotated texture footprint, independent of raster-grid phase. Several leaves per pixel at
+        // the small input resolution; base-level RGSS offsets alone cannot supply cutout coverage.
+        for (int i = 0; i < 4; i++) {
+            float x = verts.getFloat(i*28), y = verts.getFloat(i*28+4);
+            verts.putFloat(i*28+16, (x*.8f-y*.6f)*uvScale + .5f + phase);
+            verts.putFloat(i*28+20, (x*.6f+y*.8f)*uvScale + .5f + phase*.31f);
+        }
+        GpuBuffer vb = device.createBuffer(() -> "foliage vertices", GpuBuffer.USAGE_VERTEX, verts);
+        GpuBuffer ib = device.createBuffer(() -> "foliage indices", GpuBuffer.USAGE_INDEX, indexBytes());
+        ByteBuffer section = chunkSection(); section.putInt(72,128).putInt(76,128);
+        Map<String, GpuBuffer> uniforms = new LinkedHashMap<>();
+        uniforms.put("Projection", device.createBuffer(() -> "projection", GpuBuffer.USAGE_UNIFORM, identityMat4()));
+        uniforms.put("ChunkSection", device.createBuffer(() -> "section", GpuBuffer.USAGE_UNIFORM, section));
+        uniforms.put("Globals", device.createBuffer(() -> "globals", GpuBuffer.USAGE_UNIFORM, globals(true)));
+        uniforms.put("Fog", device.createBuffer(() -> "fog", GpuBuffer.USAGE_UNIFORM, fog()));
+        GpuSampler sampler = device.createSampler(AddressMode.REPEAT, AddressMode.REPEAT,
+                FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.of(7));
+        CommandEncoderBackend encoder = device.createCommandEncoder();
+        RenderPassBackend pass = encoder.createRenderPass(RenderPassDescriptor.create(() -> "foliage")
+                .withColorAttachment(cv, Optional.of(new Vector4f(0,0,0,1)))
+                .withDepthAttachment(dv, OptionalDouble.of(0))
+                .withRenderArea(new RenderPass.RenderArea(0,0,size,size)));
+        pass.setPipeline(pipeline);
+        for (var u : uniforms.entrySet()) pass.setUniform(u.getKey(), u.getValue().slice());
+        pass.bindTexture("Sampler0", atlas, sampler); pass.bindTexture("Sampler2", light, sampler);
+        pass.setVertexBuffer(0, vb.slice()); pass.setIndexBuffer(ib, com.mojang.blaze3d.IndexType.INT);
+        pass.drawIndexed(6,1,0,0,0); encoder.submitRenderPass();
+        GpuTexture result = color;
+        net.metalmod.metalfx.MetalFxScaler scaler = null;
+        if (size < outputSize) {
+            result = device.createTexture("foliage Spatial", GpuTexture.USAGE_RENDER_ATTACHMENT
+                    | GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_SRC,
+                    GpuFormat.RGBA8_UNORM, outputSize, outputSize, 1, 1);
+            scaler = net.metalmod.metalfx.MetalFxScaler.create(device.deviceHandle(), 70,70,size,size,outputSize,outputSize,0);
+            check("foliage Spatial encode", scaler != null && scaler.run(device.queueHandle(),
+                    ((MetalTexture)color).handle(), ((MetalTexture)result).handle()) == 0, "");
+        }
+        int extent = Math.max(size, outputSize);
+        GpuBuffer readback = device.createBuffer(() -> "foliage readback",
+                GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, extent*extent*4L);
+        encoder.copyTextureToBuffer(result,readback,0,null,0,0,0,extent,extent);
+        byte[] pixels = new byte[extent*extent*4]; ((MetalBuffer)readback).data().asByteBuffer().get(pixels);
+        MetalNative.queueSynchronize(device.queueHandle());
+        if (msaa) MetalNative.msaaWorld(java.lang.foreign.MemorySegment.NULL, java.lang.foreign.MemorySegment.NULL);
+        if (scaler != null) scaler.close();
+        readback.close(); sampler.close(); vb.close(); ib.close();
+        for (GpuBuffer u : uniforms.values()) u.close();
+        if (result != color) result.close(); cv.close(); dv.close(); color.close(); depth.close();
+        return pixels;
+    }
+    private static byte[] boxReduce(byte[] source, int size, int out) {
+        byte[] result = new byte[out*out*4]; int factor = size/out;
+        for (int y=0;y<out;y++) for (int x=0;x<out;x++) for (int c=0;c<4;c++) {
+            int sum=0;
+            for (int dy=0;dy<factor;dy++) for (int dx=0;dx<factor;dx++)
+                sum += source[((y*factor+dy)*size+x*factor+dx)*4+c]&255;
+            result[(y*out+x)*4+c]=(byte)(sum/(factor*factor));
+        }
+        return result;
+    }
+    private static double imageError(byte[] a, byte[] b) {
+        double sum=0; for(int i=0;i<a.length;i+=4) { double d=(a[i]&255)-(b[i]&255);sum+=d*d; }
+        return sum/(a.length/4);
+    }
+    private static double motionError(byte[] a0,byte[] a1,byte[] b0,byte[] b1) {
+        double sum=0; for(int i=0;i<a0.length;i+=4) {
+            double d=((a1[i]&255)-(a0[i]&255))-((b1[i]&255)-(b0[i]&255));sum+=d*d;
+        } return sum/(a0.length/4);
+    }
+    private static void writeImage(Path path, byte[] bytes, int size) throws Exception {
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(size,size,java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        for(int y=0;y<size;y++) for(int x=0;x<size;x++) {
+            int p=(y*size+x)*4;
+            image.setRGB(x,y,0xff000000 | ((bytes[p]&255)<<16) | ((bytes[p+1]&255)<<8) | (bytes[p+2]&255));
+        }
+        javax.imageio.ImageIO.write(image,"png",path.toFile());
+    }
+
     private static void terrainCheck(MetalDevice device, RenderPipeline pipeline) {
         GpuTexture white = device.createTexture("white", GpuTexture.USAGE_TEXTURE_BINDING
                 | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);

@@ -56,6 +56,21 @@ public class MetalConfig {
     // Optional world-only FXAA. The Retina-native path already has dense coverage; FXAA softened the
     // player's image without restoring the samples removed by 2K resolution sync.
     public volatile boolean postAntialiasing = false;
+    /** Coverage AA before Spatial reconstruction; independent of final-image FXAA. */
+    public volatile boolean spatialAntialiasing = true;
+    private volatile Boolean spatialAntialiasingChoice;
+
+    public void chooseSpatialAntialiasing(boolean enabled) {
+        spatialAntialiasingChoice = enabled;
+        spatialAntialiasing = enabled;
+    }
+
+    public boolean spatialAntialiasing() {
+        Boolean choice = spatialAntialiasingChoice;
+        if (choice != null) return choice;
+        String override = System.getProperty("metalmod.spatialAA");
+        return override == null ? spatialAntialiasing : Boolean.parseBoolean(override);
+    }
 
     public boolean postAntialiasing() {
         String override = System.getProperty("metalmod.postAA");
@@ -87,6 +102,7 @@ public class MetalConfig {
             this.upscaler = props.getProperty("upscaler", "spatial");
             this.upscalingNotice = Boolean.parseBoolean(props.getProperty("upscalingNotice", "true"));
             this.postAntialiasing = Boolean.parseBoolean(props.getProperty("postAntialiasing", "false"));
+            this.spatialAntialiasing = Boolean.parseBoolean(props.getProperty("spatialAntialiasing", "true"));
         } catch (Exception e) {
             System.err.println("[MetalMod] Failed to load config: " + e.getMessage());
         }
@@ -142,6 +158,7 @@ public class MetalConfig {
                 props.setProperty("upscaler", this.upscaler);
                 props.setProperty("upscalingNotice", Boolean.toString(this.upscalingNotice));
                 props.setProperty("postAntialiasing", Boolean.toString(this.postAntialiasing));
+                props.setProperty("spatialAntialiasing", Boolean.toString(this.spatialAntialiasing));
                 props.store(writer, "MetalMod Apple Silicon Configuration");
             }
         } catch (Exception e) {

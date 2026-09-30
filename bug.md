@@ -10,7 +10,14 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ## BUG-044 — Spatial produces unacceptable distant-forest aliasing
 
-**Status:** Open; **highest Phase 7 quality priority**, based on the user's 2026-09-29 report.
+**Status:** Correction implemented and verified offline; **open pending in-game acceptance**.
+Highest Phase 7 quality priority, based on the user's 2026-09-29 report.
+
+The reduced-input hard alpha cutout coverage failure is reproduced with the real terrain shader.
+Spatial now uses 4x MSAA plus hash-verified vanilla foliage alpha-to-coverage, with minified alpha
+area retained. Synthetic reference error improves 28%, excess motion variation 58%, and distant-mip
+error 69%; native depth/copy/load tests pass Metal validation. This does not establish acceptance for
+the reported forest. See [implementation, cost and remaining comparison](docs/spatial-input-aa.md).
 Far-away forests under Spatial are described as full of aliases and visually unbearable; final-image
 FXAA does not solve them. Temporal is reported near native, with blurred edges remaining. Exact build,
 render scale and AA state were not supplied for this observation; do not treat it as a controlled
@@ -21,8 +28,8 @@ path recorded. Separate aliasing already present in the world input from artifac
 scaler or final filtering. Investigate distant cutout sampling, mip/LOD and alpha coverage as hypotheses,
 alongside the loss from world scale. Judge fine-detail retention and stability during motion, not only
 solid diagonal edges or flat-colour preservation. Post-FXAA tuning and sharpening are not accepted
-as the primary solution to this reported failure. Do not commit to MSAA, alpha-to-coverage or another
-reconstruction method before an input/output comparison identifies what needs correction.
+as the primary solution to this reported failure. The reproduced coverage failure supports the input
+correction above; retain the controlled in-game input/output comparison as its acceptance test.
 
 Temporal edge softness is a secondary quality issue. Its cause has not been isolated: the Temporal
 stage, Spatial finish, input resolution and optional AA can all participate in the current chain.
