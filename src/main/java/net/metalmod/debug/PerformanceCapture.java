@@ -81,6 +81,8 @@ public final class PerformanceCapture {
             routePlayer = route == null ? null : new CaptureRoutePlayer(route);
             boolean prep = !"false".equalsIgnoreCase(System.getProperty("metalmod.capturePrep", "true"));
             metadata = "Backend: " + backend + "\nNative metrics: " + nativeEnabled
+                    + "\nSuper Resolution at start: " + net.metalmod.upscaling.MetalFxCoordinator.stats().summary()
+                    + "\nSR effective codes: 0 native, 1 spatial reference, 2 recovery; sr_gpu_ns=-1 (unavailable). SR counters cumulative. sr_reason codes: 0 active, 1 Off, 2 100%, 3 menu, 4 no Metal, 5 suspended, 6 unsupported, 7 creation, 8 scene setup, 9 GPU error, 10 encode, 11 uninitialized."
                     + "\nMinecraft: " + minecraft.getLaunchedVersion()
                     + "\nOS: " + System.getProperty("os.name") + " " + System.getProperty("os.version")
                     + "\nJava: " + System.getProperty("java.version")
@@ -178,6 +180,11 @@ public final class PerformanceCapture {
                             nativeSample.getAtIndex(ValueLayout.JAVA_LONG, i));
                 }
                 putLighting(recording);
+                var sr = net.metalmod.upscaling.MetalFxCoordinator.stats();
+                int srBase = PerformanceRecording.COL_FIRST_NATIVE + MetalNative.CAPTURE_METRICS.size()
+                        + LightingCaptureColumns.NAMES.size();
+                for (int i = 0; i < UpscalingCaptureColumns.NAMES.size(); i++)
+                    recording.put(srBase + i, UpscalingCaptureColumns.value(sr, i));
             }
             long gcCount = gcTotal(false), gcMillis = gcTotal(true);
             recording.put(PerformanceRecording.COL_GC_COLLECTIONS, delta(gcCount, lastGcCount));
@@ -211,6 +218,7 @@ public final class PerformanceCapture {
     private static java.util.List<String> captureColumns() {
         java.util.List<String> names = new java.util.ArrayList<>(MetalNative.CAPTURE_METRICS);
         names.addAll(LightingCaptureColumns.NAMES);
+        names.addAll(UpscalingCaptureColumns.NAMES);
         return java.util.List.copyOf(names);
     }
 

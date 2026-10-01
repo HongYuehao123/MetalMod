@@ -5,14 +5,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
-/**
- * MetalMod settings.
- *
- * <p>The MetalFX scaling/preset/frame-generation controls that used to be here drove the retired
- * MoltenVK-interop frame pipeline and did nothing once it was removed, so they are gone
- * (ROADMAP.md §4). What is left is the Metal backend toggle - which is the setting that actually
- * changes what renders - and the UMA memory options.
- */
+/** Metal backend selection, UMA telemetry, lighting and world-only Super Resolution settings. */
 public class MetalModConfigScreen extends Screen {
 
     private final Screen parent;
@@ -54,6 +47,10 @@ public class MetalModConfigScreen extends Screen {
                 .bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(lightingButton);
 
+        this.addRenderableWidget(Button.builder(Component.literal("Super Resolution..."), btn ->
+                this.minecraft.setScreenAndShow(new MetalModSuperResolutionScreen(this)))
+                .bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build());
+
         // Capture closes the menu and allows five seconds to resume before recording.
         Button captureButton = Button.builder(Component.literal(
                 net.metalmod.debug.PerformanceCapture.isRecording()
@@ -62,13 +59,13 @@ public class MetalModConfigScreen extends Screen {
                 net.metalmod.debug.PerformanceCapture.toggle(this.minecraft);
                 if (this.minecraft.level != null) this.minecraft.setScreenAndShow(null);
             }
-        }).bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build();
+        }).bounds(centerX - buttonWidth / 2, startY + 96, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(captureButton);
 
         // Done.
         Button doneButton = Button.builder(Component.literal("Done"), btn -> {
             onClose();
-        }).bounds(centerX - 100, startY + 104, 200, buttonHeight).build();
+        }).bounds(centerX - 100, startY + 128, 200, buttonHeight).build();
         this.addRenderableWidget(doneButton);
     }
 

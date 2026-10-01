@@ -63,6 +63,14 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                     .append("§r draws");
         }
         displayer.addLine(head.toString());
+        if (metalActive) {
+            var sr = net.metalmod.upscaling.MetalFxCoordinator.stats();
+            displayer.addLine("§6[MetalMod]§r " + sr.summary());
+            if (sr.requested()) displayer.addLine("§6[MetalMod]§r SR gen " + sr.generation()
+                    + " create/fail/encode " + sr.creates() + "/" + sr.failures() + "/" + sr.encodes()
+                    + " recovery/retired " + sr.recoveries() + "/" + sr.retirements()
+                    + " hooks " + sr.worldHooks() + "/" + sr.uiHooks() + " | GPU time unavailable");
+        }
         // The light set is only extracted when the feature is on and the Metal backend is drawing, so
         // this line is the in-game answer to "is the extractor running, and what did it publish?".
         // The live device's switches, not the launch flags: a setting can now come from the settings

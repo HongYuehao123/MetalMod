@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Test instrumentation for answering "did my hook actually run?".
  *
- * Every mixin injection in this mod declares {@code require = 0}, and the mixin config sets
+ * Legacy mixin injections in this mod declare {@code require = 0}, and the mixin config sets
  * {@code defaultRequire: 0}. A signature or method-name mismatch therefore fails <em>silently</em>:
  * the game starts normally and the feature simply never runs. Absence of an error is not evidence
  * that a hook applied.
@@ -36,6 +36,8 @@ public final class Diagnostics {
     private static final List<String> HOOKS = List.of(
             "GameRenderer.render",
             "GameRenderer.resize",
+            "SuperResolution.world",
+            "SuperResolution.ui",
             "Window.onFramebufferResize",
             // Phase 6: the light set is extracted at the engine's own extraction boundary, and the
             // set is dropped whenever the extracted level changes.
@@ -61,6 +63,8 @@ public final class Diagnostics {
     private static final List<String> EXPECTED_EVERY_SESSION = List.of(
             "GameRenderer.render",
             "GameRenderer.resize",
+            "SuperResolution.world",
+            "SuperResolution.ui",
             "Window.onFramebufferResize",
             "LevelExtractor.extract",
             "LevelExtractor.setLevel");

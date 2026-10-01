@@ -1,0 +1,90 @@
+[10:52:08] [Render thread/INFO]: [STDOUT]: [MetalMod] expect  : mixin hooks report themselves below as 'HOOK ACTIVE'. A hook that never appears did not apply.
+2026-10-01 10:52:08.957 java[89964:1898065] Metal API Validation Enabled
+[10:52:10] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: GameRenderer.render
+[10:52:10] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: SuperResolution.world
+[10:52:10] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: SuperResolution.ui
+[10:52:10] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'Main / Color' yFlip=false clear=false depthClear=false
+[10:52:10] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/gui' -> target 'Main / Color'
+[10:52:10] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/mojang_logo' -> target 'Main / Color'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/particles.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/particles.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/decorated_pot.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/decorated_pot.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/armor_trims.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/armor_trims.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/paintings.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/paintings.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/shield_patterns.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/shield_patterns.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/blocks.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/blocks.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_interpolate' -> target 'minecraft:textures/atlas/blocks.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/chest.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/chest.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/celestials.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/celestials.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/banner_patterns.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/banner_patterns.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/items.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/items.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/gui.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/gui.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/map_decorations.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/map_decorations.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'minecraft:textures/atlas/shulker_boxes.png' yFlip=true clear=false depthClear=false
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/animate_sprite_blit' -> target 'minecraft:textures/atlas/shulker_boxes.png'
+[10:52:11] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: LevelExtractor.setLevel
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/panorama' -> target 'Main / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'FBO 0 / Color' yFlip=false clear=false depthClear=false
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/0' -> target 'FBO 0 / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/1' -> target 'Main / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/2' -> target 'FBO 0 / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/3' -> target 'Main / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/4' -> target 'FBO 0 / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/5' -> target 'Main / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/gui_textured' -> target 'Main / Color'
+[10:52:12] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/gui_text' -> target 'Main / Color'
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: LevelExtractor.extract
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'MetalMod scene / Color' yFlip=false clear=false depthClear=false
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'MetalMod scene / Color'
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/cutout_terrain' -> target 'MetalMod scene / Color'
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/lines' -> target 'MetalMod scene / Color'
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/translucent_terrain' -> target 'MetalMod scene / Color'
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/entity_translucent' -> target 'MetalMod scene / Color'
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/entity_outline_blit' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'Lightmap' yFlip=false clear=false depthClear=false
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/lightmap' -> target 'Lightmap'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/sky' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/celestial' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/stars' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/opaque_particle' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/clouds' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/item_cutout' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'UI items atlas' yFlip=true clear=false depthClear=false
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/item_cutout' -> target 'UI items atlas'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/glint' -> target 'UI items atlas'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/vignette' -> target 'Main / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/crosshair' -> target 'Main / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/gui_textured_premultiplied_alpha' -> target 'Main / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'MetalMod scene / Color'
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/entity_cutout_cull' -> target 'MetalMod scene / Color'
+[10:52:18] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:pipeline/lines_depth_bias' -> target 'MetalMod scene / Color'
+[10:52:19] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'FBO 1 / Color' yFlip=false clear=false depthClear=false
+[10:52:19] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/0' -> target 'FBO 1 / Color'
+[10:52:19] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/2' -> target 'FBO 1 / Color'
+[10:52:19] [Render thread/INFO]: [STDOUT]: [MetalMod] draw 'minecraft:blur/4' -> target 'FBO 1 / Color'
+[10:52:20] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: OptionsScreen.init
+[10:52:33] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'FBO 2 / Color' yFlip=false clear=false depthClear=false
+[10:52:34] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: Window.onFramebufferResize
+[10:52:35] [Render thread/INFO]: [STDOUT]: [MetalMod] HOOK ACTIVE: GameRenderer.resize
+[10:52:35] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'FBO 3 / Color' yFlip=false clear=false depthClear=false
+[10:52:41] [MetalMod-Telemetry/INFO]: [STDOUT]: [MetalMod] Metal resources created: textures=4702 views=9611 buffers=238 samplers=33 privateTextures=0 privateCpuAccess=0 failures=0 pipelineFailures=0 unboundBindings=0 missingVertexAttributes=0 slotCollisions=0 bindingKindMismatches=0 indexedFans=0 | shader pairs: compiled=60 reused=40 cached=58
+[10:52:41] [MetalMod-Telemetry/INFO]: [STDOUT]: [MetalMod] SR On strength 25% | MetalFX spatial | 3840x1998 -> 5120x2664 (56.3% pixels) |  | generations=59 attempts/failures/encodes=59/0/1593 recoveries/retirements=0/58
+[10:53:59] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'UI entity texture' yFlip=true clear=false depthClear=false
+[10:56:53] [Render thread/INFO]: [STDOUT]: [MetalMod] render target 'FBO 4 / Color' yFlip=false clear=false depthClear=false
+[10:52:13] [Render thread/INFO]: [STDOUT]: [MetalMod] MetalFX generation 1 scene 1920x1080 -> 2560x1440 | spatial SDR perceptual | shared scene/native UI, private FX output
+[10:52:14] [Render thread/INFO]: [STDOUT]: [MetalMod] MetalFX generation 2 scene 1920x1080 -> 2560x1440 | spatial SDR perceptual | shared scene/native UI, private FX output
+[10:52:15] [Render thread/INFO]: [STDOUT]: [MetalMod] MetalFX generation 3 scene 1920x1080 -> 2560x1440 | spatial SDR perceptual | shared scene/native UI, private FX output
+[10:59:24] [Render thread/INFO]: [STDOUT]: [MetalMod] MetalFX generation 863 scene 3840x1998 -> 5120x2664 | spatial SDR perceptual | shared scene/native UI, private FX output
+[10:59:25] [Render thread/INFO]: [STDOUT]: [MetalMod] MetalFX generation 864 scene 3840x1998 -> 5120x2664 | spatial SDR perceptual | shared scene/native UI, private FX output
+[10:59:25] [Render thread/INFO]: [STDOUT]: [MetalMod] MetalFX generation 865 scene 3840x1998 -> 5120x2664 | spatial SDR perceptual | shared scene/native UI, private FX output

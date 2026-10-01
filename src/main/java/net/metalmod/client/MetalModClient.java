@@ -72,6 +72,10 @@ public class MetalModClient implements ClientModInitializer {
                         System.out.println(net.metalmod.backend.MetalDevice.resourceSummary());
                         // The frame-cost counters F3 no longer carries, so the log still has them.
                         System.out.println(net.metalmod.backend.MetalDevice.frameSummary());
+                        var sr = net.metalmod.upscaling.MetalFxCoordinator.stats();
+                        System.out.println("[MetalMod] " + sr.summary() + " | generations=" + sr.generation()
+                                + " attempts/failures/encodes=" + sr.creates() + "/" + sr.failures() + "/" + sr.encodes()
+                                + " recoveries/retirements=" + sr.recoveries() + "/" + sr.retirements());
                         System.out.println("[MetalMod] F3 section built "
                                 + net.metalmod.debug.DebugScreenRegistration.displayCallCount()
                                 + " time(s). 0 means F3 was never opened, or the entry is still hidden.");

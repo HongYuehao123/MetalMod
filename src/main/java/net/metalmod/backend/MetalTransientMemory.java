@@ -26,7 +26,8 @@ public final class MetalTransientMemory implements TransientMemory {
     private boolean closed;
 
     public MetalTransientMemory(MetalDevice device) {
-        MemorySegment handle = MetalNative.bufferCreate(device.deviceHandle(), CAPACITY);
+        // The final uniform suballocation also needs space for an MSL struct tail (BUG-028).
+        MemorySegment handle = MetalNative.bufferCreate(device.deviceHandle(), CAPACITY + 16);
         MemorySegment data = (handle.address() == 0)
                 ? MemorySegment.NULL
                 : MetalNative.bufferContents(handle, CAPACITY);

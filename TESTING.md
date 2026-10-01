@@ -686,3 +686,23 @@ counters usually say which part disagreed.
   (`DebugScreenEntryListMixin`) did not take effect. Report it.
 - **`@Mixin target ... was not found`.** Mixin rejects an entire mixin if any target is missing.
   Report the exact text.
+
+
+## Phase 7 spatial integration
+
+Use Options → MetalMod… → Super Resolution… (default Off, strength 25%). JVM equivalents:
+`-Dmetalmod.superResolution=true -Dmetalmod.superResolutionStrength=25`. Strength is dimension
+reduction; 0/25/33/50% means scene scale 100/75/67/50%. Keep output resolution fixed in comparisons.
+On+0% and Off bypass the scaler; UI stays native. F3 shows effective dimensions, generation,
+create/failure/encode/recovery/retirement counts. F8 appends `sr_*` columns and reason codes;
+GPU scaler timing is unavailable (`-1`).
+
+Run all five gates, and additionally run native smoke and render-check with `MTL_DEBUG_LAYER=1`.
+`metalmod.fxDeny`, `metalmod.fxFailCreate`, `metalmod.fxFailEncode` inject fallback cases.
+`metalmod.fxRecreateEvery=30` stress-tests real game generations/sky-target rebinding; **omit this
+flag for normal play and benchmarks**. Shader inventory must also pass with both lighting flags on.
+
+See [implementation/evidence](docs/phase7/implementation.md) and the full
+[Phase 7 acceptance matrix](docs/phase7-plan.md). Automated checks passed; representative
+visual/performance pairs and the full lifecycle matrix/steady soak remain release gates. Frame
+generation and display-link pacing are deferred and cannot be inferred from scaler success.

@@ -169,23 +169,19 @@ public final class MetalFormat {
     }
 
     /**
-     * MTLSamplerMipFilter for a sampler.
-     *
-     * <p>The engine expresses LOD clamping through {@code maxLod}: when it supplies one, it wants
-     * mip selection, and MTLSamplerDescriptor's default of {@code NotMipmapped} silently ignores that
-     * (and {@code lodMaxClamp} with it), so every minified sample read level 0 and aliased.
-     *
-     * <p>{@code -Dmetalmod.mipFilter=off|nearest|linear} overrides the choice, because whether the
-     * multi-level textures in play actually have their levels populated is a data question that only
-     * a run can settle.
+     * Map the engine's LOD cap to Metal mip filtering. An absent cap means unrestricted
+     * mip selection, not disabled mipmaps (Minecraft's terrain sampler uses an absent cap).
+     * A zero cap stays on level zero through lodMaxClamp. Match vanilla's linear mip blending
+     * above 0.25 and nearest selection at or below it; retain the diagnostic override.
      */
-    public static int mtlSamplerMipFilter(boolean hasMaxLod) {
-        String override = System.getProperty("metalmod.mipFilter", "auto").toLowerCase();
+    public static int mtlSamplerMipFilter(java.util.OptionalDouble maxLod) {
+        String override = System.getProperty("metalmod.mipFilter", "auto").toLowerCase(java.util.Locale.ROOT);
         return switch (override) {
             case "off", "none", "notmipmapped" -> MIP_FILTER_NOT_MIPMAPPED;
             case "nearest" -> MIP_FILTER_NEAREST;
             case "linear" -> MIP_FILTER_LINEAR;
-            default -> hasMaxLod ? MIP_FILTER_LINEAR : MIP_FILTER_NOT_MIPMAPPED;
+            default -> maxLod.orElse(Double.POSITIVE_INFINITY) > 0.25
+                    ? MIP_FILTER_LINEAR : MIP_FILTER_NEAREST;
         };
     }
 

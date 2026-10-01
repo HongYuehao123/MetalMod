@@ -36,6 +36,9 @@ public class MetalConfig {
     public volatile boolean enableDynamicLights = false;
     public volatile boolean enableClusteredLights = false;
 
+    public volatile boolean enableSuperResolution = false;
+    public volatile int superResolutionStrength = 25;
+
     // The MetalFX scaling mode, quality preset, frame generation, sharpness, HDR and target-refresh
     // settings that used to live here drove the retired MoltenVK-interop frame pipeline
     // (ROADMAP.md §4). Nothing read them once that pipeline went away, so they were removed rather
@@ -50,6 +53,8 @@ public class MetalConfig {
             Properties props = new Properties();
             props.load(reader);
 
+            this.enableSuperResolution = Boolean.parseBoolean(props.getProperty("enableSuperResolution", "false"));
+            this.superResolutionStrength = net.metalmod.upscaling.UpscalingSettings.parseStrength(props.getProperty("superResolutionStrength", "25"));
             this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "false"));
             this.enableMemoryPressureHandler = Boolean.parseBoolean(props.getProperty("enableMemoryPressureHandler", "true"));
             this.preferMetalBackend = Boolean.parseBoolean(props.getProperty("preferMetalBackend", "false"));
@@ -69,6 +74,8 @@ public class MetalConfig {
             }
             try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
                 Properties props = new Properties();
+                props.setProperty("enableSuperResolution", Boolean.toString(this.enableSuperResolution));
+                props.setProperty("superResolutionStrength", Integer.toString(this.superResolutionStrength));
                 props.setProperty("enableUnifiedMemoryPool", Boolean.toString(this.enableUnifiedMemoryPool));
                 props.setProperty("enableMemoryPressureHandler", Boolean.toString(this.enableMemoryPressureHandler));
                 props.setProperty("preferMetalBackend", Boolean.toString(this.preferMetalBackend));

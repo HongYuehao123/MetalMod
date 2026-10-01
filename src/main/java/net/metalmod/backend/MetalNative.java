@@ -19,6 +19,9 @@ import java.nio.file.StandardCopyOption;
  */
 public final class MetalNative {
 
+    private static MethodHandle mhPipelineDepthVariant;
+    private static MethodHandle mhFxSupported, mhFxCreate, mhFxRelease, mhFxEncode, mhFxHealthy, mhFxSetAntialias;
+
     private static boolean available = false;
     private static String loadError = null;
     private static MethodHandle mhCaptureSetEnabled, mhCaptureReadReset;
@@ -150,6 +153,19 @@ public final class MetalNative {
         mhFenceRelease = linker.downcallHandle(symbol(lookup, "mmm_fence_release"), FunctionDescriptor.ofVoid(A));
 
         mhQueueSynchronize = linker.downcallHandle(symbol(lookup, "mmm_queue_synchronize"), FunctionDescriptor.ofVoid(A));
+        // MetalFX is optional: missing symbols must not disable the native renderer.
+        mhFxSupported = lookup.find("mmm_fx_spatial_supported")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhFxCreate = lookup.find("mmm_fx_spatial_create")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, I, I, I, I, L))).orElse(null);
+        mhFxRelease = lookup.find("mmm_fx_spatial_release")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhFxEncode = lookup.find("mmm_fx_spatial_encode")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, B))).orElse(null);
+        mhFxSetAntialias = lookup.find("mmm_fx_spatial_set_antialias")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A, B))).orElse(null);
+        mhFxHealthy = lookup.find("mmm_fx_spatial_healthy")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
         mhCommandBufferCommit = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_commit"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferWait = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_wait"), FunctionDescriptor.ofVoid(A));
@@ -159,6 +175,7 @@ public final class MetalNative {
         mhLibraryRelease = linker.downcallHandle(symbol(lookup, "mmm_library_release"), FunctionDescriptor.ofVoid(A));
         mhRenderPipelineCreate = linker.downcallHandle(symbol(lookup, "mmm_render_pipeline_create"),
                 FunctionDescriptor.of(A, A, A, A, A, A, L, I, I, I, I, I, I, I, I, L, I, I, I, I, I, I, F, F, A, I, A, I));
+        mhPipelineDepthVariant = linker.downcallHandle(symbol(lookup, "mmm_render_pipeline_depth_variant"), FunctionDescriptor.of(A, A, L));
         mhRenderPipelineRelease = linker.downcallHandle(symbol(lookup, "mmm_render_pipeline_release"), FunctionDescriptor.ofVoid(A));
         // Optional: it is a diagnostic, so a stale dylib without it must not disable the backend.
         mhLastError = lookup.find("mmm_last_error")
@@ -407,6 +424,50 @@ public final class MetalNative {
     }
 
     // Command buffers ----------------------------------------------------------------------------
+
+    public static MemorySegment renderPipelineDepthVariant(MemorySegment pipeline, long format) {
+        try { return (MemorySegment) mhPipelineDepthVariant.invokeExact(pipeline, format); }
+        catch (Throwable t) { throw new RuntimeException("depth-compatible pipeline", t); }
+    }
+
+    public static boolean fxSupported(MemorySegment device) {
+        if (mhFxSupported == null || mhFxCreate == null || mhFxRelease == null
+                || mhFxEncode == null || mhFxHealthy == null) return false;
+        try { return (boolean) mhFxSupported.invokeExact(device); }
+        catch (Throwable t) { return false; }
+    }
+
+    public static MemorySegment fxCreate(MemorySegment device, int iw, int ih, int ow, int oh, long format) {
+        if (mhFxCreate == null) return MemorySegment.NULL;
+        try { return (MemorySegment) mhFxCreate.invokeExact(device, iw, ih, ow, oh, format); }
+        catch (Throwable t) { return MemorySegment.NULL; }
+    }
+
+    public static void fxRelease(MemorySegment scaler) {
+        if (mhFxRelease == null || scaler.address() == 0) return;
+        try { mhFxRelease.invokeExact(scaler); }
+        catch (Throwable t) { throw new RuntimeException("MetalFX release", t); }
+    }
+
+    /** Diagnostic A/B control; a missing optional symbol leaves older libraries unchanged. */
+    public static void fxSetAntialias(MemorySegment scaler, boolean enabled) {
+        if (mhFxSetAntialias == null) return;
+        try { mhFxSetAntialias.invokeExact(scaler, enabled); }
+        catch (Throwable t) { throw new RuntimeException("MetalFX anti-alias control", t); }
+    }
+
+    public static boolean fxHealthy(MemorySegment scaler) {
+        if (mhFxHealthy == null || scaler.address() == 0) return false;
+        try { return (boolean) mhFxHealthy.invokeExact(scaler); }
+        catch (Throwable t) { return false; }
+    }
+
+    public static int fxEncode(MemorySegment scaler, MemorySegment cb, MemorySegment input,
+                               MemorySegment output, boolean plain) {
+        if (mhFxEncode == null) return -1;
+        try { return (int) mhFxEncode.invokeExact(scaler, cb, input, output, plain); }
+        catch (Throwable t) { return -1; }
+    }
 
     public static MemorySegment commandBufferCreate(MemorySegment queue) {
         ffiCalls++;

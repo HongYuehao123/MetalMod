@@ -176,7 +176,9 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             if (encoder.address() == 0) {
                 System.err.println("[MetalMod] render pass begin failed");
             }
-            return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height));
+            return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height),
+                    depth == null || depth.textureView() == null ? 0
+                            : MetalFormat.mtlPixelFormat(depth.textureView().texture().getFormat()));
         }
     }
 

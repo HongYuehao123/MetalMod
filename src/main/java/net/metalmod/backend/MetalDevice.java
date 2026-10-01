@@ -598,7 +598,7 @@ public final class MetalDevice implements GpuDeviceBackend {
     }
 
     /** Count one committed command buffer, so F3 shows how much submission work a frame does. */
-    static void countCommandBuffer() {
+    public static void countCommandBuffer() {
         commandBuffersThisFrame++;
     }
 
@@ -1179,7 +1179,10 @@ public final class MetalDevice implements GpuDeviceBackend {
     public GpuBuffer createBuffer(Supplier<String> label, int usage, long size) {
         BUFFER_COUNT.incrementAndGet();
         long safeSize = Math.max(1L, size);
-        MemorySegment handle = MetalNative.bufferCreate(this.device, safeSize);
+        // MSL rounds uniform structs to 16-byte alignment beyond the logical std140 tail.
+        // Pad backing storage only; engine sizes, mapped ranges and ABI offsets stay unchanged.
+        MemorySegment handle = MetalNative.bufferCreate(this.device,
+                (usage & GpuBuffer.USAGE_UNIFORM) != 0 ? Math.addExact(safeSize, 16) : safeSize);
         MemorySegment memory = (handle.address() == 0)
                 ? MemorySegment.NULL
                 : MetalNative.bufferContents(handle, safeSize);
@@ -1194,7 +1197,9 @@ public final class MetalDevice implements GpuDeviceBackend {
         BUFFER_COUNT.incrementAndGet();
         int requested = data.remaining();
         long safeSize = Math.max(1L, requested);
-        MemorySegment handle = MetalNative.bufferCreate(this.device, safeSize);
+        // As above, preserve the logical payload while providing MSL struct tail space.
+        MemorySegment handle = MetalNative.bufferCreate(this.device,
+                (usage & GpuBuffer.USAGE_UNIFORM) != 0 ? Math.addExact(safeSize, 16) : safeSize);
         MemorySegment memory = (handle.address() == 0)
                 ? MemorySegment.NULL
                 : MetalNative.bufferContents(handle, safeSize);

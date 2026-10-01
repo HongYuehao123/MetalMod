@@ -43,8 +43,7 @@ public final class MetalFormatTest {
     }
 
     /**
-     * MTLSamplerMipFilter (NotMipmapped=0, Nearest=1, Linear=2). The engine asks for mip selection by
-     * supplying a maxLod; NotMipmapped silently ignores it, and it is the descriptor default.
+     * Unrestricted, capped and level-zero sampler semantics match Minecraft's native backends.
      */
     private static void testMipFilterSelection() {
         check("mip filter constants match the header",
@@ -55,21 +54,28 @@ public final class MetalFormatTest {
         try {
             System.clearProperty("metalmod.mipFilter");
             check("a sampler with a maxLod gets mipmapping",
-                    MetalFormat.mtlSamplerMipFilter(true) == MetalFormat.MIP_FILTER_LINEAR,
-                    "got " + MetalFormat.mtlSamplerMipFilter(true));
-            check("a sampler without a maxLod does not",
-                    MetalFormat.mtlSamplerMipFilter(false) == MetalFormat.MIP_FILTER_NOT_MIPMAPPED,
-                    "got " + MetalFormat.mtlSamplerMipFilter(false));
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(4)) == MetalFormat.MIP_FILTER_LINEAR,
+                    "got " + MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(4)));
+            check("an absent LOD cap permits linear mip selection",
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.empty()) == MetalFormat.MIP_FILTER_LINEAR,
+                    "got " + MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.empty()));
+
+            check("zero LOD cap selects nearest mip (native clamp keeps level zero)",
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(0)) == MetalFormat.MIP_FILTER_NEAREST, "");
+            check("quarter LOD cap selects nearest mip",
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(0.25)) == MetalFormat.MIP_FILTER_NEAREST, "");
+            check("LOD cap above quarter enables mip blending",
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(0.5)) == MetalFormat.MIP_FILTER_LINEAR, "");
 
             System.setProperty("metalmod.mipFilter", "off");
             check("-Dmetalmod.mipFilter=off forces level 0 even with a maxLod",
-                    MetalFormat.mtlSamplerMipFilter(true) == MetalFormat.MIP_FILTER_NOT_MIPMAPPED,
-                    "got " + MetalFormat.mtlSamplerMipFilter(true));
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(4)) == MetalFormat.MIP_FILTER_NOT_MIPMAPPED,
+                    "got " + MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.of(4)));
 
             System.setProperty("metalmod.mipFilter", "nearest");
             check("-Dmetalmod.mipFilter=nearest selects nearest",
-                    MetalFormat.mtlSamplerMipFilter(false) == MetalFormat.MIP_FILTER_NEAREST,
-                    "got " + MetalFormat.mtlSamplerMipFilter(false));
+                    MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.empty()) == MetalFormat.MIP_FILTER_NEAREST,
+                    "got " + MetalFormat.mtlSamplerMipFilter(java.util.OptionalDouble.empty()));
         } finally {
             if (previous == null) {
                 System.clearProperty("metalmod.mipFilter");

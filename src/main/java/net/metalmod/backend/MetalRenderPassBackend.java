@@ -37,6 +37,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final MemorySegment encoder;
     private final int width;
     private final int height;
+    private final long depthFormat;
 
     private final Map<String, GpuBufferSlice> uniforms = new HashMap<>();
     private final Map<String, GpuTextureView> textures = new HashMap<>();
@@ -66,7 +67,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private int indexType = 1;
 
     public MetalRenderPassBackend(MetalCommandEncoderBackend owner, MemorySegment encoder,
-                                  int width, int height) {
+                                  int width, int height, long depthFormat) {
+        this.depthFormat = depthFormat;
         this.owner = owner;
         this.encoder = encoder;
         this.width = width;
@@ -119,7 +121,13 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         this.pipelineName = resolved.name();
         this.topology = resolved.topology();
-        MetalNative.renderPassSetPipeline(this.encoder, resolved.handle());
+        MemorySegment compatible = resolved.handleForDepth(this.depthFormat);
+        if (compatible.address() == 0) {
+            this.pipeline = null;
+            MetalDevice.reportResourceFailure("depth-compatible pipeline " + resolved.name());
+            return;
+        }
+        MetalNative.renderPassSetPipeline(this.encoder, compatible);
         MetalDevice.notePipelineTarget(this.owner.currentTargetLabel(), this.pipelineName);
         flipViewportForScreenquad(resolved);
         // MetalMod-owned light buffers, bound only for pipelines actually built with a lighting

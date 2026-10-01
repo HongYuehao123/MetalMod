@@ -21,16 +21,19 @@ include_directories(
 set(SOURCES
     src/metalmod_memory.mm
     src/metalmod_metal.mm
+    src/metalmod_metalfx.mm
 )
 
 add_library(metalmod SHARED ${SOURCES})
 
 find_library(METAL_FRAMEWORK Metal REQUIRED)
+find_library(METALFX_FRAMEWORK MetalFX REQUIRED)
 find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
 find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
 
 target_link_libraries(metalmod PRIVATE
     ${METAL_FRAMEWORK}
+    ${METALFX_FRAMEWORK}
     ${QUARTZCORE_FRAMEWORK}
     ${COCOA_FRAMEWORK}
 )

@@ -1,0 +1,34 @@
+---- Minecraft Crash Report ----
+// On the bright side, I bought you a teddy bear!
+
+Time: 2026-10-01 10:36:30
+Description: Render Frame
+
+java.lang.NullPointerException: Cannot invoke "com.mojang.blaze3d.textures.GpuTextureView.getWidth(int)" because "colorTexture" is null
+	at knot//com.mojang.blaze3d.systems.CommandEncoder.createRenderPass(CommandEncoder.java:59)
+	at knot//net.minecraft.client.renderer.SkyRenderer.renderSkyDisc(SkyRenderer.java:249)
+	at knot//net.minecraft.client.renderer.LevelRenderer.lambda$addSkyPass$0(LevelRenderer.java:368)
+	at knot//com.mojang.blaze3d.framegraph.FrameGraphBuilder.execute(FrameGraphBuilder.java:67)
+	at knot//net.minecraft.client.renderer.LevelRenderer.render(LevelRenderer.java:240)
+	at knot//net.minecraft.client.renderer.GameRenderer.renderLevel(GameRenderer.java:588)
+	at knot//net.minecraft.client.renderer.GameRenderer.render(GameRenderer.java:428)
+	at knot//net.minecraft.client.Minecraft.renderFrame(Minecraft.java:1374)
+	at knot//net.minecraft.client.Minecraft.runTick(Minecraft.java:1269)
+	at knot//net.minecraft.client.Minecraft.run(Minecraft.java:959)
+	at knot//net.minecraft.client.main.Main.main(Main.java:292)
+	at net.fabricmc.loader.impl.game.minecraft.MinecraftGameProvider.launch(MinecraftGameProvider.java:517)
+	at net.fabricmc.loader.impl.launch.knot.Knot.launch(Knot.java:72)
+	at net.fabricmc.loader.impl.launch.knot.KnotClient.main(KnotClient.java:23)
+
+-[MTLDebugRenderCommandEncoder setRenderPipelineState:]:1654: failed assertion `Set Render Pipeline State Validation
+For depth attachment, the render pipeline's pixelFormat (MTLPixelFormatInvalid) does not match the framebuffer's pixelFormat (MTLPixelFormatDepth32Float).
+'
+-[MTLDebugRenderCommandEncoder validateCommonDrawErrors:]:6032: failed assertion `Draw Errors Validation
+Vertex Function(main0): argument _82[0] from Buffer(17) with offset(0) and length(56) has space for 56 bytes, but argument has a length(64).
+Fragment Function(main0): argument _366[0] from Buffer(0) with offset(0) and length(56) has space for 56 bytes, but argument has a length(64).
+Fragment Function(main0): argument _411[0] from Buffer(2) with offset(0) and length(40) has space for 40 bytes, but argument has a length(48).
+'
+-[MTLDebugRenderCommandEncoder validateCommonDrawErrors:]:6032: failed assertion `Draw Errors Validation
+Fragment Function(main0): argument _26[0] from Buffer(1) with offset(0) and length(12) has space for 12 bytes, but argument has a length(16).
+Fragment Function(main0): argument _55[0] from Buffer(2) with offset(0) and length(56) has space for 56 bytes, but argument has a length(64).
+'

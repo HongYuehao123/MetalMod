@@ -670,6 +670,10 @@ void mmm_library_release(void* library) {
 typedef struct MMMPipeline {
     void* pipelineState;
     void* depthStencilState;
+    void* descriptor;
+    struct MMMPipeline* depthVariant;
+    int64_t depthFormat;
+    int32_t depthCompare, depthWrite;
     int32_t topology;
     int32_t cullMode;
     int32_t triangleFill;
@@ -767,6 +771,9 @@ void* mmm_render_pipeline_create(
 
         MMMPipeline* pipeline = (MMMPipeline*)calloc(1, sizeof(MMMPipeline));
         if (pipeline == NULL) return NULL;
+        pipeline->descriptor = (__bridge_retained void*)descriptor;
+        pipeline->depthFormat = depthFormat;
+        pipeline->depthCompare = depthCompare; pipeline->depthWrite = depthWrite;
         pipeline->pipelineState = (__bridge_retained void*)state;
         pipeline->depthStencilState = depthState != nil ? (__bridge_retained void*)depthState : NULL;
         pipeline->topology = topology;
@@ -778,10 +785,47 @@ void* mmm_render_pipeline_create(
     }
 }
 
+void* mmm_render_pipeline_depth_variant(void* handle, int64_t depthFormat) {
+    if (!handle || (depthFormat != 0 && depthFormat != MTLPixelFormatDepth32Float)) return NULL;
+    MMMPipeline* pipeline = (MMMPipeline*)handle;
+    if (pipeline->depthFormat == depthFormat) return pipeline;
+    if (pipeline->depthVariant) return pipeline->depthVariant;
+    if (!pipeline->descriptor) return NULL;
+    @autoreleasepool {
+        MTLRenderPipelineDescriptor* descriptor = [(__bridge MTLRenderPipelineDescriptor*)pipeline->descriptor copy];
+        descriptor.depthAttachmentPixelFormat = (MTLPixelFormat)depthFormat;
+        id<MTLDevice> device = ((__bridge id<MTLRenderPipelineState>)pipeline->pipelineState).device;
+        NSError* error = nil;
+        id<MTLRenderPipelineState> state = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        if (!state) { mmm_set_last_error(error.localizedDescription); return NULL; }
+        id<MTLDepthStencilState> depth = nil;
+        if (depthFormat) {
+            MTLDepthStencilDescriptor* dd = [MTLDepthStencilDescriptor new];
+            dd.depthCompareFunction = (MTLCompareFunction)pipeline->depthCompare;
+            dd.depthWriteEnabled = pipeline->depthWrite != 0;
+            depth = [device newDepthStencilStateWithDescriptor:dd];
+            if (!depth) return NULL;
+        }
+        MMMPipeline* variant = (MMMPipeline*)calloc(1,sizeof(MMMPipeline));
+        if (!variant) return NULL;
+        *variant = *pipeline;
+        variant->pipelineState = (__bridge_retained void*)state;
+        variant->depthStencilState = depth ? (__bridge_retained void*)depth : NULL;
+        variant->descriptor = NULL; variant->depthVariant = NULL; variant->depthFormat = depthFormat;
+        pipeline->depthVariant = variant;
+        return variant;
+    }
+}
+
 void mmm_render_pipeline_release(void* pipeline) {
     if (pipeline == NULL) return;
     MMMPipeline* metalPipeline = (MMMPipeline*)pipeline;
+    if (metalPipeline->depthVariant) mmm_render_pipeline_release(metalPipeline->depthVariant);
     @autoreleasepool {
+        if (metalPipeline->descriptor) {
+            MTLRenderPipelineDescriptor* released = (__bridge_transfer MTLRenderPipelineDescriptor*)metalPipeline->descriptor;
+            (void)released;
+        }
         if (metalPipeline->pipelineState) {
             id<MTLRenderPipelineState> released = (__bridge_transfer id<MTLRenderPipelineState>)metalPipeline->pipelineState;
             (void)released;

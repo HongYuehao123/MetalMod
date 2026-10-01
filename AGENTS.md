@@ -22,7 +22,7 @@ Instead of translating Vulkan through MoltenVK, it plugs into Minecraft's Blaze3
 ### Phase Roadmap Status
 - **Phases 0–5 (Foundations to Vanilla Parity): COMPLETE.** Backend selection, resources, pipelines, draw calls, all 87 vanilla pipelines + 9 post-processing passes compile, and visual/performance parity confirmed on Apple Silicon (M4 Pro).
 - **Phase 6 (Dynamic Lighting): COMPLETE.** Light snapshotting, moving sources (held/dropped items, entities, moving blocks), 16-block clustered grid evaluator, and published light-record ABI v1 (`docs/lighting-abi.md`).
-- **Phase 7 (MetalFX & Pacing): IN PROGRESS.** Native MetalFX spatial and temporal scalers (`native/src/metalmod_metalfx.mm`) and display-link pacer over backend-owned textures.
+- **Phase 7 (MetalFX & Pacing): IN PROGRESS.** World-only native MetalFX spatial reference (`native/src/metalmod_metalfx.mm`) implemented; quality/performance release selection pending. Temporal motion inputs and display-link/frame generation remain deferred.
 - **Phase 8 (Native Material & Lighting Foundations): PLANNED.** Linear-light/HDR composition, G-buffer layouts, Phase 8B ray visibility occlusion/shadowing.
 - **Phase 9 (Hybrid Ray Tracing): PLANNED.** Metal ray tracing pipeline (`MTLAccelerationStructure`).
 - **Optional (GLSL Shaderpacks): DEFERRED.** Preserved as optional compatibility; not an RT prerequisite.
@@ -62,7 +62,7 @@ Before trusting any code changes or declaring work complete, an agent must verif
 | Gate | Command | Pass Criteria | What It Exercises |
 |---|---|---|---|
 | **1. Mod Build** | `./scripts/build_mod.sh` | `SUCCESS -> build/libs/metalmod-1.0.0.jar` | Native dylib compilation, Java compilation against real client JAR, mod packaging, test compilation. |
-| **2. Native Smoke Test** | `./native/build/metalmod_smoke`<br>*(or `./scripts/run_smoke.sh`)* | `ALL CHECKS PASSED` | Native device, queue, command buffers, textures, views, buffers, pipelines, draws, clear, staging uploads, texel buffers, fences, MetalFX spatial/temporal scalers. |
+| **2. Native Smoke Test** | `./native/build/metalmod_smoke`<br>*(or `./scripts/run_smoke.sh`)* | `ALL CHECKS PASSED` | Native device, queue, command buffers, textures, views, buffers, pipelines, draws, clear, staging uploads, texel buffers, fences, MetalFX spatial scaling, SDR/orientation pixels, recovery and repeated recreation. |
 | **3. Shader Inventory** | `./tools/shader_inventory/run.sh` | `static 87/87`, `post 9/9`, no diagnostics | Compiles all 87 vanilla pipelines and 9 post-processing passes offline through GLSL → SPIR-V → MSL. |
 | **4. Pixel Render Check** | `./tools/render_check/run.sh` | `RENDER CHECK PASSED` (167+ pixel assertions) | Offscreen real pipeline execution: GUI, terrain, entities, cutout, lines, mipmaps, scissor conversions, blend modes, lightmap, Phase 6 dynamic lighting paths. |
 | **5. Standalone Tests** | See runner command below | `ALL TESTS PASSED SUCCESSFULLY!` | Panama FFI bridge loading, UMA allocator routing, format mappings, sub-buffer offsets, Phase 6 cluster grid / ABI byte offsets. |
@@ -146,7 +146,7 @@ MetalMod/
 │   │   └── metalmod_types.h            # Shared types and enum definitions
 │   ├── src/
 │   │   ├── metalmod_metal.mm           # Native Metal substrate (device, layer, pipelines, passes, blit)
-│   │   ├── metalmod_metalfx.mm         # Native MetalFX spatial/temporal integration
+│   │   ├── metalmod_metalfx.mm         # Native MetalFX spatial reference and plain recovery
 │   │   └── metalmod_memory.mm          # UMA memory pool and kernel pressure handler
 │   └── tests/
 │       └── metal_smoke.mm              # Native smoke test suite

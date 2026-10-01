@@ -442,16 +442,28 @@ upscaling regressions, not a substitute for the deferred scaling/performance acc
 
 ### Phase 7 — MetalFX, natively  · **M–L**
 
+**2026-10-01:** world-only spatial reference implemented; all offline gates pass and packaged runtime
+routing is exercised. Quality/performance selection is pending; temporal inputs are incomplete,
+and 7C is explicitly deferred. Phase 7 remains in progress. See [implementation evidence](docs/phase7/implementation.md).
+
+Implementation plan: [docs/phase7-plan.md](docs/phase7-plan.md). Player controls are **Super Resolution
+On/Off** and one strength/percentage control. Ship one approach selected through internal
+quality/performance comparisons, with native rendering as fallback. The plan defines world/UI
+separation, failure detection and acceptance gates. Frame generation remains independently gated
+and is not enabled by upscaling On.
+
 MetalMod owns the device, textures and swapchain, so MetalFX can operate on our own resources
 without interop or presentation conflicts. Shaderpack support is not a prerequisite: validate the
 integration against the vanilla rendering path first, then reuse it for native lighting and RT.
 
 Deliver in three increments:
 
-- **7A — Spatial upscaling.** Add render-resolution controls and spatial upscaling, keep the HUD at
-  native resolution, handle window resizing, and measure image quality and performance against
+- **7A — Integration and spatial reference.** Add render-resolution controls and spatial upscaling,
+  keep the HUD at native resolution, handle window resizing, and measure image quality and performance against
   native-resolution rendering.
-- **7B — Temporal upscaling.** Add projection jitter, motion information and temporal-history
+- **7B — Select and release one Super Resolution approach.** Evaluate temporal against the spatial
+  reference, then choose spatial, temporal or a measured combination for the single release path.
+  For the temporal candidate, add projection jitter, motion information and temporal-history
   lifecycle management, including resets on camera cuts, world changes and resolution changes.
   Depth reprojection can describe camera motion but is not sufficient for independently moving
   objects. Validate entities, particles, water and camera movement for ghosting and instability.
@@ -464,14 +476,15 @@ coordinate conventions, and temporal-history ownership. Specify where upscaling/
 relative to post-processing and HUD composition so Phases 8–9 can compose native lighting and RT
 against this contract. Optional pack integration must declare its own temporal-processing ownership.
 
-**Done when:** spatial and temporal modes render correctly through resizing and history resets,
-with measured quality and performance; frame generation passes its separate pacing and latency
-checks on supported hardware. Unsupported modes fall back cleanly, and the feature-off path retains
-native-resolution rendering.
+**Done when:** one selected Super Resolution approach renders correctly through resizing and any
+required history resets, with measured quality and performance; frame generation passes its separate
+pacing and latency checks on supported hardware. Unsupported configurations fall back cleanly to
+native, and the feature-off path retains native-resolution rendering.
 
-**Dependencies:** builds on Phase 5's rendering and presentation foundations. Complete Phase 6's
-existing gates before starting this phase. Frame generation is independently validated and is not
-an algorithmic prerequisite for ray tracing.
+**Dependencies:** builds on Phase 5's rendering and presentation foundations. Follow Phase 6's
+close-out decision and carryovers above, including a native-resolution lighting baseline before
+changing resolution. Frame generation is independently validated and is not an algorithmic
+prerequisite for ray tracing.
 
 **Risks:** owning presentation removes the old interoperability obstacle, but motion correctness,
 temporal reconstruction and frame generation remain substantial work. Validate each increment

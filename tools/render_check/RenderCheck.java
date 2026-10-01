@@ -185,7 +185,7 @@ public final class RenderCheck {
                 // other check here uses a 1x1 texture with mipmapping off, so none of them touches
                 // that code. BUG-008 was a hardcoded MTLSamplerMipFilterNotMipmapped, which nothing
                 // at render level noticed.
-                mipCheck(device, textured);
+                mipCheck(device, textured, terrain);
             }
 
             // copyTextureToTexture feeds the post-processing chain - the blur behind the menu is a
@@ -297,7 +297,91 @@ public final class RenderCheck {
         } finally {
             device.close();
         }
+        metalFxCheck();
         report();
+    }
+
+    /** Real coordinator + engine targets: reduced attachments, reuse, native UI pixels and fallback. */
+    private static void metalFxCheck() {
+        MetalDevice fxDevice = MetalDevice.create();
+        check("MetalFX integration device", fxDevice != null, "");
+        if (fxDevice == null) return;
+        if (!MetalNative.fxSupported(fxDevice.deviceHandle())) {
+            System.out.println("SKIP MetalFX integration: unsupported device"); fxDevice.close(); return;
+        }
+        String[] properties = {"metalmod.superResolution", "metalmod.superResolutionStrength", "metalmod.fxDeny",
+                "metalmod.fxFailCreate", "metalmod.fxFailEncode"};
+        String[] saved = java.util.Arrays.stream(properties).map(System::getProperty).toArray(String[]::new);
+        var coordinator = new net.metalmod.upscaling.MetalFxCoordinator();
+        com.mojang.blaze3d.pipeline.TextureTarget output = null;
+        try {
+            for (String property : properties) System.clearProperty(property);
+            com.mojang.blaze3d.systems.RenderSystem.initRenderThread();
+            com.mojang.blaze3d.systems.RenderSystem.initRenderer(new com.mojang.blaze3d.systems.GpuDevice(fxDevice, () -> {}));
+            output = new com.mojang.blaze3d.pipeline.TextureTarget("FX native UI",65,49,true,GpuFormat.RGBA8_UNORM);
+            int[] resizes = {0,0,0};
+            java.util.function.BiConsumer<Integer,Integer> resize = (w,h) -> { resizes[0]++; resizes[1]=w; resizes[2]=h; };
+            System.setProperty(properties[0],"false"); System.setProperty(properties[1],"50");
+            check("SR Off bypass leaves target native", coordinator.begin(output,true,resize)==output
+                    && net.metalmod.upscaling.MetalFxCoordinator.stats().creates()==0, "");
+            coordinator.finish(output);
+            System.setProperty(properties[0],"true"); System.setProperty(properties[1],"0");
+            check("SR On 100% bypass creates no scaler", coordinator.begin(output,true,resize)==output
+                    && net.metalmod.upscaling.MetalFxCoordinator.stats().creates()==0, "");
+            coordinator.finish(output);
+            System.setProperty(properties[1],"50");
+            var scene = coordinator.begin(output,true,resize);
+            check("SR actual world color/depth attachments reduced", scene!=output && scene.width==32 && scene.height==24
+                    && scene.getDepthTexture().getWidth(0)==32 && resizes[1]==32 && resizes[2]==24, "");
+            fxDevice.createCommandEncoder().clearColorAndDepthTextures(scene.getColorTexture(),new Vector4f(1,0,0,1),scene.getDepthTexture(),0);
+            coordinator.finish(output);
+            long generation = net.metalmod.upscaling.MetalFxCoordinator.stats().generation();
+            long encodes = net.metalmod.upscaling.MetalFxCoordinator.stats().encodes();
+            check("SR real encode counted", encodes==1, "");
+            coordinator.begin(output,true,resize); coordinator.finish(output);
+            check("SR steady frame reuses generation", net.metalmod.upscaling.MetalFxCoordinator.stats().generation()==generation
+                    && net.metalmod.upscaling.MetalFxCoordinator.stats().encodes()==encodes+1, "");
+            // Native-resolution one-pixel HUD marker after reconstruction. It must never be rescaled.
+            MetalNative.clearTexturesRegion(fxDevice.queueHandle(),((MetalTexture)output.getColorTexture()).handle(),true,
+                    0,1,0,1,java.lang.foreign.MemorySegment.NULL,false,0,32,24,1,1);
+            MetalNative.queueSynchronize(fxDevice.queueHandle());
+            try (var arena=java.lang.foreign.Arena.ofConfined()) {
+                var read=arena.allocate(65*49*4);
+                int rc=MetalNative.textureReadRegion(((MetalTexture)output.getColorTexture()).handle(),0,0,0,0,65,49,read,65*49*4,65*4);
+                ByteBuffer pixels=read.asByteBuffer(); int center=(24*65+32)*4, neighbor=center-4;
+                check("SR reconstructed world + native one-pixel UI ordering",rc==0 && (pixels.get(center+1)&255)==255
+                        && (pixels.get(neighbor)&255)>=249 && (pixels.get(neighbor+1)&255)<=6, "");
+            }
+            System.setProperty(properties[4],"true");
+            coordinator.begin(output,true,resize); coordinator.finish(output);
+            check("SR failed encode uses validated same-frame recovery",net.metalmod.upscaling.MetalFxCoordinator.stats().recoveries()==1, "");
+            long creates=net.metalmod.upscaling.MetalFxCoordinator.stats().creates();
+            for(int i=0;i<8;i++) { check("SR failure latched native fallback",coordinator.begin(output,true,resize)==output, ""); coordinator.finish(output); }
+            check("SR failed generation does not retry per frame",net.metalmod.upscaling.MetalFxCoordinator.stats().creates()==creates, "");
+            System.clearProperty(properties[4]); System.setProperty(properties[0],"false");
+            coordinator.begin(output,true,resize); coordinator.finish(output);
+            System.setProperty(properties[0],"true");
+            check("SR explicit Off/On retries",coordinator.begin(output,true,resize)!=output, ""); coordinator.finish(output);
+            check("SR menu bypass restores native targets",coordinator.begin(output,false,resize)==output && resizes[1]==65 && resizes[2]==49, ""); coordinator.finish(output);
+            System.setProperty(properties[3],"true"); coordinator.invalidate();
+            check("SR injected creation failure falls back native",coordinator.begin(output,true,resize)==output, ""); coordinator.finish(output);
+            System.clearProperty(properties[3]); System.setProperty(properties[2],"true"); coordinator.invalidate();
+            check("SR denied capability falls back native",coordinator.begin(output,true,resize)==output, ""); coordinator.finish(output);
+            System.clearProperty(properties[2]); coordinator.invalidate();
+            for(int i=0;i<100;i++) {
+                System.setProperty(properties[0],i%4==0 ? "false" : "true");
+                System.setProperty(properties[1],Integer.toString(new int[]{0,25,33,50}[i%4]));
+                if(i%10==0) { output.resize(65+i%3,49+i%3); coordinator.invalidate(); }
+                var target=coordinator.begin(output,true,resize);
+                fxDevice.createCommandEncoder().clearColorAndDepthTextures(target.getColorTexture(),new Vector4f(0,0,1,1),target.getDepthTexture(),0);
+                coordinator.finish(output);
+            }
+            check("SR 100 mixed toggle/preset/resize transitions encoded",net.metalmod.upscaling.MetalFxCoordinator.stats().encodes()>65
+                    && net.metalmod.upscaling.MetalFxCoordinator.stats().retirements()>60, "");
+        } finally {
+            coordinator.close(); if(output!=null) output.destroyBuffers(); fxDevice.close();
+            for(int i=0;i<properties.length;i++) { if(saved[i]==null) System.clearProperty(properties[i]); else System.setProperty(properties[i],saved[i]); }
+        }
     }
 
     /** Draw one full-screen quad with the given ColorModulator and check the centre pixel. */
@@ -319,6 +403,14 @@ public final class RenderCheck {
                 && Math.abs(pixel[2] - expectB) <= 3;
         check(label + " -> R" + pixel[0] + " G" + pixel[1] + " B" + pixel[2] + " (expected R"
                 + expectR + " G" + expectG + " B" + expectB + ")", ok, "");
+        if (label.equals("ColorModulator blue")) {
+            int[] depthPixel = renderQuad(device,pipeline,vertices,indices,uniforms,new LinkedHashMap<>(),
+                    true,"GUI with depth attachment",new float[]{0,0,0,1});
+            check("GUI pipeline without depth tests matches a depth framebuffer",depthPixel[2]>=252 && depthPixel[0]<=3, "");
+            int[] plainPixel = renderQuad(device,pipeline,vertices,indices,uniforms,new LinkedHashMap<>(),
+                    false,"GUI without depth attachment",new float[]{0,0,0,1});
+            check("GUI depth variant leaves depth-free variant intact",plainPixel[2]>=252 && plainPixel[0]<=3, "");
+        }
         vertices.close();
         indices.close();
         for (GpuBuffer buffer : uniforms.values()) {
@@ -3567,12 +3659,11 @@ public final class RenderCheck {
      * the target while mapping the whole of a 64x64 texture onto it, so each output pixel covers
      * sixteen texels and the level of detail is around 2 - the result must be blue, not red.
      *
-     * <p>That is what makes this a test of mip <em>filtering</em> and not just of the mip chain: with
-     * {@code maxLod} absent the sampler is {@code MTLSamplerMipFilterNotMipmapped} (BUG-008's
-     * hardcoded value), every sample comes from level 0, and the same draw comes back red. The pair
-     * of assertions pins both directions.
+     * <p>An absent LOD cap must sample higher mips, as Minecraft's terrain sampler does.
+     * Explicit zero and the diagnostic off override are independent level-zero controls.
+     * Exercise real terrain textureGrad and RGSS textureLod as well as implicit GUI sampling.
      */
-    private static void mipCheck(MetalDevice device, RenderPipeline pipeline) {
+    private static void mipCheck(MetalDevice device, RenderPipeline pipeline, RenderPipeline terrain) {
         final int SIZE = 64;
         // Every level down to 1x1, because Metal will not sample a texture whose mip chain is
         // incomplete - it returns black, which is what the first version of this check saw.
@@ -3614,11 +3705,50 @@ public final class RenderCheck {
                         + " B" + filtered[2] + " (level 0 alone would be red)",
                 filtered[2] > 200 && filtered[0] < 60, "");
 
-        int[] unfiltered = renderMipQuad(device, pipeline, vertices, indices, uniforms, textures, Double.NaN);
-        check("the same draw with no maxLod stays on level 0 -> R" + unfiltered[0] + " G" + unfiltered[1]
-                        + " B" + unfiltered[2],
-                unfiltered[0] > 200 && unfiltered[2] < 60, "");
+        int[] unrestricted = renderMipQuad(device, pipeline, vertices, indices, uniforms, textures, Double.NaN);
+        check("absent LOD cap selects higher mips (Minecraft terrain sampler contract)",
+                unrestricted[2] > 200 && unrestricted[0] < 60, "centre " + java.util.Arrays.toString(unrestricted));
+        int[] zero = renderMipQuad(device, pipeline, vertices, indices, uniforms, textures, 0);
+        check("explicit zero LOD cap keeps level zero", zero[0] > 200 && zero[2] < 60, "");
+        String mipOverride = System.getProperty("metalmod.mipFilter");
+        try {
+            System.setProperty("metalmod.mipFilter", "off");
+            int[] disabled = renderMipQuad(device, pipeline, vertices, indices, uniforms, textures, Double.NaN);
+            check("diagnostic mipFilter off reproduces fine-level sampling", disabled[0] > 200 && disabled[2] < 60, "");
+        } finally {
+            if (mipOverride == null) System.clearProperty("metalmod.mipFilter");
+            else System.setProperty("metalmod.mipFilter", mipOverride);
+        }
 
+        // Real terrain shader, minified four-to-one, with the same LINEAR/unbounded sampler
+        // LevelRenderer creates for chunk layers. A white lightmap isolates atlas mip selection.
+        ByteBuffer terrainData = terrainVertices();
+        float[][] corners = {{0,0},{1,0},{1,1},{0,1}};
+        for (int i=0;i<4;i++) {
+            terrainData.putFloat(i*28, (corners[i][0]*2-1)*0.25f);
+            terrainData.putFloat(i*28+4, (corners[i][1]*2-1)*0.25f);
+            terrainData.putFloat(i*28+16, corners[i][0]);
+            terrainData.putFloat(i*28+20, corners[i][1]);
+        }
+        GpuBuffer terrainVb = device.createBuffer(() -> "terrain mip vertices", GpuBuffer.USAGE_VERTEX, terrainData);
+        GpuTexture lightmap = device.createTexture("terrain mip lightmap", GpuTexture.USAGE_TEXTURE_BINDING
+                | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM,1,1,1,1);
+        solid(lightmap,255,255,255,255);
+        GpuTextureView lightView=device.createTextureView(lightmap);
+        ByteBuffer section=chunkSection(); section.putInt(72,SIZE).putInt(76,SIZE);
+        Map<String,GpuBuffer> terrainUniforms=new LinkedHashMap<>();
+        putProofUniform(device,terrainUniforms,"Projection",identityMat4());
+        putProofUniform(device,terrainUniforms,"ChunkSection",section);
+        putProofUniform(device,terrainUniforms,"Fog",fog());
+        Map<String,GpuTextureView> terrainTextures=Map.of("Sampler0",view,"Sampler2",lightView);
+        for (boolean rgss : new boolean[]{false,true}) {
+            putProofUniform(device,terrainUniforms,"Globals",globals(rgss));
+            int[] mip=renderMipQuad(device,terrain,terrainVb,indices,terrainUniforms,terrainTextures,Double.NaN);
+            check("real terrain " + (rgss ? "RGSS textureLod" : "textureGrad") + " uses distant mips with absent cap",
+                    mip[2]>200 && mip[0]<60,"centre " + java.util.Arrays.toString(mip));
+        }
+        terrainVb.close(); lightView.close(); lightmap.close();
+        for(GpuBuffer buffer:terrainUniforms.values()) buffer.close();
         view.close();
         indices.close();
         vertices.close();
@@ -3649,10 +3779,10 @@ public final class RenderCheck {
         for (Map.Entry<String, GpuBuffer> uniform : uniforms.entrySet()) {
             pass.setUniform(uniform.getKey(), uniform.getValue().slice());
         }
-        // A present maxLod is what turns mip filtering on; it is also how the engine asks for it.
+        // Absent cap means unrestricted mip selection; explicit zero disables it by clamping.
         OptionalDouble lod = Double.isNaN(maxLod) ? OptionalDouble.empty() : OptionalDouble.of(maxLod);
         GpuSampler sampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
-                FilterMode.NEAREST, FilterMode.NEAREST, 1, lod);
+                FilterMode.LINEAR, FilterMode.LINEAR, 1, lod);
         for (Map.Entry<String, GpuTextureView> texture : textures.entrySet()) {
             pass.bindTexture(texture.getKey(), texture.getValue(), sampler);
         }

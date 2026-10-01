@@ -14,6 +14,9 @@
 #include <string.h>
 #include <unistd.h>
 #include "metalmod/metalmod_metal.h"
+#include "metalmod/metalmod_metalfx.h"
+#include "../src/metalmod_spatial_aa.h"
+#include <vector>
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
 // on the Java side in one place.
@@ -1087,12 +1090,169 @@ static void test_private_storage(void) {
     mmm_device_release(device);
 }
 
+// Exercise the actual prefilter shader independently of MetalFX's proprietary reconstruction.
+// Flat colour/alpha must survive, checkerboard alias energy must decrease, staircase edges must
+// acquire coverage without a global blur, and edge clamping must not wrap opposite borders.
+static void test_spatial_antialias(void) {
+    printf("\n== spatial input anti-aliasing ==\n");
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) { check("AA Metal device", false, "no Metal device"); return; }
+    NSError* error = nil;
+    id<MTLLibrary> library = [dev newLibraryWithSource:
+            [NSString stringWithUTF8String:MMMSpatialShaderSource] options:nil error:&error];
+    check("AA shader compiles", library != nil, error ? error.localizedDescription.UTF8String : "");
+    if (!library) return;
+    MTLRenderPipelineDescriptor* pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = [library newFunctionWithName:@"vs"];
+    pd.fragmentFunction = [library newFunctionWithName:@"antialias"];
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    id<MTLRenderPipelineState> pipeline = [dev newRenderPipelineStateWithDescriptor:pd error:&error];
+    check("AA pipeline created", pipeline != nil, ""); if (!pipeline) return;
+    const int W=64, H=48;
+    MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+            MTLPixelFormatRGBA8Unorm width:W height:H mipmapped:NO];
+    td.storageMode = MTLStorageModeShared;
+    td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+    id<MTLTexture> input = [dev newTextureWithDescriptor:td], output = [dev newTextureWithDescriptor:td];
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
+    sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+    sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    id<MTLSamplerState> sampler = [dev newSamplerStateWithDescriptor:sd];
+    std::vector<uint8_t> source(W*H*4), pixels(W*H*4), unchanged(W*H*4);
+    auto render = [&]() {
+        [input replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:source.data() bytesPerRow:W*4];
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture = output;
+        pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+        [enc setRenderPipelineState:pipeline]; [enc setFragmentTexture:input atIndex:0];
+        [enc setFragmentSamplerState:sampler atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [enc endEncoding];
+        [cb commit]; [cb waitUntilCompleted];
+        check("AA GPU command completes", cb.status == MTLCommandBufferStatusCompleted, "");
+        [output getBytes:pixels.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+        [input getBytes:unchanged.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+        check("AA source remains unchanged", unchanged == source, "");
+    };
+    for (int i=0;i<W*H;i++) { source[i*4]=40; source[i*4+1]=112; source[i*4+2]=208; source[i*4+3]=129; }
+    render(); check("AA flat SDR colour and alpha preserved including borders", source == pixels, "");
+    for (int y=0;y<H;y++) for (int x=0;x<W;x++) {
+        int i=(y*W+x)*4; source[i]=source[i+1]=source[i+2]=((x+y)%2) ? 255 : 0;
+        source[i+3]=(uint8_t)(x*3+20);
+    }
+    render(); double energy=0; int count=0; bool alpha=true;
+    for (int y=2;y<H-2;y++) for (int x=2;x<W-2;x++) {
+        int i=(y*W+x)*4; energy += abs((int)pixels[i]-128); count++;
+        alpha &= pixels[i+3] == source[i+3];
+    }
+    printf("     checker deviation from 50%% coverage: 127.5 -> %.2f / 255\n",energy/count);
+    check("AA reduces subpixel checker alias energy", energy/count < 32, "");
+    check("AA preserves per-pixel alpha", alpha, "");
+    for (int y=0;y<H;y++) for (int x=0;x<W;x++) {
+        int i=(y*W+x)*4; source[i]=source[i+1]=source[i+2]=x>y*0.5+12 ? 255 : 0; source[i+3]=255;
+    }
+    render(); int coverage=0; bool interior=true;
+    for (int y=4;y<H-4;y++) for (int x=4;x<W-4;x++) {
+        int i=(y*W+x)*4;
+        if (pixels[i]>8 && pixels[i]<247) coverage++;
+        if (abs(x-y*0.5-12)>5) interior &= pixels[i] == source[i];
+    }
+    printf("     staircase coverage pixels: %d\n", coverage);
+    check("AA smooths staircase coverage", coverage>30, "");
+    check("AA preserves broad edge interiors", interior, "");
+    // Now prove the filter feeds the real scaler, with a matched unfiltered control.
+    void* device=(__bridge void*)dev;
+    if (mmm_fx_spatial_supported(device)) {
+        void* fx=mmm_fx_spatial_create(device,W,H,W*2,H*2,70);
+        void* dest=mmm_texture_create(device,70,W*2,H*2,true,5);
+        check("AA+FX generation created", fx && dest, "");
+        if (fx && dest) {
+            std::vector<uint8_t> raw(W*H*16), filtered(W*H*16);
+            for (int mode=0;mode<2;mode++) {
+                mmm_fx_spatial_set_antialias(fx,mode==1);
+                void* cb=mmm_command_buffer_create((__bridge void*)queue);
+                int rc=mmm_fx_spatial_encode(fx,cb,(__bridge void*)input,dest,false);
+                check("AA A/B real MetalFX encodes",rc==0,"");
+                if (!rc) { mmm_command_buffer_commit(cb); mmm_command_buffer_wait(cb); }
+                check("AA A/B output readback",mmm_texture_read_region(dest,0,0,0,0,W*2,H*2,
+                        mode ? filtered.data() : raw.data(),W*H*16,W*8)==0,"");
+                mmm_command_buffer_release(cb);
+            }
+            long delta=0; for (size_t i=0;i<raw.size();i+=4) delta+=abs((int)raw[i]-(int)filtered[i]);
+            check("AA changes reconstructed staircase vs matched raw input",delta>100,"");
+            check("AA+FX GPU generation healthy",mmm_fx_spatial_healthy(fx),"");
+        }
+        mmm_fx_spatial_release(fx); mmm_texture_release(dest);
+    }
+}
+
+// Real FX output, SDR channels/orientation, preflight rejection and bounded repeated recreation.
+static void test_metalfx(void) {
+    printf("\n== world-only MetalFX spatial reference ==\n");
+    void* device = mmm_device_create();
+    if (!device) { check("MetalFX device", false, "no Metal device"); return; }
+    check("NULL capability safely denied", !mmm_fx_spatial_supported(NULL), "");
+    if (!mmm_fx_spatial_supported(device)) {
+        check("unsupported creation safely denied", !mmm_fx_spatial_create(device,32,32,64,64,70), "");
+        printf("SKIP real MetalFX: device unsupported\n"); mmm_device_release(device); return;
+    }
+    void* queue = mmm_queue_create(device);
+    check("zero-size rejected", !mmm_fx_spatial_create(device,0,32,64,64,70), "");
+    check("downscale rejected", !mmm_fx_spatial_create(device,64,64,32,32,70), "");
+    check("depth format rejected", !mmm_fx_spatial_create(device,32,32,64,64,252), "");
+    check("NULL encode rejected", mmm_fx_spatial_encode(NULL,NULL,NULL,NULL,false) != 0, "");
+    for (int iteration=0; iteration<100; iteration++) {
+        int ow = iteration % 2 ? 65 : 64, oh = iteration % 2 ? 49 : 48;
+        int scale = iteration % 3 == 0 ? 50 : iteration % 3 == 1 ? 67 : 75;
+        int iw=ow*scale/100, ih=oh*scale/100;
+        void* fx = mmm_fx_spatial_create(device,iw,ih,ow,oh,70);
+        if (!fx) { check("spatial recreation", false, "nil scaler"); break; }
+        void* input = mmm_texture_create(device,70,iw,ih,true,5);
+        void* output = mmm_texture_create(device,70,ow,oh,true,5);
+        // Four solid quadrants. Sample well inside regions, away from reconstruction edges.
+        for (int y=0; y<ih; y++) for (int x=0; x<iw; x++) {
+            uint8_t rgba[4] = {(uint8_t)(x<iw/2 ? 255 : 0), (uint8_t)(y<ih/2 ? 255 : 0), 40, 255};
+            mmm_texture_replace_region(input,0,0,x,y,1,1,rgba,4);
+        }
+        void* cb = mmm_command_buffer_create(queue);
+        bool plain = iteration % 7 == 0;
+        int rc = mmm_fx_spatial_encode(fx,cb,input,output,plain);
+        if (rc != 0) { check("real FX encode", false, "rejected legal input"); }
+        else {
+            mmm_command_buffer_commit(cb); mmm_command_buffer_wait(cb);
+            bool pixels = true;
+            for (int q=0; q<4; q++) {
+                uint8_t pixel[4] = {};
+                int x = q%2 ? ow*3/4 : ow/4, y = q/2 ? oh*3/4 : oh/4;
+                mmm_texture_read_region(output,0,0,x,y,1,1,pixel,4,4);
+                pixels &= abs((int)pixel[0]-(q%2 ? 0 : 255)) <= 6
+                       && abs((int)pixel[1]-(q/2 ? 0 : 255)) <= 6 && abs((int)pixel[2]-40) <= 6;
+            }
+            if (!pixels || !mmm_fx_spatial_healthy(fx)) check("FX quadrant pixels and GPU status",false,"channel/orientation/GPU failure");
+        }
+        mmm_command_buffer_release(cb);
+        cb = mmm_command_buffer_create(queue);
+        check("wrong destination dimensions rejected", mmm_fx_spatial_encode(fx,cb,input,input,false) != 0, "");
+        mmm_command_buffer_release(cb);
+        mmm_fx_spatial_release(fx);
+        mmm_texture_release(input); mmm_texture_release(output);
+        if (g_failures) break;
+    }
+    check("100 spatial size/preset/recovery/release transitions", g_failures == 0, "real MetalFX encodes + readback");
+    mmm_queue_release(queue); mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
     printf("==================================================\n");
     @autoreleasepool {
         test_device();
+        test_spatial_antialias();
+        test_metalfx();
         test_clear_and_readback();
         test_resources();
         test_mip_filter();

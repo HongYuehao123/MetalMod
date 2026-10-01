@@ -3,7 +3,7 @@
   "id": "metalmod",
   "version": "1.0.0",
   "name": "MetalMod",
-  "description": "Native Apple Silicon MetalFX Upscaling (Spatial & Temporal) and Metal 4 Frame Generation for Minecraft Vulkan backend.",
+  "description": "Native Metal graphics backend for Minecraft on Apple Silicon, with dynamic lighting and experimental world-only MetalFX Super Resolution.",
   "authors": [
     "Antigravity"
   ],

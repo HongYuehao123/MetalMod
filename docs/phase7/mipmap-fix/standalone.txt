@@ -1,0 +1,162 @@
+==================================================
+MetalMod Standalone Test Runner (macOS 26+ / Metal 4)
+==================================================
+PASS Super Resolution settings: precedence, immutable snapshots, malformed config, presets and dimensions
+[TEST 1] Loading libmetalmod.dylib via Panama FFI... [MetalMod] Successfully loaded libmetalmod.dylib via Panama FFI!
+PASS
+[TEST 2] UMA allocator ownership routing...
+         fresh allocation is owned           : PASS
+         reported size covers the request     : PASS (16384 bytes)
+         foreign pointer is not claimed       : PASS
+         realloc of a foreign pointer fails   : PASS (must not silently discard the caller's data)
+         freed allocation is no longer owned  : PASS
+--------------------------------------------------
+Multi-draw upload tests (BUG-004)
+--------------------------------------------------
+PASS saw=[section-info]
+PASS uploaded=[ChunkSection]
+PASS uploaded=[]
+PASS
+PASS got=INT
+PASS
+PASS got=SHORT
+PASS got 0
+PASS got 256
+PASS got 512
+PASS got 256
+PASS got 320
+PASS got 576
+PASS got 0
+--------------------------------------------------
+Metal enum mapping tests
+--------------------------------------------------
+PASS blend factor ZERO -> 0
+PASS blend factor ONE -> 1
+PASS blend factor SRC_COLOR -> 2
+PASS blend factor ONE_MINUS_SRC_COLOR -> 3
+PASS blend factor SRC_ALPHA -> 4
+PASS blend factor ONE_MINUS_SRC_ALPHA -> 5
+PASS blend factor DST_COLOR -> 6
+PASS blend factor ONE_MINUS_DST_COLOR -> 7
+PASS blend factor DST_ALPHA -> 8
+PASS blend factor ONE_MINUS_DST_ALPHA -> 9
+PASS blend factor SRC_ALPHA_SATURATE -> 10
+PASS blend factor CONSTANT_COLOR -> 11
+PASS blend factor ONE_MINUS_CONSTANT_COLOR -> 12
+PASS blend factor CONSTANT_ALPHA -> 13
+PASS blend factor ONE_MINUS_CONSTANT_ALPHA -> 14
+PASS all 15 blend factors covered
+PASS blend op ADD -> 0
+PASS blend op SUBTRACT -> 1
+PASS blend op REVERSE_SUBTRACT -> 2
+PASS blend op MIN -> 3
+PASS blend op MAX -> 4
+PASS compare NEVER_PASS -> 0
+PASS compare LESS_THAN -> 1
+PASS compare EQUAL -> 2
+PASS compare LESS_THAN_OR_EQUAL -> 3
+PASS compare GREATER_THAN -> 4
+PASS compare NOT_EQUAL -> 5
+PASS compare GREATER_THAN_OR_EQUAL -> 6
+PASS compare ALWAYS_PASS -> 7
+PASS topology POINTS -> 0
+PASS topology LINES -> 3
+PASS topology DEBUG_LINES -> 1
+PASS topology DEBUG_LINE_STRIP -> 2
+PASS topology TRIANGLES -> 3
+PASS topology TRIANGLE_FAN -> -1
+PASS topology QUADS -> 3
+PASS topology TRIANGLE_STRIP -> 4
+PASS WRITE_RED -> 8
+PASS WRITE_GREEN -> 4
+PASS WRITE_BLUE -> 2
+PASS WRITE_ALPHA -> 1
+PASS WRITE_COLOR -> 14 (R|G|B)
+PASS WRITE_ALL -> 15
+PASS WRITE_NONE -> 0
+PASS CLAMP_TO_EDGE -> 0
+PASS REPEAT -> 2
+PASS address constants match the header
+PASS NEAREST -> 0
+PASS LINEAR -> 1
+PASS mip filter constants match the header
+PASS a sampler with a maxLod gets mipmapping
+PASS an absent LOD cap permits linear mip selection
+PASS zero LOD cap selects nearest mip (native clamp keeps level zero)
+PASS quarter LOD cap selects nearest mip
+PASS LOD cap above quarter enables mip blending
+PASS -Dmetalmod.mipFilter=off forces level 0 even with a maxLod
+PASS -Dmetalmod.mipFilter=nearest selects nearest
+PASS MTLTextureType2D == 2
+PASS MTLTextureType2DArray == 3
+PASS MTLTextureTypeCube == 5
+PASS MTLTextureType3D == 7
+PASS MTLTextureTypeTextureBuffer == 9 (unused, needed by Sodium)
+PASS MTLTextureUsage bits (read=1, write=2, render=4, view=16)
+[TEST] Texture storage mode rule
+PASS the flag set Minecraft gives a render target is 15
+PASS a render target is eligible for private storage
+PASS a depth attachment is eligible for private storage
+PASS a render target with no sampling is eligible
+PASS an uploaded atlas is not eligible
+PASS a dynamic texture is not eligible
+PASS the texel-buffer emulation is not eligible
+PASS a sampled-only texture is not eligible
+PASS a bare texture is not eligible
+PASS a texture that is not eligible for private storage always stays shared
+PASS the render-attachment decision follows the switch
+PASS the switch is off unless explicitly enabled
+PASS the switch turns on for all and true
+PASS the default is off
+[TEST] storage mode rule OK
+  (source tree not present; skipping the single-resolver check)
+PASS lighting settings: launch-flag precedence, cluster coherence and suppression
+PASS point-light ABI, large origins and invalid input rejection
+PASS clustered light grid: bounds, stability, overflow, layout and origins
+PASS buried sources: open air kept, buried and sealed dropped
+PASS static block index: keys, on-demand reads, invalidation and environment
+[TEST] Performance capture statistics, export and native ABI
+objc[96073]: Class MMMSpatialState is implemented in both /private/var/folders/7t/4ss3wk357m59xhv9wxw8jcv40000gn/T/libmetalmod-9946850684569349373.dylib (0x1052507c8) and /private/var/folders/7t/4ss3wk357m59xhv9wxw8jcv40000gn/T/libmetalmod-10752864034525049164.dylib (0x1053387c8). This may cause spurious casting failures and mysterious crashes. One of the duplicates must be removed or renamed.
+[MetalMod] Metal backend native library ready (mmm_* symbols resolved).
+PASS capture statistics, CSV export, unsupported metrics and native ABI
+PASS lighting capture columns: names, order and values agree
+[MetalMod] HOOK ACTIVE: LevelExtractor.extract
+[MetalMod] hooks so far: -GameRenderer.render -GameRenderer.resize -SuperResolution.world -SuperResolution.ui -Window.onFramebufferResize +LevelExtractor.extract -LevelExtractor.setLevel -OptionsScreen.init -MetalModLightingConfigScreen.init
+PASS debug page text: environment summary and hook line stay short
+[TEST] Capture route recording, collapsing and replay metadata
+PASS a stationary stretch collapses to one waypoint
+PASS the waypoint keeps the arrival position and the measured dwell
+PASS the second run keeps its own dwell
+PASS total dwell is the sum of the stages
+PASS a single-sample run gets one sample interval
+PASS a dimension change starts a new waypoint
+PASS rotation is carried into the waypoint
+PASS a saved route loads back
+PASS the name survives the round trip
+PASS positions survive the round trip
+PASS dwells survive the round trip
+PASS rotation survives the round trip
+PASS the dimension survives the round trip
+PASS an empty route loads as nothing to replay
+PASS route names are safe as file names
+PASS the summary breaks the capture down by waypoint
+PASS every waypoint gets a row
+PASS the waypoint it was replayed from is in the row
+PASS the summary names the route
+PASS a stage with no draw data reports it as unavailable
+PASS no route means no per-waypoint section
+PASS route_stage is a CSV column
+PASS each row carries its stage
+PASS a null route name still produces a usable name
+PASS an empty route reports itself empty
+[TEST] capture route OK
+--------------------------------------------------
+Running Apple Silicon Unified Memory (UMA) Tests
+--------------------------------------------------
+[UMA TEST 1] Allocating 16 KB, 64 KB, 1 MB, and 16 MB UMA buffers... PASS (16 KB page-aligned, read/write verified)
+[UMA TEST 2] Querying Apple Silicon Mach VM & Metal Telemetry... PASS
+  -> Total RAM: 24.0 GB | Avail: 8.5 GB | Footprint: 241 MB | Metal Working Set Cap: 17.8 GB | Pressure Level: 0
+[UMA TEST 3] Testing non-destructive idle scratch purge (purgeable scratch)... PASS
+==================================================
+ALL TESTS PASSED SUCCESSFULLY!
+==================================================

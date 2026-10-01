@@ -8,10 +8,10 @@ drawable.
 
 Apple's **MetalFX** upscaling / frame interpolation, native material/lighting foundations and hybrid
 ray tracing are the core later phases. **GLSL shaderpacks are optional future compatibility work**;
-**dynamic lighting** is Phase 6 and is in progress — see
+**dynamic lighting** is Phase 6 and is complete — see
 [docs/phase6-plan.md](docs/phase6-plan.md). Known defects are parked in [bug.md](bug.md).
 
-> ## Current status: the Metal backend renders; Phase 6 dynamic lighting is in progress
+> ## Current status: Phase 6 complete; Phase 7 MetalFX spatial reference in testing
 >
 > Minecraft selects the **Metal backend**, creates the device and a `CAMetalLayer`, creates real
 > Metal **textures, views, buffers and samplers**, compiles the engine's shaders
@@ -35,11 +35,15 @@ ray tracing are the core later phases. **GLSL shaderpacks are optional future co
 > `-Dmetalmod.metalBackend=true`. The backend is chosen once at startup, so **restart** after
 > changing it.
 >
-> ## ⚠️ MetalFX is not implemented yet
+> ## Experimental world-only Super Resolution
 >
-> MetalFX upscaling and frame interpolation return in Phase 7, against the backend's own textures.
-> The retired MoltenVK-interop scalers have been deleted, and the config screen no longer exposes
-> scaling/frame-generation settings that did nothing.
+> MetalFX spatial reconstruction now runs on reduced world targets before native-resolution UI.
+> Open **Options → MetalMod… → Super Resolution…**. The feature defaults Off; strength
+> 0/25/33/50% means world render scale 100/75/67/50%. On+0% bypasses scaling.
+> Native rendering is the fallback. Performance and image-quality release acceptance are pending;
+> temporal reconstruction and frame generation are absent from the active path.
+> See [implementation evidence and remaining gates](docs/phase7/implementation.md).
+> The retired MoltenVK interop code remains deleted; these controls drive backend-owned resources.
 
 ---
 
@@ -124,12 +128,13 @@ These are the reasons the mod is not a drop-in replacement yet.
    heavy underground one. Before that, utility submission batching cut the chunk-mesh upload path's
    cost by 95% per frame, and private storage for render targets measured 9% *slower* and is off by
    default. See [TESTING.md](TESTING.md) for the numbers and the procedure.
-3. **MetalFX / frame generation are not implemented (Phase 7).** They return against the backend's
-   own textures, and frame generation additionally needs a display-link pacer so two drawables land
+3. **MetalFX spatial reconstruction is experimental (Phase 7).** It runs on backend-owned world
+   textures with native-resolution UI. Release quality/performance selection is pending. Frame
+   generation remains deferred and additionally needs a display-link pacer so two drawables land
    on different refreshes.
-4. **Internal resolution scaling is not implemented.** Shrinking the main render target breaks the
-   GUI layout (scissor rectangles exceed the render area); doing it properly means rendering the
-   world into its own target and upscaling that.
+4. **World-only resolution scaling is implemented.** Reduced scene colour/depth and post targets
+   are reconstructed before native UI. The window and mouse/scissor coordinate mapping stay native;
+   comprehensive UI/content and quality/performance acceptance is still pending.
 5. **Indirect draws are no-ops.** `drawIndirect` and `drawIndexedIndirect` are unimplemented, and the
    matching `DeviceFeatures` are reported `false` so the engine never takes those paths. Vanilla is
    unaffected; this is the gap to close before batching mods (e.g. Sodium).

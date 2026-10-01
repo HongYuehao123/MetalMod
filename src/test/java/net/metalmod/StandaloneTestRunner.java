@@ -21,6 +21,7 @@ public class StandaloneTestRunner {
         System.out.println("MetalMod Standalone Test Runner (macOS 26+ / Metal 4)");
         System.out.println("==================================================");
 
+        failures += net.metalmod.upscaling.UpscalingSettingsTest.runTests();
         testNativeBridgeLoading();
         testUmaOwnershipRouting();
         failures += net.metalmod.backend.MetalRenderPassBackendTest.runTests();

@@ -8,6 +8,76 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-030 — Unbounded terrain samplers incorrectly disable mipmaps
+
+**Status:** **FIXED**, verified with real terrain pixel regressions (2026-10-01).
+The remaining distant texture harshness exposed an incorrect backend contract: an absent
+`OptionalDouble maxLod` was mapped to Metal's `NotMipmapped`. In the actual 26.2 client,
+`LevelRenderer` creates its chunk-layer sampler with LINEAR min/mag and an absent cap.
+`VulkanGpuSampler` interprets that as unrestricted mip selection with linear mip blending.
+Our backend instead sampled mip zero even through terrain's explicit textureGrad/textureLod.
+The earlier BUG-008 fix only enabled mip filtering for present caps; its test incorrectly
+expected absent caps to disable mipmapping and therefore protected this defect.
+
+Pass the actual optional LOD value to the mapping: absent or >0.25 uses linear mip filtering;
+<=0.25 uses nearest mip selection, with the native explicit cap still enforced. Retain diagnostic
+`metalmod.mipFilter` overrides. This corrects distant texture minification with SR on or off,
+without adding blur or changing magnification filtering. AA remains available before MetalFX.
+
+New regressions **fail three assertions before the fix** (red mip-zero result) and pass after it
+(blue mip-two result): implicit sampling, real SOLID_TERRAIN textureGrad, and RGSS textureLod,
+all using the unbounded sampler contract. Explicit zero remains red; diagnostic off remains red.
+All five gates pass, including **194 pixel assertions**, validated native smoke, 87/87 + 9/9
+shaders and the standalone suite loading the packaged dylib. Local reproducible bytecode and
+before/after logs: `docs/phase7/mipmap-fix/`. The user subsequently confirmed the spatial pipeline
+is usable; movement and paired performance acceptance remain separate.
+
+## BUG-029 — Spatial MetalFX amplifies harsh foliage aliasing
+
+**Status:** **MITIGATED; in-game visual/performance acceptance pending** (2026-10-01).
+The user's foliage-heavy screenshot shows objectionably sharp, speckled distant detail. The
+integration fed reduced-resolution world colour directly to spatial MetalFX without a dedicated
+scene AA pass. Aliasing amplified during reconstruction is consistent with this image; a still
+screenshot does not establish motion shimmer or exclude texture/mipmap issues.
+
+Added an edge-directed input AA pass with low-contrast bypass and bounded subpixel smoothing.
+It runs before MetalFX at scene resolution, never in native bypass or on the native HUD. No global
+sampler changes or extra sharpening were added. `-Dmetalmod.fxAntialias=false` provides a matched
+unfiltered control. Native GPU tests verify staircase smoothing, checker alias suppression,
+flat SDR colour/alpha preservation, source immutability and real MetalFX A/B output differences.
+All five offline gates pass, with smoke and render checks under Metal API validation. This is a
+spatial mitigation: it cannot recover absent samples or guarantee temporal stability. The actual
+foliage scene and performance cost still need comparison before closing this defect.
+
+## BUG-028 — MSL uniform tail padding exceeds the logical std140 buffer
+
+**Status:** **FIXED** (2026-10-01), verified under Metal API validation.
+Generated structs require 16/48/64 bytes for logical 12/40/56-byte buffers. Strict validation aborted
+before world entry (blur Globals) and in terrain. Allocate 16 backing bytes beyond each uniform
+buffer and the transient arena; keep logical sizes, offsets and uploads unchanged. The full pixel
+suite now passes with validation enabled, as does packaged world rendering. Evidence and failed
+validation messages: [Phase 7 record](docs/phase7/implementation.md).
+
+## BUG-027 — A depth-free pipeline state is invalid on a pass with a depth attachment
+
+**Status:** **FIXED** (2026-10-01), verified under Metal API validation.
+GUI can bind D32 depth even when its pipeline has depth tests disabled. Metal requires the PSO
+attachment format to match that framebuffer; an invalid format aborted the native loading screen.
+Cache a depth-compatible variant per compiled pipeline, preserving its compare/write settings and
+owning the variant with the original. Regression: draw the real GUI pipeline with depth, then
+without depth, assert blue pixels in both; strict validation rejects the former before this fix.
+See [Phase 7 evidence](docs/phase7/implementation.md).
+
+## BUG-026 — SkyRenderer retains a destroyed MetalFX scene target
+
+**Status:** **FIXED** (2026-10-01), runtime recreation verified.
+During the packaged world test, opening options/resource changes retired a scene still captured
+by SkyRenderer, causing a null colour attachment in `renderSkyDisc`. It can also route sky to the
+wrong live target after switching SR. A focused accessor updates the cached sky target at both
+world and native UI boundaries. Regression: `-Dmetalmod.fxRecreateEvery=30` with a loaded world;
+100+ generations and a real framebuffer resize now pass with API validation enabled.
+See [before/after evidence](docs/phase7/implementation.md).
+
 ## BUG-025 — Inventory player preview is upside down, and the item icons vanished
 
 **Status:** **FIXED** (Phase 5) — **confirmed in game**. The player preview is upright and the
@@ -1393,6 +1463,11 @@ Covered by seven assertions in `MetalRenderPassBackendTest` that pin the invaria
 ---
 
 ## BUG-008 — Mip filtering was disabled by a leftover test hack
+
+**2026-10-01 correction:** the historical rule below, “present cap enables mipmapping,” was
+incomplete. Empty caps mean unrestricted mipmapping; the chunk renderer uses them. BUG-030
+corrects the mapping and replaces the erroneous test expectation. The original investigation
+is retained below as history.
 
 **Status:** **FIXED** (Phase 5) — the change most worth confirming in-game.
 **Severity:** affects all minification — aliasing/moiré on terrain and atlases.

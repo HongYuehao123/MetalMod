@@ -98,7 +98,7 @@ public final class DebugPageTextTest {
                 "a hook that should have run by now is still named: " + missing);
         for (String hook : missing.split(" ")) {
             require(hook.isEmpty() || hook.startsWith("GameRenderer") || hook.startsWith("Window")
-                            || hook.startsWith("LevelExtractor") || hook.startsWith("OptionsScreen")
+                            || hook.startsWith("SuperResolution") || hook.startsWith("LevelExtractor") || hook.startsWith("OptionsScreen")
                             || hook.startsWith("MetalModLightingConfigScreen"),
                     "only real hook names appear: " + hook);
         }

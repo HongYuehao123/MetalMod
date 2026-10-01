@@ -31,8 +31,8 @@ Groundwork and the backend architecture are in `ROADMAP.md` §2; the interface c
   (the CPU/GPU split), draw count, `unbound/missingAttr/failed` health counters, optional UMA
   telemetry, and the mixin hook summary.
 - **Config GUI** opens from Mod Menu; it exposes the Metal backend toggle and the UMA memory option.
-- **Native library** (`libmetalmod.dylib`) now contains only the Metal backend (`mmm_*`) and the UMA
-  memory pool; the retired MoltenVK-interop/MetalFX code is gone (see below).
+- **Native library** (`libmetalmod.dylib`) contains the Metal backend (`mmm_*`), UMA memory pool and
+  world-only MetalFX spatial reference (`mmm_fx_*`). Retired MoltenVK interop remains deleted.
 
 ## The Metal backend is opt-in
 
@@ -51,12 +51,72 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | not started |
+| 7 — MetalFX | spatial integration implemented and tested (2026-10-01); release quality/performance acceptance pending; 7C deferred; see [docs/phase7/implementation.md](docs/phase7/implementation.md) |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Distant terrain mip selection corrected (2026-10-01)
+
+BUG-030 fixes a backend sampler contract error that survived the first AA mitigation. The real
+26.2 chunk renderer uses an absent maximum LOD to allow the full mip chain; MetalMod incorrectly
+mapped it to no mipmapping. Unbounded samplers now use linear mip filtering, while explicit
+level-zero caps remain clamped. The previous installed AA build was confirmed present in the
+test instance, and its latest log recorded `input AA On`; this report was not a missed AA toggle.
+
+Three new pixel assertions fail against the old backend and pass after the correction, including
+real terrain textureGrad and RGSS textureLod under minification. All five gates pass, with 194
+pixel assertions and Metal API validation on smoke/render checks. The rebuilt JAR is installed
+in `MetalMod_Test_26.2`; restart the client to load it. Previous installed JAR backup:
+`build/backups/metalmod-before-mipmap-fix.jar`.
+This fixes texture minification with SR both on and off. The user confirmed the corrected spatial
+pipeline is usable. Repeatable quality/performance comparisons and motion acceptance remain
+pending. Durable regression evidence: `docs/phase7/mipmap-fix/`.
+
+## Spatial MetalFX input quality (2026-10-01)
+
+Spatial reconstruction now receives an edge-aware SDR anti-aliasing prepass, enabled by default
+only when reduced-resolution MetalFX is active. It preserves centre alpha, skips low-contrast
+regions, clamps border samples and has a bounded subpixel contribution for high-frequency input.
+The per-generation intermediate and pipeline are reused; source scene/depth, native GUI, native
+bypass and plain recovery are unchanged. `-Dmetalmod.fxAntialias=false` disables the prepass for
+matched diagnostic A/B captures; generation startup logs its state. This is spatial filtering,
+not temporal reconstruction, and can soften intentional texture detail.
+
+All five offline gates pass, including strict Metal validation for smoke and pixel render tests.
+The new GPU assertions exercise flat colour/alpha preservation, unmodified source input,
+checker alias suppression, staircase coverage, broad edge interiors, and filtered/unfiltered
+real MetalFX reconstruction. The existing 190 pixel assertions pass. Representative foliage
+appearance, camera-motion stability and added GPU cost have not yet been accepted in game;
+BUG-029 therefore remains mitigated rather than closed. No temporal-quality or performance gain
+is claimed from these synthetic checks. An isolated alternating A/B GPU measurement on M4 Pro
+(3840×2160 scene → 5120×2880 output, synthetic high-frequency pattern, 20 measured samples per
+mode after warmup) measured FX+copy medians 1.728 ms without AA and 2.332 ms with AA: +0.604 ms.
+This is not whole-game frame timing. Local logs and the benchmark source are in
+`build/reports/metalfx-aa/`; the rebuilt JAR includes the default-on prepass.
+
 ## Phase 5 close-out and next step
+
+Phase 7 now has an opt-in **world-only MetalFX spatial reference**. Options → MetalMod… →
+Super Resolution… exposes On/Off and strength 0/25/33/50% (scene scale 100/75/67/50%). Off and
+On+0% bypass reconstruction. World passes, hands, outlines and post effects use reduced colour/depth
+attachments; reconstruction completes before native GUI and native Globals restoration. Window,
+extraction, picking, frustum and GUI coordinates stay native. Resources are reused, retirement is
+bounded by a queue wait at configuration transitions, and failures latch to native with a validated
+same-frame plain recovery for CPU-side encode failure. Lighting ABI v1/cadence is unchanged.
+
+All five offline gates pass on Apple M4 Pro, including real spatial operations and 100 mixed
+transitions; packaged-JAR runtime hooks and reduced-world/native-HUD target routing were exercised
+in an isolated copy of the test world. That run found BUG-026 (SkyRenderer retained a retired scene
+object); the sky target now follows both frame boundaries. Exact commands, evidence and remaining
+acceptance work: [docs/phase7/implementation.md](docs/phase7/implementation.md).
+
+**Phase 7 is not declared complete.** Temporal lacks the required object-motion input contract and
+is absent from the active path; spatial is an engineering reference, not a measured winner.
+Representative visual review, native Off/On+100% regression pairs, F7/F8 quality/performance pairs,
+full lifecycle/content matrix and the ten-minute steady soak remain acceptance gates. **7C frame
+generation/display-link pacing is explicitly deferred**; existing FIFO/immediate presentation remains
+the sole presentation owner. No FPS improvement or latency claim is made.
 
 Phase 5 is complete for the tested vanilla 26.2/M4 Pro scope. All fourteen visual checks were
 confirmed in game; the routed Overworld comparison meets the comparable-performance criterion.

@@ -248,6 +248,9 @@ MMM_API void* mmm_render_pipeline_create(
     float depthBiasScale, float depthBiasConstant,
     const MMMVertexBufferLayout* buffers, int32_t bufferCount,
     const MMMVertexAttribute* attributes, int32_t attributeCount);
+/// Cached borrowed variant matching the actual depth attachment (0 or Depth32Float).
+/// The original pipeline owns it; declared depth testing/writes are preserved.
+MMM_API void* mmm_render_pipeline_depth_variant(void* pipeline, int64_t depthFormat);
 MMM_API void mmm_render_pipeline_release(void* pipeline);
 
 /// Human-readable message for the most recent failure from mmm_library_create or

@@ -70,6 +70,7 @@ public final class MetalRenderPipeline {
     private final boolean dynamicLights;
     private final boolean clusteredLights;
     private boolean closed;
+    private MemorySegment withoutDepth, withDepth;
 
     private MetalRenderPipeline(MemorySegment handle, MemorySegment vertexLibrary, MemorySegment fragmentLibrary,
                                 Map<String, Integer> vertexBuffers, Map<String, Integer> fragmentBuffers,
@@ -479,6 +480,15 @@ public final class MetalRenderPipeline {
     }
 
     public MemorySegment handle() { return this.handle; }
+
+    /** Metal requires an exact depth-attachment format even when depth testing is disabled. */
+    public MemorySegment handleForDepth(long format) {
+        MemorySegment cached = format == 0 ? withoutDepth : withDepth;
+        if (cached != null) return cached;
+        MemorySegment variant = MetalNative.renderPipelineDepthVariant(this.handle, format);
+        if (format == 0) withoutDepth = variant; else withDepth = variant;
+        return variant;
+    }
     public int topology() { return this.topology; }
 
     /** The pipeline's location, resolved once at compile time. */

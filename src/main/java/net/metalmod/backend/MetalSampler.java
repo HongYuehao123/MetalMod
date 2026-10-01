@@ -34,7 +34,7 @@ public final class MetalSampler extends GpuSampler {
                 MetalFormat.mtlSamplerAddress(addressV),
                 MetalFormat.mtlSamplerFilter(minFilter),
                 MetalFormat.mtlSamplerFilter(magFilter),
-                MetalFormat.mtlSamplerMipFilter(maxLod.isPresent()),
+                MetalFormat.mtlSamplerMipFilter(maxLod),
                 maxAnisotropy,
                 maxLod.isPresent(),
                 maxLod.orElse(0.0));
