@@ -3,7 +3,7 @@ package net.metalmod.debug;
 import net.metalmod.upscaling.MetalFxCoordinator;
 import java.util.List;
 
-/** Appended F8 columns. Effective: 0 native, 1 spatial, 2 plain recovery. GPU ns is unavailable (-1). */
+/** Appended F8 columns. Effective: 0 native, 1 spatial, 2 plain recovery. GPU ns is the latest completed AA+FX+copy submission, or -1. */
 public final class UpscalingCaptureColumns {
     public static final List<String> NAMES = List.of("sr_requested", "sr_strength", "sr_effective",
             "sr_scene_width", "sr_scene_height", "sr_output_width", "sr_output_height",
@@ -29,7 +29,7 @@ public final class UpscalingCaptureColumns {
             case 3 -> s.sceneWidth(); case 4 -> s.sceneHeight(); case 5 -> s.outputWidth(); case 6 -> s.outputHeight();
             case 7 -> Math.round(s.pixelPercent()*100); case 8 -> s.generation(); case 9 -> s.creates();
             case 10 -> s.failures(); case 11 -> s.encodes(); case 12 -> s.recoveries(); case 13 -> s.retirements();
-            case 14 -> s.worldHooks(); case 15 -> s.uiHooks(); case 16 -> -1;
+            case 14 -> s.worldHooks(); case 15 -> s.uiHooks(); case 16 -> s.gpuDurationNs();
             case 17 -> reasonCode(s.reason());
             default -> throw new IllegalArgumentException("Unknown SR capture column");
         };

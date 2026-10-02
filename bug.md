@@ -8,6 +8,22 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-031 — Dense-scene slow frames stall in command-buffer creation
+
+**Status:** **OPEN; CPU stall location measured, internal cause unproven** (2026-10-02).
+At the copied Overworld route's dense waypoint (stage 13, ~19,000 draws/frame), spatial strengths
+25/33% improve average throughput but worsen p95 against native. Partitioning the same waypoint's
+slowest 5% from other frames shows command-buffer creation averages 13.53/12.84 ms versus
+3.97/3.58 ms. Frame/create-span correlations are 0.991/0.990. Native shows the same mechanism.
+Recorded drawable/fence waits and GC do not account for a similar difference; asynchronous scaler-
+batch samples do not rise with these spikes. This locates the observed CPU stall in `[queue commandBuffer]`,
+without proving whether queue capacity, driver scheduling or another internal wait is responsible.
+
+Reproduce with the saved 32-chunk route and F8 dense waypoint; analyze raw CSVs with
+`tools/metalfx_benchmark/profile_stalls.py ROOT --stage 13`. No queue-depth or submission change
+was made. The lighter smooth forest/river check does not reproduce this tail regression. Evidence:
+[stall and motion results](docs/phase7/motion-check/results.md), `prior-dense-stalls.json` alongside it.
+
 ## BUG-030 — Unbounded terrain samplers incorrectly disable mipmaps
 
 **Status:** **FIXED**, verified with real terrain pixel regressions (2026-10-01).

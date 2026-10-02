@@ -56,6 +56,52 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Camera-motion and actual FIFO timestamp checks (2026-10-02)
+
+Autonomous disposable-world testing now includes six accepted 60-second smooth render-time
+camera captures plus three short display-observer captures: 44,929 frames, no shader compiles or
+SR failures/recoveries. At 5120×2880, native motion repeats are 95.5–97.9 FPS; one-per-strength
+AA-enabled 25/33/50% captures are 106.3/114.2/128.8 FPS. Memory pressure affected part of the
+session, so these are exploratory rather than release performance acceptance.
+
+Effective surface modes were asserted. Actual drawable presentation timestamps verify FIFO at
+~60 Hz/16.67 ms median with no zero/skipped timestamps in the native and SR25 samples. IMMEDIATE
+updates faster but less evenly and skips some submissions. Latency/frame generation remains untested.
+The observer only attaches callbacks in the separate test add-on; ordinary presentation is unchanged.
+
+Dense-scene tail analysis locates most of the observed p95 increase in CPU command-buffer creation
+calls (SR25 slowest 5%: 13.53 ms versus 3.97 ms otherwise), with frame/create correlations near 0.99.
+The driver/queue cause remains unproven; BUG-031 is open. Cropped near/mid-range camera snapshots
+show 50% detail softening; ~4 Hz sampling does not establish distant shimmer or full motion acceptance.
+
+M4 Pro temporal support and legal descriptor creation are confirmed. Ready to begin temporal
+prototype/input development; no temporal rendering is implemented or accepted. Per-object motion,
+jitter, history/reset and colour/exposure pixel contracts remain implementation work. All five gates
+were rerun and passed (194 pixel assertions). Evidence: [motion/timestamp results](docs/phase7/motion-check/results.md).
+
+## Spatial throughput pilot and GPU telemetry (2026-10-01)
+
+Added generation-safe completed AA + MetalFX + output-copy GPU timing to F3/F8. Missing,
+native, recovery or failed samples remain -1; timestamps are asynchronous and are not total
+frame GPU execution time. All five gates pass (87/87 + 9/9 shaders, 194 pixel assertions,
+strict native/render Metal validation). The standalone capture-column and native generation/
+completion checks pass. A separate Fabric benchmark add-on is excluded from the production JAR.
+
+Twelve valid 60-second captures at 5120×2664/32 chunks in a disposable copied world yielded
+uncapped two-run means: native 73.9 FPS, AA-enabled strength 25/33/50% 77.5/81.9/86.6 FPS
+(+4.8/+10.8/+17.2%). Strength 25/33% worsened whole-route p95 versus native. Turning AA off
+at strength 25% improved throughput only ~1.9% and reduced scaler-batch median ~0.45 ms;
+keep AA enabled. Vsync was disabled for throughput and enabled in two separate runs, but F8's
+CPU boundary intervals do not establish actual displayed pacing/latency. No pacing claim.
+
+This is a two-repeat route pilot, not full Phase 7 acceptance. Holds/teleports do not prove motion
+stability; spectator mode suppresses effective dynamic lights. Temporal remains excluded without
+a complete independent-object motion/jitter/history contract. Default Off/remembered 25% remains.
+Evidence and reproducible harness: [results](docs/phase7/spatial-benchmark/results.md),
+`tools/metalfx_benchmark/`; full CSV/PNG artifacts in `build/reports/spatial-benchmark/`.
+The timing build is installed in the normal test instance; restart the client to load it.
+Backup of the usable spatial checkpoint: `build/backups/metalmod-before-gpu-timing.jar`.
+
 ## Distant terrain mip selection corrected (2026-10-01)
 
 BUG-030 fixes a backend sampler contract error that survived the first AA mitigation. The real
@@ -248,7 +294,9 @@ they measured resolution scaling only, and the CPU floor they implied was optimi
   `ivec4` array inside a uniform block: its header reached the shader while every indexed element read
   as zero, on a device where an identical flat array worked. It now ships as an RGBA32F texture read
   with `texelFetch`. Treat an indexed array inside a uniform block as unproven on this backend.
-- **Real GPU timing.** `GPU wait` is a proxy. A per-frame GPU execution time needs
+- **Real GPU timing.** F3/F8 now expose the latest completed AA + MetalFX + output-copy
+  submission duration (unavailable for native/recovery). This is an asynchronous scaler-batch
+  measurement, not total GPU frame time. `GPU wait` remains a proxy. A per-frame GPU execution time needs
   `MTLCounterSampleBuffer` timestamps; summing command-buffer `GPUStartTime`/`GPUEndTime` spans does
   not work (command buffers on one queue overlap execution). This is now the main measurement gap:
   the frame is GPU-bound in its heaviest moments and the capture can only infer that from the

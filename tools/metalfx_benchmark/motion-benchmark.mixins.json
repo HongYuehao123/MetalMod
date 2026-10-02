@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "net.metalmod.benchmark.mixin",
+  "compatibilityLevel": "JAVA_22",
+  "client": [
+    "MotionCameraMixin",
+    "DisplayProbeMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

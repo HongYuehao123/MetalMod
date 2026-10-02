@@ -19,6 +19,10 @@ MMM_API void mmm_fx_spatial_set_antialias(void* scaler, bool enabled);
 MMM_API int32_t mmm_fx_spatial_encode(void* scaler, void* commandBuffer,
                                      void* source, void* destination, bool plainScale);
 MMM_API bool mmm_fx_spatial_healthy(void* scaler);
+/// Latest completed AA+FX+copy submission duration; asynchronous, may lag the current frame.
+/// Returns -1 before completion, after errors, for plain recovery or unavailable timestamps.
+/// This is not total frame GPU time; callers must not sum it with overlapping buffer spans.
+MMM_API int64_t mmm_fx_spatial_gpu_duration_ns(void* scaler);
 #ifdef __cplusplus
 }
 #endif

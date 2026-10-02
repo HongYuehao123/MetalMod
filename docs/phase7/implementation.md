@@ -15,7 +15,9 @@ quality/performance acceptance is pending. 7B has no measured release winner. 7C
   File keys: `enableSuperResolution`, `superResolutionStrength`. Changes apply at a frame boundary.
 - Native Off, On+0%, menus without a world and unsupported/failing MetalFX bypass the scaler.
   F3, settings text and F8 distinguish requested from effective behavior, dimensions and actual pixels.
-  F8 appends SR counters/status/reason codes; `sr_gpu_ns=-1` explicitly means unavailable.
+  F8 appends SR counters/status/reason codes. `sr_gpu_ns` now records the latest completed
+  AA + MetalFX + copy submission; -1 means unavailable. It is asynchronous scaler-batch timing,
+  not whole-frame GPU execution time.
 - A scene target owns reduced RGBA8 colour and D32 depth. The real client framegraph derives its
   translucent/item/particle/weather/cloud targets and post-chain targets from that scene size.
   The persistent entity-outline target follows it through `LevelRenderer.resize`.
@@ -138,4 +140,6 @@ mipmap correction. Latest verification passes all five gates, with 194 pixel ass
 new minification regressions fail against the previous backend and pass after the fix, including
 real terrain textureGrad and RGSS textureLod. Latest gate evidence: [mipmap-fix](mipmap-fix/).
 This is a usable spatial checkpoint, not completion of temporal selection or frame pacing.
-Paired F8 benchmarks remain pending.
+A twelve-capture spatial throughput pilot now has measured evidence: see
+[spatial benchmark results](spatial-benchmark/results.md). Two repeats per reduced preset and
+teleport/hold routes do not replace the full performance, content and continuous-motion gates.

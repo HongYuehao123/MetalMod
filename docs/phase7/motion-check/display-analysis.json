@@ -1,0 +1,35 @@
+{
+  "20261002-160332-476-Metal-14786025245048840170": {
+    "callback_samples": 3439,
+    "zero_timestamps": 317,
+    "duplicate_nonzero_timestamps": 0,
+    "unique_displayed_times": 3122,
+    "mean_interval_ms": 11.266926492470363,
+    "median_interval_ms": 10.2015,
+    "p95_interval_ms": 19.907834,
+    "displayed_rate_hz": 88.7553496215934,
+    "counts": "Observed submissions: 3441\nCallbacks: 3439\nIncludes five-second countdown and export tail; constant present mode.\n"
+  },
+  "20261002-160427-765-Metal-5882331146202173501": {
+    "callback_samples": 2096,
+    "zero_timestamps": 0,
+    "duplicate_nonzero_timestamps": 0,
+    "unique_displayed_times": 2096,
+    "mean_interval_ms": 16.731149164677806,
+    "median_interval_ms": 16.6675,
+    "p95_interval_ms": 16.667584,
+    "displayed_rate_hz": 59.768757672136694,
+    "counts": "Observed submissions: 2098\nCallbacks: 2096\nIncludes five-second countdown and export tail; constant present mode.\n"
+  },
+  "20261002-160522-868-Metal-11388027036867584045": {
+    "callback_samples": 2091,
+    "zero_timestamps": 0,
+    "duplicate_nonzero_timestamps": 0,
+    "unique_displayed_times": 2091,
+    "mean_interval_ms": 16.771205841626795,
+    "median_interval_ms": 16.667541,
+    "p95_interval_ms": 16.667625,
+    "displayed_rate_hz": 59.626004799127834,
+    "counts": "Observed submissions: 2093\nCallbacks: 2091\nIncludes five-second countdown and export tail; constant present mode.\n"
+  }
+}

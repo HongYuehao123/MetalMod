@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "metalmod-spatial-benchmark",
+  "version": "1.0.0",
+  "name": "Temporary spatial benchmark",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.metalmod.benchmark.SpatialBenchmark",
+      "net.metalmod.benchmark.MotionBenchmark"
+    ]
+  },
+  "depends": {
+    "metalmod": "*",
+    "fabricloader": ">=0.15.0"
+  },
+  "mixins": [
+    "motion-benchmark.mixins.json"
+  ]
+}

@@ -1,0 +1,386 @@
+{
+  "01-native": {
+    "frames": 2292,
+    "stage": 13,
+    "threshold_ns": 23389167,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15622729.463941203,
+        "command_buffer_create_ns": 3930135.506660542,
+        "commit_ns": 100168.79926504364,
+        "drawable_wait_ns": 12474.761139182361,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100867.82590721177,
+        "sr_gpu_ns": -1,
+        "draws": 19192.356453835553,
+        "submissions": 33.91134588883785,
+        "gc_reported_ms": 0.016536518144235186
+      },
+      "slowest5": {
+        "frame_ns": 23672735.860869564,
+        "command_buffer_create_ns": 11011439.869565217,
+        "commit_ns": 115068.89565217392,
+        "drawable_wait_ns": 11717.408695652173,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100236.70434782609,
+        "sr_gpu_ns": -1,
+        "draws": 19357.84347826087,
+        "submissions": 40.77391304347826,
+        "gc_reported_ms": 0.02608695652173913
+      }
+    },
+    "frame_create_correlation": 0.9828201067931082
+  },
+  "02-sr25-aa": {
+    "frames": 2333,
+    "stage": 13,
+    "threshold_ns": 24184458,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15252999.414259927,
+        "command_buffer_create_ns": 3973428.7454873645,
+        "commit_ns": 100986.12951263538,
+        "drawable_wait_ns": 11598.100180505415,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95823.14620938628,
+        "sr_gpu_ns": 2615637.8533393503,
+        "draws": 19191.55144404332,
+        "submissions": 35.82942238267148,
+        "gc_reported_ms": 0.01444043321299639
+      },
+      "slowest5": {
+        "frame_ns": 25242922.41880342,
+        "command_buffer_create_ns": 13534729.863247864,
+        "commit_ns": 109547.76068376069,
+        "drawable_wait_ns": 11778.905982905982,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 98312.2905982906,
+        "sr_gpu_ns": 2591678.299145299,
+        "draws": 19369.418803418805,
+        "submissions": 43,
+        "gc_reported_ms": 0
+      }
+    },
+    "frame_create_correlation": 0.9912809981041883
+  },
+  "03-sr33-aa": {
+    "frames": 2409,
+    "stage": 13,
+    "threshold_ns": 23503750,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 14770463.355332168,
+        "command_buffer_create_ns": 3582801.627185315,
+        "commit_ns": 98180.37631118881,
+        "drawable_wait_ns": 11395.988199300698,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95854.1604020979,
+        "sr_gpu_ns": 2442290.9899475523,
+        "draws": 19190.877185314686,
+        "submissions": 35.70979020979021,
+        "gc_reported_ms": 0.013111888111888112
+      },
+      "slowest5": {
+        "frame_ns": 24368755.58677686,
+        "command_buffer_create_ns": 12843066.504132232,
+        "commit_ns": 110432.71900826447,
+        "drawable_wait_ns": 11483.165289256198,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100656.67768595042,
+        "sr_gpu_ns": 2397581.0578512396,
+        "draws": 19370.93388429752,
+        "submissions": 43.074380165289256,
+        "gc_reported_ms": 0.03305785123966942
+      }
+    },
+    "frame_create_correlation": 0.9902991388110055
+  },
+  "04-sr50-aa": {
+    "frames": 2636,
+    "stage": 13,
+    "threshold_ns": 21080167,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 13505740.179313099,
+        "command_buffer_create_ns": 2603545.519169329,
+        "commit_ns": 93708.61661341853,
+        "drawable_wait_ns": 11245.121405750799,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95562.4249201278,
+        "sr_gpu_ns": 2113462.309105431,
+        "draws": 19185.294329073484,
+        "submissions": 35.43091054313099,
+        "gc_reported_ms": 0.00878594249201278
+      },
+      "slowest5": {
+        "frame_ns": 22071703.34090909,
+        "command_buffer_create_ns": 10636160.25,
+        "commit_ns": 109111.86363636363,
+        "drawable_wait_ns": 11493.992424242424,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100235.4696969697,
+        "sr_gpu_ns": 2070897.2045454546,
+        "draws": 19376.14393939394,
+        "submissions": 43.02272727272727,
+        "gc_reported_ms": 0.14393939393939395
+      }
+    },
+    "frame_create_correlation": 0.9865338688084503
+  },
+  "05-sr50-aa": {
+    "frames": 2638,
+    "stage": 13,
+    "threshold_ns": 20901167,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 13513060.755387072,
+        "command_buffer_create_ns": 2598179.6280925777,
+        "commit_ns": 93599.40782122905,
+        "drawable_wait_ns": 10986.849162011173,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95456.03830806066,
+        "sr_gpu_ns": 2110798.648044693,
+        "draws": 19185.45331205108,
+        "submissions": 35.42378292098962,
+        "gc_reported_ms": 0.009177972865123703
+      },
+      "slowest5": {
+        "frame_ns": 21855604.454545453,
+        "command_buffer_create_ns": 10439670.590909092,
+        "commit_ns": 108488.94696969698,
+        "drawable_wait_ns": 10858.583333333334,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99579.31818181818,
+        "sr_gpu_ns": 2084686.6742424243,
+        "draws": 19371.689393939392,
+        "submissions": 43.00757575757576,
+        "gc_reported_ms": 0.09848484848484848
+      }
+    },
+    "frame_create_correlation": 0.9869399948078516
+  },
+  "06-sr33-aa": {
+    "frames": 2411,
+    "stage": 13,
+    "threshold_ns": 23271708,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 14769909.443668121,
+        "command_buffer_create_ns": 3504511.230567686,
+        "commit_ns": 98714.09475982533,
+        "drawable_wait_ns": 11292.582969432315,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95885.26724890829,
+        "sr_gpu_ns": 2442548.253275109,
+        "draws": 19192.225327510918,
+        "submissions": 35.698689956331876,
+        "gc_reported_ms": 0.00960698689956332
+      },
+      "slowest5": {
+        "frame_ns": 24167753.429752067,
+        "command_buffer_create_ns": 12520556.867768595,
+        "commit_ns": 110200.95867768595,
+        "drawable_wait_ns": 11021.644628099173,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99673.92561983471,
+        "sr_gpu_ns": 2416890.0165289254,
+        "draws": 19373.446280991735,
+        "submissions": 43.082644628099175,
+        "gc_reported_ms": 0.0743801652892562
+      }
+    },
+    "frame_create_correlation": 0.990990169108297
+  },
+  "07-sr25-aa": {
+    "frames": 2340,
+    "stage": 13,
+    "threshold_ns": 24023542,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15224638.047704771,
+        "command_buffer_create_ns": 3801320.609360936,
+        "commit_ns": 100844.07740774077,
+        "drawable_wait_ns": 11241.03600360036,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95800.07425742575,
+        "sr_gpu_ns": 2620653.1503150314,
+        "draws": 19194.213321332132,
+        "submissions": 35.785328532853285,
+        "gc_reported_ms": 0.010351035103510351
+      },
+      "slowest5": {
+        "frame_ns": 25030182.974576272,
+        "command_buffer_create_ns": 13184300.86440678,
+        "commit_ns": 110755.63559322034,
+        "drawable_wait_ns": 12072.389830508475,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99183.47457627118,
+        "sr_gpu_ns": 2603810.63559322,
+        "draws": 19375.805084745763,
+        "submissions": 42.96610169491525,
+        "gc_reported_ms": 0.1016949152542373
+      }
+    },
+    "frame_create_correlation": 0.9909254273542947
+  },
+  "08-native": {
+    "frames": 2288,
+    "stage": 13,
+    "threshold_ns": 23675125,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15661431.028531983,
+        "command_buffer_create_ns": 3767825.625402669,
+        "commit_ns": 98218.6626783249,
+        "drawable_wait_ns": 12254.335020708697,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99858.97330878969,
+        "sr_gpu_ns": -1,
+        "draws": 19198.70731707317,
+        "submissions": 33.87068568798895,
+        "gc_reported_ms": 0.015186378278877128
+      },
+      "slowest5": {
+        "frame_ns": 23905828.982608695,
+        "command_buffer_create_ns": 11235539.408695653,
+        "commit_ns": 110801.00869565217,
+        "drawable_wait_ns": 11551.078260869564,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99289.20869565217,
+        "sr_gpu_ns": -1,
+        "draws": 19361.234782608695,
+        "submissions": 40.70434782608696,
+        "gc_reported_ms": 0
+      }
+    },
+    "frame_create_correlation": 0.9826188107988839
+  },
+  "09-sr25-noaa": {
+    "frames": 2369,
+    "stage": 13,
+    "threshold_ns": 23760375,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15034566.14888889,
+        "command_buffer_create_ns": 3531354.7013333333,
+        "commit_ns": 99074.64666666667,
+        "drawable_wait_ns": 11328.696444444444,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 96250.91244444445,
+        "sr_gpu_ns": 2200386.8484444446,
+        "draws": 19195.39022222222,
+        "submissions": 35.73244444444445,
+        "gc_reported_ms": 0.013777777777777778
+      },
+      "slowest5": {
+        "frame_ns": 24537520.29411765,
+        "command_buffer_create_ns": 12681329.3697479,
+        "commit_ns": 110971.4705882353,
+        "drawable_wait_ns": 11466.75630252101,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100148.94957983193,
+        "sr_gpu_ns": 2168189.31092437,
+        "draws": 19375.95798319328,
+        "submissions": 42.97478991596638,
+        "gc_reported_ms": 0.058823529411764705
+      }
+    },
+    "frame_create_correlation": 0.9897766451554456
+  },
+  "10-sr25-noaa": {
+    "frames": 2369,
+    "stage": 13,
+    "threshold_ns": 23739208,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15045564.424,
+        "command_buffer_create_ns": 3582985.817333333,
+        "commit_ns": 98591.74666666667,
+        "drawable_wait_ns": 11279.582222222221,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 96305.06844444445,
+        "sr_gpu_ns": 2197180.8044444444,
+        "draws": 19196.784888888888,
+        "submissions": 35.73777777777778,
+        "gc_reported_ms": 0.013777777777777778
+      },
+      "slowest5": {
+        "frame_ns": 24481936.31092437,
+        "command_buffer_create_ns": 12645906.411764706,
+        "commit_ns": 111898.12605042016,
+        "drawable_wait_ns": 11469.512605042017,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99945.21008403362,
+        "sr_gpu_ns": 2195569.831932773,
+        "draws": 19379.899159663866,
+        "submissions": 43.03361344537815,
+        "gc_reported_ms": 0.058823529411764705
+      }
+    },
+    "frame_create_correlation": 0.9908945436007818
+  },
+  "11-native-vsync": {
+    "frames": 2290,
+    "stage": 13,
+    "threshold_ns": 23710792,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15649488.580229886,
+        "command_buffer_create_ns": 3791303.992643678,
+        "commit_ns": 97447.80413793103,
+        "drawable_wait_ns": 11889.334712643678,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100851.11034482758,
+        "sr_gpu_ns": -1,
+        "draws": 19200.341149425287,
+        "submissions": 33.846896551724136,
+        "gc_reported_ms": 0.016091954022988506
+      },
+      "slowest5": {
+        "frame_ns": 23959526.13043478,
+        "command_buffer_create_ns": 11303157.808695652,
+        "commit_ns": 112475.32173913044,
+        "drawable_wait_ns": 11104.330434782609,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 100728.59130434782,
+        "sr_gpu_ns": -1,
+        "draws": 19369.095652173914,
+        "submissions": 40.77391304347826,
+        "gc_reported_ms": 0.02608695652173913
+      }
+    },
+    "frame_create_correlation": 0.9854153381645325
+  },
+  "12-sr25-aa-vsync": {
+    "frames": 2333,
+    "stage": 13,
+    "threshold_ns": 24035875,
+    "groups": {
+      "remaining95": {
+        "frame_ns": 15266354.394855596,
+        "command_buffer_create_ns": 3621982.5428700363,
+        "commit_ns": 101915.25315884476,
+        "drawable_wait_ns": 11563.521209386281,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 95935.73149819495,
+        "sr_gpu_ns": 2620670.1638086643,
+        "draws": 19198.46119133574,
+        "submissions": 35.75992779783393,
+        "gc_reported_ms": 0.0157942238267148
+      },
+      "slowest5": {
+        "frame_ns": 24992219.675213676,
+        "command_buffer_create_ns": 13066416.777777778,
+        "commit_ns": 110053.57264957266,
+        "drawable_wait_ns": 11518.794871794871,
+        "queue_wait_ns": 0,
+        "fence_wait_ns": 99826.42735042734,
+        "sr_gpu_ns": 2626668.641025641,
+        "draws": 19378.119658119656,
+        "submissions": 42.99145299145299,
+        "gc_reported_ms": 0.05982905982905983
+      }
+    },
+    "frame_create_correlation": 0.9838444807805952
+  }
+}

@@ -1,0 +1,24 @@
+Shader inventory
+  instance : /Users/hongyuehao/Documents/.minecraft/versions/MetalMod_Test_26.2
+  jar      : /Users/hongyuehao/Documents/.minecraft/versions/MetalMod_Test_26.2/MetalMod_Test_26.2.jar
+  pipelines: 87
+[MetalMod] Metal backend native library ready (mmm_* symbols resolved).
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.lwjgl.system.MemoryUtil (file:/Users/hongyuehao/Documents/.minecraft/libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar)
+WARNING: Please consider reporting this to the maintainers of class org.lwjgl.system.MemoryUtil
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+  post    : 9
+
+cache: shader pairs: compiled=61 reused=35 cached=61
+
+
+=========== static pipelines ===========
+(no diagnostics from any pipeline)
+
+static pipelines: total=87 ok=87 failed=0 no-source=0
+
+=========== post-processing ===========
+(no diagnostics from any pipeline)
+
+post-processing: total=9 ok=9 failed=0 no-source=0

@@ -1,0 +1,5 @@
+Device: Apple M4 Pro
+Spatial supported: 1
+Temporal supported: 1
+SDR+Depth32+RG16 creation: 1
+texture usages: colour=1 depth=1 motion=1 output=7

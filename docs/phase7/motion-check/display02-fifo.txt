@@ -1,0 +1,136 @@
+MetalMod performance capture
+
+Backend: Metal
+Native metrics: true
+Super Resolution at start: SR Off strength 0% | Native | 5120x2880 -> 5120x2880 (100.0% pixels) | Off
+SR effective codes: 0 native, 1 spatial reference, 2 recovery; sr_gpu_ns=latest completed AA+FX+copy submission (-1 if unavailable); asynchronous, not frame GPU time. SR counters cumulative. sr_reason codes: 0 active, 1 Off, 2 100%, 3 menu, 4 no Metal, 5 suspended, 6 unsupported, 7 creation, 8 scene setup, 9 GPU error, 10 encode, 11 uninitialized.
+SR input AA: true
+Minecraft: 26.2
+OS: Mac OS X 27.0.1
+Java: 26.0.1
+Resolution at start: 5120x2880
+Render distance: 32
+Vsync: true
+FPS limit: 260
+Render target storage: shared (default; -Dmetalmod.privateTextures=all enables private)
+Dimension: minecraft:overworld
+Route: none for this dimension (F7 records one); move manually
+World prep: n/a
+Capture limit: 60 seconds or 36000 frames
+Boundary: after GpuSurface.present(), on any backend. First partial interval discarded.
+Census diagnostics at start: false
+Stopped: stopped with F8
+Frames saved: 1791
+Gameplay frames: 1791 (paused, menu and unfocused intervals excluded from statistics; retained in CSV)
+
+Average: 16.742 ms (59.7 FPS)
+Median: 16.676 ms
+p95: 17.290 ms
+p99: 17.717 ms
+Worst: 49.442 ms
+Frames >33.3 ms: 4
+Frames >50 ms: 0
+Frames >100 ms: 0
+
+Counter/API averages and maxima per gameplay frame (- = unavailable):
+  ffi_calls: avg 20028.423, max 21594.000
+  pipeline_compiles: avg 0.000, max 0.000
+  pipeline_compile_ns (ms): avg 0.000, max 0.000
+  gc_collections: avg 0.001, max 1.000
+  gc_reported_ms: avg 0.006, max 7.000
+  census_active: avg 0.000, max 0.000
+  submissions: avg 30.309, max 38.000
+  command_buffer_create_ns (ms): avg 0.061, max 0.105
+  commit_ns (ms): avg 0.089, max 0.171
+  buffer_writes: avg 2.336, max 36.000
+  buffer_upload_bytes: avg 13555.567, max 1180200.000
+  staging_allocations: avg 0.000, max 0.000
+  staging_alloc_ns (ms): avg 0.000, max 0.000
+  buffer_copies: avg 2.000, max 2.000
+  buffer_copy_bytes: avg 14692.699, max 21296.000
+  texture_copies: avg 0.000, max 0.000
+  texture_uploads: avg 2.000, max 2.000
+  texture_upload_bytes: avg 181818.000, max 181818.000
+  clears: avg 5.000, max 5.000
+  fence_creates: avg 9.336, max 10.000
+  fence_wait_calls: avg 9.480, max 14.000
+  fence_wait_ns (ms): avg 0.004, max 0.072
+  queue_wait_ns (ms): avg 0.000, max 0.000
+  upload_api_ns (ms): avg 0.159, max 0.278
+  copy_api_ns (ms): avg 0.016, max 0.059
+  readback_api_ns (ms): avg 0.000, max 0.000
+  render_passes: avg 18.513, max 24.000
+  draws: avg 6530.185, max 6821.000
+  drawable_wait_ns (ms): avg 12.621, max 45.577
+  light_enabled: avg 1.000, max 1.000
+  light_clustered: avg 0.000, max 0.000
+  light_published: avg 0.000, max 0.000
+  light_dropped: avg 0.000, max 0.000
+  light_buried: avg 0.000, max 0.000
+  light_examined: avg 0.000, max 0.000
+  light_allocated: avg 0.000, max 0.000
+  light_extract_ns (ms): avg 0.000, max 0.000
+  light_cluster_builds: avg 0.000, max 0.000
+  light_cluster_build_ns (ms): avg 0.000, max 0.000
+  light_uploads: avg 1.000, max 1.000
+  light_upload_bytes: avg 2064.000, max 2064.000
+  light_occupancy_max: avg 0.000, max 0.000
+  light_occupancy_mean_x100: avg 0.000, max 0.000
+  light_cells_touched: avg 0.000, max 0.000
+  light_overflowed: avg 0.000, max 0.000
+  light_evicted: avg 0.000, max 0.000
+  light_unreachable: avg 0.000, max 0.000
+  light_entity_query_ns (ms): avg 0.000, max 0.000
+  light_block_index_ns (ms): avg 0.000, max 0.000
+  sr_requested: avg 0.000, max 0.000
+  sr_strength: avg 0.000, max 0.000
+  sr_effective: avg 0.000, max 0.000
+  sr_scene_width: avg 5120.000, max 5120.000
+  sr_scene_height: avg 2880.000, max 2880.000
+  sr_output_width: avg 5120.000, max 5120.000
+  sr_output_height: avg 2880.000, max 2880.000
+  sr_scene_pixels_percent_x100: avg 10000.000, max 10000.000
+  sr_generation: avg 0.000, max 0.000
+  sr_creates: avg 0.000, max 0.000
+  sr_failures: avg 0.000, max 0.000
+  sr_encodes: avg 0.000, max 0.000
+  sr_recoveries: avg 0.000, max 0.000
+  sr_retirements: avg 0.000, max 0.000
+  sr_world_hooks: avg 13924.000, max 14819.000
+  sr_ui_hooks: avg 13924.000, max 14819.000
+  sr_reason: avg 1.000, max 1.000
+
+Worst gameplay frames (row is the 1-based CSV sample number):
+row   stage   at_s   frame_ms   Y   draws   submits   upload_KiB   upload_ms   create_ms   fence_ms   queue_ms   drawable_ms   compile_ms
+213  -1  3.584  49.442  72  6474.000  27.000  0.117  0.152  0.063  0.002  0.000  45.577  0.000
+1295  -1  21.685  48.463  72  6427.000  27.000  0.117  0.148  0.067  0.002  0.000  44.635  0.000
+1739  -1  29.116  47.039  72  6576.000  36.000  0.117  0.126  0.069  0.001  0.000  0.012  0.000
+755  -1  12.651  33.334  72  6714.000  36.000  0.117  0.151  0.076  0.002  0.000  28.319  0.000
+754  -1  12.618  32.639  72  6522.000  28.000  0.117  0.160  0.075  0.066  0.000  28.661  0.000
+1741  -1  29.151  32.274  72  6384.000  27.000  0.117  0.136  0.053  0.001  0.000  28.916  0.000
+1373  -1  22.989  20.885  72  6427.000  27.000  0.117  0.150  0.053  0.001  0.000  12.491  0.000
+1246  -1  20.836  18.493  72  6427.000  27.000  0.117  0.204  0.079  0.002  0.000  13.858  0.000
+1294  -1  21.636  18.261  72  6427.000  28.000  0.117  0.155  0.073  0.072  0.000  12.992  0.000
+628  -1  10.502  18.108  72  6481.000  28.000  413.320  0.237  0.064  0.001  0.000  13.379  0.000
+
+How to read this capture:
+- frame_ns is the wall interval between successive surface presentation calls. It
+  includes intervening ticks, pacing and waits. It is not GPU execution time.
+- Native fields cover calls on the rendering thread, including presentation, utility
+  submissions and clears. Other threads and actual GPU execution are not measured.
+- upload_api_ns includes staging allocation, command-buffer creation and commit;
+  copy_api_ns also includes creation/commit. Do NOT add these overlapping timings.
+- command_buffer_create_ns and commit_ns are full API durations, not pure stall time.
+  A long create call may mean queue backpressure. fence_wait_ns, queue_wait_ns and
+  drawable_wait_ns measure their respective waits (drawable wait also includes display pacing).
+- buffer_upload_bytes counts staged CPU writes; texture_upload_bytes counts supplied
+  row-stride bytes. GPU buffer-copy bytes are separate; do not equate copies with allocations.
+- gc_reported_ms is a JVM collection-time delta, not a precise stop-the-world pause.
+- -1 in CSV means unavailable. Vulkan/OpenGL supply frame/context/GC fields only.
+- route_stage is the replayed waypoint a frame belongs to, or -1 with no route. Frames
+  sharing a stage index across two captures are the same place doing the same thing,
+  which is what makes those two captures comparable.
+- High upload activity during a hitch is a correlation, not proof of its cause.
+  Compare repeated routes with the same resolution, distance, FPS cap and vsync.
+- A capture adds some timing overhead. No sample formatting or file writes occur while
+  recording. Positions are block coordinates, and all output stays on this machine.

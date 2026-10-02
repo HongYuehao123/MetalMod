@@ -25,8 +25,8 @@ public final class UpscalingSettingsTest {
                 require(UpscalingSettings.parseStrength(bad)==25, "malformed strength " + bad);
             int[] cycle={0,25,33,50,0};
             for (int i=0;i<4;i++) require(UpscalingSettings.nextStrength(cycle[i])==cycle[i+1],"preset cycle");
-            var stats = new MetalFxCoordinator.Stats(true,25,"MetalFX spatial","",2880,1620,3840,2160,1,2,3,4,5,6,7,8);
-            long[] values={1,25,1,2880,1620,3840,2160,5625,1,2,3,4,5,6,7,8,-1,0};
+            var stats = new MetalFxCoordinator.Stats(true,25,"MetalFX spatial","",2880,1620,3840,2160,1,2,3,4,5,6,7,8,123456);
+            long[] values={1,25,1,2880,1620,3840,2160,5625,1,2,3,4,5,6,7,8,123456,0};
             require(net.metalmod.debug.UpscalingCaptureColumns.NAMES.size()==values.length,"capture width");
             for (int i=0;i<values.length;i++) require(net.metalmod.debug.UpscalingCaptureColumns.value(stats,i)==values[i],"capture value " + i);
             require(net.metalmod.debug.UpscalingCaptureColumns.reasonCode("MetalFX encode failed -6; native next frame")==10,"capture failure reason");

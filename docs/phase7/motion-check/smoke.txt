@@ -1,0 +1,505 @@
+2026-10-02 16:08:49.063 metalmod_smoke[36213:3376063] Metal API Validation Enabled
+==================================================
+MetalMod native Metal smoke test
+==================================================
+
+== device ==
+[PASS] MTLCreateSystemDefaultDevice
+[PASS] mmm_device_info
+     name   : Apple M4 Pro
+     vendor : Apple
+     driver : Metal (macOS)
+     maxTexture2D      : 16384
+     maxBufferLength   : 14302248960
+     recommendedWorkingSet : 19069665280 bytes
+[PASS] max texture size is sane
+[PASS] max buffer size is sane
+
+== spatial input anti-aliasing ==
+[PASS] AA shader compiles
+[PASS] AA pipeline created
+[PASS] AA GPU command completes
+[PASS] AA source remains unchanged
+[PASS] AA flat SDR colour and alpha preserved including borders
+[PASS] AA GPU command completes
+[PASS] AA source remains unchanged
+     checker deviation from 50% coverage: 127.5 -> 0.00 / 255
+[PASS] AA reduces subpixel checker alias energy
+[PASS] AA preserves per-pixel alpha
+[PASS] AA GPU command completes
+[PASS] AA source remains unchanged
+     staircase coverage pixels: 80
+[PASS] AA smooths staircase coverage
+[PASS] AA preserves broad edge interiors
+[PASS] AA+FX generation created
+[PASS] AA A/B real MetalFX encodes
+[PASS] AA A/B output readback
+[PASS] AA A/B real MetalFX encodes
+[PASS] AA A/B output readback
+[PASS] AA changes reconstructed staircase vs matched raw input
+[PASS] AA+FX GPU generation healthy
+
+== world-only MetalFX spatial reference ==
+[PASS] NULL capability safely denied
+[PASS] NULL scaler GPU timing unavailable
+[PASS] zero-size rejected
+[PASS] downscale rejected
+[PASS] depth format rejected
+[PASS] NULL encode rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] new generation has no stale GPU sample
+[PASS] completed scaler GPU sample matches this submission (recovery unavailable)
+[PASS] wrong destination dimensions rejected
+[PASS] 100 spatial size/preset/recovery/release transitions - real MetalFX encodes + readback
+
+== clear + CPU readback ==
+[PASS] command queue
+[PASS] shared render-target texture
+[PASS] texture dimensions reported
+[PASS] command buffer
+[PASS] begin clear pass
+[PASS] CPU readback
+     pixel(0,0) = R64 G128 B191 A255  (expected ~R64 G128 B191 A255)
+[PASS] clear colour round-trips
+[PASS] entire texture cleared
+
+== resources (texture, view, buffer, sampler, clear) ==
+[PASS] texture create (2 mips)
+[PASS] texture upload (mip 0)
+[PASS] texture readback
+[PASS] texture round-trips byte-exact
+[PASS] texture upload (mip 1)
+[PASS] texture view (mip 1)
+[PASS] buffer create
+[PASS] buffer length
+[PASS] buffer contents pointer
+[PASS] buffer is CPU-writable
+[PASS] sampler create
+[PASS] render-target texture
+[PASS] clear colour texture
+[PASS] cleared texture readable
+[PASS] clear value round-trips
+
+== mip filter (sampler must honour the requested mip level) ==
+[PASS] mip test MSL library compiles
+[PASS] mip test pipeline created
+[PASS] two-mip texture created
+[PASS] both mip test draws read back
+     mipFilter=Linear       -> R0 G0 B255
+     mipFilter=NotMipmapped -> R255 G0 B0
+[PASS] mipFilter=Linear reads mip level 1 (blue)
+[PASS] mipFilter=NotMipmapped is pinned to level 0 (red) - the old hardcoded behaviour
+
+== sampler address modes (REPEAT must wrap, CLAMP_TO_EDGE must clamp) ==
+[PASS] address-mode MSL library compiles
+[PASS] address-mode pipeline created
+[PASS] 4x1 texture uploaded
+[PASS] both address-mode draws read back
+     addressMode=Repeat(2)       -> R255 G0 B0
+     addressMode=ClampToEdge(0)  -> R0 G0 B255
+[PASS] REPEAT wraps u=1.25 to texel 1 (red)
+[PASS] CLAMP_TO_EDGE pins u=1.25 to texel 3 (blue)
+
+== region clear (only the rectangle may change) ==
+[PASS] region-clear targets created
+[PASS] whole clear
+[PASS] region clear
+[PASS] region-clear readback
+     inside rect  = R0 G0 B255   outside rect = R255 G0 B0
+[PASS] inside the rect is the region colour (blue)
+[PASS] outside the rect kept the earlier clear (red)
+[PASS] depth readback
+     depth inside = 0.250   outside = 1.000
+[PASS] depth inside the rect is 0.25
+[PASS] depth outside the rect is still 1.0
+
+== fence (must order against GPU work) ==
+[PASS] clear issued
+[PASS] fence created
+[PASS] fence signals once the queued work completes
+[PASS] fence readback
+     after fence: R0 G0 B255
+[PASS] the clear is visible after waiting on the fence
+[PASS] a signalled fence returns immediately
+[PASS] 64 create/await cycles all completed
+
+== buffer copy (staging -> mesh, ordered on the queue) ==
+[PASS] buffers created
+[PASS] copy whole buffer issued
+[PASS] a fenced whole-buffer copy is byte-exact
+[PASS] copy at offsets issued
+[PASS] copy into the tail issued
+[PASS] source/destination offsets and the untouched gap are exact
+[PASS] write-buffer-bytes issued
+[PASS] a fenced write-buffer-bytes is byte-exact
+[PASS] out-of-range copy is refused
+[PASS] null source is refused
+
+== texture buffer probe (skipped; set METALMOD_PROBE_TEXTURE_BUFFER=1 to run) ==
+     R8Sint - the format Minecraft declares for CloudFaces - is known to abort.
+
+== texel-buffer emulation (2D R8Sint read as texture2d<int>) ==
+[PASS] texel emulation MSL compiles
+[PASS] texel emulation pipeline created
+[PASS] 2D R8Sint texture created
+[PASS] texels uploaded
+[PASS] texel emulation readback
+     texel 0 read as R42 (expected R42 for the value 42)
+[PASS] a 2D R8Sint texture read through texture2d<int> returns the stored texel
+
+== base instance (does [[instance_id]] include firstInstance?) ==
+[PASS] base-instance MSL compiles
+[PASS] base-instance pipeline created
+     firstInstance=0 -> R255 G0 B0
+     firstInstance=3 -> R0 G255 B0
+[PASS] firstInstance=0 reads instance colour 0 (red)
+[PASS] firstInstance=3 reads instance colour 3 (green), so [[instance_id]] includes it
+
+== draw (MSL pipeline, triangle, readback) ==
+[PASS] MSL library compiles
+[PASS] render pipeline created
+[PASS] draw target texture
+[PASS] render pass begins
+[PASS] draw readback
+     center = R255 G0 B0 A255   corner = R0 G0 B255 A255
+[PASS] triangle covered the centre (red)
+[PASS] clear preserved outside (blue)
+
+== surface (detached CAMetalLayer) ==
+[PASS] layer create
+[PASS] layer configure
+[PASS] acquire drawable
+[PASS] clear drawable
+[PASS] present drawable
+
+== opt-in frame capture ==
+[PASS] captured upload succeeds
+[PASS] captured copy succeeds
+[PASS] captured fence completes
+[PASS] capture rejects undersized output
+[PASS] capture schema length
+[PASS] counts every submission including fence and sync
+[PASS] upload and copy share one submission
+[PASS] only CPU upload allocates staging
+[PASS] upload bytes
+[PASS] buffer copy bytes
+[PASS] fence counters
+[PASS] CPU API timers
+[PASS] instrumentation preserves copied bytes
+[PASS] frame snapshot resets every counter
+[PASS] disabled capture does not count
+
+== utility submission batching ==
+[PASS] every batched write is accepted
+[PASS] a frame of writes commits nothing on its own
+[PASS] staging grows per frame instead of allocating per write
+[PASS] a batched frame plus a sync is two submissions
+[PASS] every batched write lands at its own offset
+
+== private storage render targets ==
+[PASS] readback of a private texture is refused
+[PASS] upload into a private texture is refused
+[PASS] clear into a private render target
+[PASS] blit from a private target to a shared one
+[PASS] private target contents survive the blit
+     through blit: R0 G0 B255
+
+==================================================
+ALL CHECKS PASSED
+==================================================

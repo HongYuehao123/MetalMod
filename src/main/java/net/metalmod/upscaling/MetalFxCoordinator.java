@@ -16,7 +16,7 @@ public final class MetalFxCoordinator implements AutoCloseable {
     public record Stats(boolean requested, int strength, String effective, String reason,
                         int sceneWidth, int sceneHeight, int outputWidth, int outputHeight,
                         long generation, long creates, long failures, long encodes, long recoveries,
-                        long retirements, long worldHooks, long uiHooks) {
+                        long retirements, long worldHooks, long uiHooks, long gpuDurationNs) {
         public double pixelPercent() {
             return new UpscalingSettings.Dimensions(sceneWidth, sceneHeight).pixelPercent(outputWidth, outputHeight);
         }
@@ -26,7 +26,7 @@ public final class MetalFxCoordinator implements AutoCloseable {
                     outputWidth, outputHeight, pixelPercent(), reason);
         }
     }
-    private static volatile Stats stats = new Stats(false, 25, "Native", "not initialized", 0,0,0,0,0,0,0,0,0,0,0,0);
+    private static volatile Stats stats = new Stats(false, 25, "Native", "not initialized", 0,0,0,0,0,0,0,0,0,0,0,0,-1);
     public static Stats stats() { return stats; }
     private record Key(UpscalingSettings.Snapshot settings, int width, int height, long device, long format,
                        long reload) {}
@@ -162,7 +162,8 @@ public final class MetalFxCoordinator implements AutoCloseable {
     private void publish(UpscalingSettings.Snapshot settings, int ow, int oh, int sw, int sh) {
         stats = new Stats(settings.enabled(), settings.strength(), sw != ow || sh != oh
                 ? failed ? "Plain recovery" : "MetalFX spatial" : "Native", reason,
-                sw, sh, ow, oh, generation, creates, failures, encodes, recoveries, retirements, worldHooks, uiHooks);
+                sw, sh, ow, oh, generation, creates, failures, encodes, recoveries, retirements, worldHooks, uiHooks,
+                !failed && (sw != ow || sh != oh) ? MetalNative.fxGpuDuration(scaler) : -1);
     }
     /** A relevant resource change is an explicit retry event; no per-frame creation retries. */
     public void invalidate() { reload++; levelWidth = levelHeight = 0; }

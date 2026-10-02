@@ -1195,6 +1195,7 @@ static void test_metalfx(void) {
     void* device = mmm_device_create();
     if (!device) { check("MetalFX device", false, "no Metal device"); return; }
     check("NULL capability safely denied", !mmm_fx_spatial_supported(NULL), "");
+    check("NULL scaler GPU timing unavailable", mmm_fx_spatial_gpu_duration_ns(NULL) == -1, "");
     if (!mmm_fx_spatial_supported(device)) {
         check("unsupported creation safely denied", !mmm_fx_spatial_create(device,32,32,64,64,70), "");
         printf("SKIP real MetalFX: device unsupported\n"); mmm_device_release(device); return;
@@ -1210,6 +1211,7 @@ static void test_metalfx(void) {
         int iw=ow*scale/100, ih=oh*scale/100;
         void* fx = mmm_fx_spatial_create(device,iw,ih,ow,oh,70);
         if (!fx) { check("spatial recreation", false, "nil scaler"); break; }
+        check("new generation has no stale GPU sample", mmm_fx_spatial_gpu_duration_ns(fx) == -1, "");
         void* input = mmm_texture_create(device,70,iw,ih,true,5);
         void* output = mmm_texture_create(device,70,ow,oh,true,5);
         // Four solid quadrants. Sample well inside regions, away from reconstruction edges.
@@ -1223,6 +1225,12 @@ static void test_metalfx(void) {
         if (rc != 0) { check("real FX encode", false, "rejected legal input"); }
         else {
             mmm_command_buffer_commit(cb); mmm_command_buffer_wait(cb);
+            id<MTLCommandBuffer> completed = (__bridge id<MTLCommandBuffer>)cb;
+            const double gpuStart = completed.GPUStartTime, gpuEnd = completed.GPUEndTime;
+            int64_t expected = !plain && gpuStart > 0 && gpuEnd > gpuStart
+                    ? (int64_t)((gpuEnd-gpuStart)*1e9) : -1;
+            check("completed scaler GPU sample matches this submission (recovery unavailable)",
+                    mmm_fx_spatial_gpu_duration_ns(fx) == expected, "");
             bool pixels = true;
             for (int q=0; q<4; q++) {
                 uint8_t pixel[4] = {};

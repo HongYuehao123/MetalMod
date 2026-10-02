@@ -1,0 +1,986 @@
+[
+  {
+    "name": "01-native",
+    "folder": "20261001-141148-799-Metal-17876608423386497146",
+    "configuration": "Run[name=01-native, sr=false, strength=0, aa=true, vsync=false]",
+    "total": 4446,
+    "valid": 4446,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4446,
+      "mean_ms": 13.495366284300495,
+      "median_ms": 11.549792,
+      "p95_ms": 21.59925,
+      "p99_ms": 23.685916,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 74.09950785576866,
+      "gpu_batch_median_ms": null,
+      "draws_median": 19133.0,
+      "position_floor_mean": [
+        1672,
+        45.801169590643276,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1517,
+        "mean_ms": 10.006875384970336,
+        "median_ms": 9.902791,
+        "p95_ms": 11.155083,
+        "p99_ms": 11.206208,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 99.93129338873689,
+        "gpu_batch_median_ms": null,
+        "draws_median": 6654,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2167,
+        "mean_ms": 16.02751524780803,
+        "median_ms": 15.758417,
+        "p95_ms": 23.392541,
+        "p99_ms": 23.808833,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 62.39270308208024,
+        "gpu_batch_median_ms": null,
+        "draws_median": 19133,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "0"
+    ],
+    "scene_sizes": [
+      [
+        "5120",
+        "2664"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "02-sr25-aa",
+    "folder": "20261001-141314-056-Metal-7681828036629768473",
+    "configuration": "Run[name=02-sr25-aa, sr=true, strength=25, aa=true, vsync=false]",
+    "total": 4664,
+    "valid": 4664,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4664,
+      "mean_ms": 12.867711227915953,
+      "median_ms": 11.364291999999999,
+      "p95_ms": 23.707166,
+      "p99_ms": 25.453417,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 77.71389816632988,
+      "gpu_batch_median_ms": 2.6800829999999998,
+      "draws_median": 19134.0,
+      "position_floor_mean": [
+        1672,
+        46.55981989708405,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1656,
+        "mean_ms": 9.160707628623188,
+        "median_ms": 9.1090205,
+        "p95_ms": 10.341709,
+        "p99_ms": 10.937625,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 109.1618727002529,
+        "gpu_batch_median_ms": 2.4957495,
+        "draws_median": 6654.0,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2206,
+        "mean_ms": 15.752557721214869,
+        "median_ms": 14.4742705,
+        "p95_ms": 24.184458,
+        "p99_ms": 25.637292,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 63.48175437270374,
+        "gpu_batch_median_ms": 2.714,
+        "draws_median": 19134.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3840",
+        "1998"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "03-sr33-aa",
+    "folder": "20261001-141439-306-Metal-9691324401620726638",
+    "configuration": "Run[name=03-sr33-aa, sr=true, strength=33, aa=true, vsync=false]",
+    "total": 4918,
+    "valid": 4918,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4918,
+      "mean_ms": 12.200358758641725,
+      "median_ms": 10.863229,
+      "p95_ms": 22.831583,
+      "p99_ms": 24.604083,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 81.96480282120251,
+      "gpu_batch_median_ms": 2.515375,
+      "draws_median": 19135.0,
+      "position_floor_mean": [
+        1672,
+        47.08479056527044,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1795,
+        "mean_ms": 8.453737674094707,
+        "median_ms": 8.088417,
+        "p95_ms": 9.66125,
+        "p99_ms": 9.804042,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 118.29087186657799,
+        "gpu_batch_median_ms": 2.507083,
+        "draws_median": 6654,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2277,
+        "mean_ms": 15.25385578612209,
+        "median_ms": 14.055042,
+        "p95_ms": 23.489792,
+        "p99_ms": 24.853667,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 65.55719511323798,
+        "gpu_batch_median_ms": 2.523833,
+        "draws_median": 19136,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3430",
+        "1784"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "04-sr50-aa",
+    "folder": "20261001-141604-797-Metal-13671833291936674446",
+    "configuration": "Run[name=04-sr50-aa, sr=true, strength=50, aa=true, vsync=false]",
+    "total": 5199,
+    "valid": 5199,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 5199,
+      "mean_ms": 11.541146750913637,
+      "median_ms": 10.467833,
+      "p95_ms": 20.527709,
+      "p99_ms": 22.129625,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 86.64650243017113,
+      "gpu_batch_median_ms": 2.014875,
+      "draws_median": 19136,
+      "position_floor_mean": [
+        1672,
+        46.234660511636854,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1820,
+        "mean_ms": 8.334701946153846,
+        "median_ms": 8.506771,
+        "p95_ms": 9.549334,
+        "p99_ms": 9.743958,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 119.98029521157174,
+        "gpu_batch_median_ms": 1.977749,
+        "draws_median": 6654.0,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2492,
+        "mean_ms": 13.93569524117175,
+        "median_ms": 12.8448545,
+        "p95_ms": 21.049708,
+        "p99_ms": 22.374959,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 71.75817084788066,
+        "gpu_batch_median_ms": 2.169583,
+        "draws_median": 19136.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "2560",
+        "1332"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "05-sr50-aa",
+    "folder": "20261001-141730-308-Metal-15500211144850451133",
+    "configuration": "Run[name=05-sr50-aa, sr=true, strength=50, aa=true, vsync=false]",
+    "total": 5199,
+    "valid": 5199,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 5199,
+      "mean_ms": 11.541359748605501,
+      "median_ms": 10.492584,
+      "p95_ms": 20.462084,
+      "p99_ms": 22.113833,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 86.6449033547218,
+      "gpu_batch_median_ms": 2.013041,
+      "draws_median": 19136,
+      "position_floor_mean": [
+        1672,
+        46.234852856318525,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1821,
+        "mean_ms": 8.334418794618342,
+        "median_ms": 8.521125,
+        "p95_ms": 9.455125,
+        "p99_ms": 9.692875,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 119.98437139320559,
+        "gpu_batch_median_ms": 1.980791,
+        "draws_median": 6654,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2494,
+        "mean_ms": 13.929828254210104,
+        "median_ms": 12.805771,
+        "p95_ms": 20.911125,
+        "p99_ms": 22.252916,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 71.78839406708144,
+        "gpu_batch_median_ms": 2.169041,
+        "draws_median": 19136.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "2560",
+        "1332"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "06-sr33-aa",
+    "folder": "20261001-141855-803-Metal-4347231043444296105",
+    "configuration": "Run[name=06-sr33-aa, sr=true, strength=33, aa=true, vsync=false]",
+    "total": 4910,
+    "valid": 4910,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4910,
+      "mean_ms": 12.221766004684318,
+      "median_ms": 10.8902085,
+      "p95_ms": 22.790208,
+      "p99_ms": 24.575625,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 81.82123595041202,
+      "gpu_batch_median_ms": 2.5133954999999997,
+      "draws_median": 19137.0,
+      "position_floor_mean": [
+        1672,
+        47.024236252545826,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1785,
+        "mean_ms": 8.500857002801121,
+        "median_ms": 8.120875,
+        "p95_ms": 9.707583,
+        "p99_ms": 10.276708,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 117.63519838887886,
+        "gpu_batch_median_ms": 2.505374,
+        "draws_median": 6654,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2279,
+        "mean_ms": 15.24369184203598,
+        "median_ms": 14.12075,
+        "p95_ms": 23.2745,
+        "p99_ms": 24.753125,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 65.60090628717654,
+        "gpu_batch_median_ms": 2.5235,
+        "draws_median": 19137,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3430",
+        "1784"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "07-sr25-aa",
+    "folder": "20261001-142021-052-Metal-10009656364209013634",
+    "configuration": "Run[name=07-sr25-aa, sr=true, strength=25, aa=true, vsync=false]",
+    "total": 4639,
+    "valid": 4639,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4639,
+      "mean_ms": 12.936920798232377,
+      "median_ms": 11.427208,
+      "p95_ms": 23.61025,
+      "p99_ms": 25.372083,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 77.2981465679711,
+      "gpu_batch_median_ms": 2.685375,
+      "draws_median": 19137,
+      "position_floor_mean": [
+        1672,
+        46.35805130416038,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1627,
+        "mean_ms": 9.327543331284573,
+        "median_ms": 9.244917,
+        "p95_ms": 10.563,
+        "p99_ms": 11.130208,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 107.20936526191208,
+        "gpu_batch_median_ms": 2.524583,
+        "draws_median": 6654,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2212,
+        "mean_ms": 15.721112642857143,
+        "median_ms": 14.528625,
+        "p95_ms": 24.043708,
+        "p99_ms": 25.477833,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 63.608729402136056,
+        "gpu_batch_median_ms": 2.717916,
+        "draws_median": 19137.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3840",
+        "1998"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "08-native",
+    "folder": "20261001-142146-306-Metal-8612840756869296376",
+    "configuration": "Run[name=08-native, sr=false, strength=0, aa=true, vsync=false]",
+    "total": 4426,
+    "valid": 4426,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4426,
+      "mean_ms": 13.557963106190691,
+      "median_ms": 11.8582295,
+      "p95_ms": 21.403542,
+      "p99_ms": 23.908084,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 73.7573920335711,
+      "gpu_batch_median_ms": null,
+      "draws_median": 19139.0,
+      "position_floor_mean": [
+        1672,
+        45.74243108901943,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1506,
+        "mean_ms": 10.080811835989376,
+        "median_ms": 9.9743335,
+        "p95_ms": 11.247916,
+        "p99_ms": 11.521084,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 99.1983598414081,
+        "gpu_batch_median_ms": null,
+        "draws_median": 6655.0,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2164,
+        "mean_ms": 16.070857227818856,
+        "median_ms": 15.762896,
+        "p95_ms": 23.658125,
+        "p99_ms": 24.046083,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 62.22443431760363,
+        "gpu_batch_median_ms": null,
+        "draws_median": 19139.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "0"
+    ],
+    "scene_sizes": [
+      [
+        "5120",
+        "2664"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "09-sr25-noaa",
+    "folder": "20261001-142311-808-Metal-4842604668240402159",
+    "configuration": "Run[name=09-sr25-noaa, sr=true, strength=25, aa=false, vsync=false]",
+    "total": 4739,
+    "valid": 4739,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4739,
+      "mean_ms": 12.662683319265668,
+      "median_ms": 11.20875,
+      "p95_ms": 23.145875,
+      "p99_ms": 24.887167,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 78.97220318844646,
+      "gpu_batch_median_ms": 2.236125,
+      "draws_median": 19139,
+      "position_floor_mean": [
+        1672,
+        46.57860308081874,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1683,
+        "mean_ms": 9.012735046345812,
+        "median_ms": 9.187125,
+        "p95_ms": 9.926875,
+        "p99_ms": 10.76975,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 110.95411047342917,
+        "gpu_batch_median_ms": 2.064874,
+        "draws_median": 6655,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2240,
+        "mean_ms": 15.510395219196429,
+        "median_ms": 14.4785835,
+        "p95_ms": 23.732667,
+        "p99_ms": 25.052583,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 64.47288968899714,
+        "gpu_batch_median_ms": 2.273687,
+        "draws_median": 19139.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3840",
+        "1998"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "10-sr25-noaa",
+    "folder": "20261001-142437-298-Metal-1380842692816209096",
+    "configuration": "Run[name=10-sr25-noaa, sr=true, strength=25, aa=false, vsync=false]",
+    "total": 4743,
+    "valid": 4743,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4743,
+      "mean_ms": 12.652342935062197,
+      "median_ms": 11.167,
+      "p95_ms": 23.214958,
+      "p99_ms": 24.851584,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 79.03674482524482,
+      "gpu_batch_median_ms": 2.239833,
+      "draws_median": 19140,
+      "position_floor_mean": [
+        1672,
+        46.60510225595615,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1688,
+        "mean_ms": 8.992202014218009,
+        "median_ms": 9.126896,
+        "p95_ms": 9.934583,
+        "p99_ms": 10.804791,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 111.20746602654737,
+        "gpu_batch_median_ms": 2.0949575,
+        "draws_median": 6655.0,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2239,
+        "mean_ms": 15.517723760607414,
+        "median_ms": 14.511375,
+        "p95_ms": 23.741917,
+        "p99_ms": 25.022667,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 64.4424411355069,
+        "gpu_batch_median_ms": 2.272249,
+        "draws_median": 19141,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3840",
+        "1998"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "11-native-vsync",
+    "folder": "20261001-142602-557-Metal-7600649981506442405",
+    "configuration": "Run[name=11-native-vsync, sr=false, strength=0, aa=true, vsync=true]",
+    "total": 4419,
+    "valid": 4419,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4419,
+      "mean_ms": 13.579956655125594,
+      "median_ms": 11.86,
+      "p95_ms": 21.452542,
+      "p99_ms": 23.93675,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 73.63793754250031,
+      "gpu_batch_median_ms": null,
+      "draws_median": 19141,
+      "position_floor_mean": [
+        1672,
+        45.67707626159765,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1500,
+        "mean_ms": 10.111532860666667,
+        "median_ms": 10.0065625,
+        "p95_ms": 11.279667,
+        "p99_ms": 11.42025,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 98.89697376052128,
+        "gpu_batch_median_ms": null,
+        "draws_median": 6655.0,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2165,
+        "mean_ms": 16.06656493487298,
+        "median_ms": 15.795959,
+        "p95_ms": 23.70325,
+        "p99_ms": 24.071458,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 62.24105800173059,
+        "gpu_batch_median_ms": null,
+        "draws_median": 19141,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "0"
+    ],
+    "scene_sizes": [
+      [
+        "5120",
+        "2664"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  },
+  {
+    "name": "12-sr25-aa-vsync",
+    "folder": "20261001-142727-805-Metal-7358700933874626160",
+    "configuration": "Run[name=12-sr25-aa-vsync, sr=true, strength=25, aa=true, vsync=true]",
+    "total": 4647,
+    "valid": 4647,
+    "focus_bad": 0,
+    "pipeline_compiles": 0,
+    "whole": {
+      "n": 4647,
+      "mean_ms": 12.914206907682376,
+      "median_ms": 11.496417,
+      "p95_ms": 23.477333,
+      "p99_ms": 25.400542,
+      "frames_over_33ms": 0,
+      "frames_over_50ms": 0,
+      "fps": 77.43410084324437,
+      "gpu_batch_median_ms": 2.689125,
+      "draws_median": 19141,
+      "position_floor_mean": [
+        1672,
+        46.47105659565311,
+        -2540
+      ]
+    },
+    "settled_stages": {
+      "0": {
+        "n": 1643,
+        "mean_ms": 9.233390799756544,
+        "median_ms": 9.18525,
+        "p95_ms": 10.418292,
+        "p99_ms": 11.018208,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 108.30257504386871,
+        "gpu_batch_median_ms": 2.494458,
+        "draws_median": 6655,
+        "position_floor_mean": [
+          1672,
+          72,
+          -2540
+        ]
+      },
+      "13": {
+        "n": 2206,
+        "mean_ms": 15.754366745693563,
+        "median_ms": 14.5917295,
+        "p95_ms": 24.032042,
+        "p99_ms": 25.690958,
+        "frames_over_33ms": 0,
+        "frames_over_50ms": 0,
+        "fps": 63.474464962125424,
+        "gpu_batch_median_ms": 2.7178955,
+        "draws_median": 19141.0,
+        "position_floor_mean": [
+          1672,
+          25,
+          -2540
+        ]
+      }
+    },
+    "output_size": [
+      "5120",
+      "2664"
+    ],
+    "effective": [
+      "1"
+    ],
+    "scene_sizes": [
+      [
+        "3840",
+        "1998"
+      ]
+    ],
+    "failures": [
+      0
+    ],
+    "recoveries": [
+      0
+    ],
+    "accepted": true
+  }
+]

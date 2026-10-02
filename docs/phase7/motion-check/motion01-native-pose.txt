@@ -1,0 +1,6 @@
+Surface: Configuration[width=5120, height=2880, presentMode=IMMEDIATE]
+Camera extractions: 6335
+Yaw range: -615.2985803854491..-591.2985864430078
+Max yaw step: 0.048349705040777735
+Smooth sinusoid: 30s period, +/-12deg yaw, 3x2 block translation
+No screenshots during capture

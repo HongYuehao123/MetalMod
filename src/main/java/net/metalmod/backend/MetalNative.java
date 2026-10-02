@@ -20,7 +20,7 @@ import java.nio.file.StandardCopyOption;
 public final class MetalNative {
 
     private static MethodHandle mhPipelineDepthVariant;
-    private static MethodHandle mhFxSupported, mhFxCreate, mhFxRelease, mhFxEncode, mhFxHealthy, mhFxSetAntialias;
+    private static MethodHandle mhFxSupported, mhFxCreate, mhFxRelease, mhFxEncode, mhFxHealthy, mhFxSetAntialias, mhFxGpuDuration;
 
     private static boolean available = false;
     private static String loadError = null;
@@ -164,6 +164,8 @@ public final class MetalNative {
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, B))).orElse(null);
         mhFxSetAntialias = lookup.find("mmm_fx_spatial_set_antialias")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A, B))).orElse(null);
+        mhFxGpuDuration = lookup.find("mmm_fx_spatial_gpu_duration_ns")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A))).orElse(null);
         mhFxHealthy = lookup.find("mmm_fx_spatial_healthy")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
@@ -454,6 +456,13 @@ public final class MetalNative {
         if (mhFxSetAntialias == null) return;
         try { mhFxSetAntialias.invokeExact(scaler, enabled); }
         catch (Throwable t) { throw new RuntimeException("MetalFX anti-alias control", t); }
+    }
+
+    /** Latest completed scaler submission duration, not frame GPU time. Missing symbols return -1. */
+    public static long fxGpuDuration(MemorySegment scaler) {
+        if (mhFxGpuDuration == null || scaler.address() == 0) return -1;
+        try { return (long) mhFxGpuDuration.invokeExact(scaler); }
+        catch (Throwable t) { return -1; }
     }
 
     public static boolean fxHealthy(MemorySegment scaler) {

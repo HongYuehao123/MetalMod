@@ -82,7 +82,8 @@ public final class PerformanceCapture {
             boolean prep = !"false".equalsIgnoreCase(System.getProperty("metalmod.capturePrep", "true"));
             metadata = "Backend: " + backend + "\nNative metrics: " + nativeEnabled
                     + "\nSuper Resolution at start: " + net.metalmod.upscaling.MetalFxCoordinator.stats().summary()
-                    + "\nSR effective codes: 0 native, 1 spatial reference, 2 recovery; sr_gpu_ns=-1 (unavailable). SR counters cumulative. sr_reason codes: 0 active, 1 Off, 2 100%, 3 menu, 4 no Metal, 5 suspended, 6 unsupported, 7 creation, 8 scene setup, 9 GPU error, 10 encode, 11 uninitialized."
+                    + "\nSR effective codes: 0 native, 1 spatial reference, 2 recovery; sr_gpu_ns=latest completed AA+FX+copy submission (-1 if unavailable); asynchronous, not frame GPU time. SR counters cumulative. sr_reason codes: 0 active, 1 Off, 2 100%, 3 menu, 4 no Metal, 5 suspended, 6 unsupported, 7 creation, 8 scene setup, 9 GPU error, 10 encode, 11 uninitialized."
+                    + "\nSR input AA: " + !"false".equalsIgnoreCase(System.getProperty("metalmod.fxAntialias", "true"))
                     + "\nMinecraft: " + minecraft.getLaunchedVersion()
                     + "\nOS: " + System.getProperty("os.name") + " " + System.getProperty("os.version")
                     + "\nJava: " + System.getProperty("java.version")

@@ -1,0 +1,172 @@
+[
+  {
+    "run": "motion01-native",
+    "file": "frames.csv",
+    "sha256": "8edc3fd541364b4ace0d3d00fe8e2c16eebcc12a474e9dff7f711bb16d6cec72"
+  },
+  {
+    "run": "motion01-native",
+    "file": "summary.txt",
+    "sha256": "a5aa2e377d45731880d333f27fd585090dbd42eb034bf7db403da519bffdb92b"
+  },
+  {
+    "run": "motion01-native",
+    "file": "motion.txt",
+    "sha256": "762b9d96f8d1bc1a36b431c7e7b7828194ac9758faeb4ee4071764c59393e103"
+  },
+  {
+    "run": "motion02-sr25",
+    "file": "frames.csv",
+    "sha256": "c4750920f640c484a2186c8bbc01b6e1deffbf9eca5c81c3e0705324b649a61e"
+  },
+  {
+    "run": "motion02-sr25",
+    "file": "summary.txt",
+    "sha256": "3a9456052f89305b52342c21ec58483509707fb368614aef695fb48f34385db7"
+  },
+  {
+    "run": "motion02-sr25",
+    "file": "ENVIRONMENT_WARNING.txt",
+    "sha256": "d75e5847e513e06f7dbeb85b1c5c584c5dfb0491e5dc6f3e845e638e29ccab7f"
+  },
+  {
+    "run": "motion02-sr25",
+    "file": "motion.txt",
+    "sha256": "a968a1ea33fc973e3b7b2de0a37a40cd7828e02fb8dd03b32e2d9ddd1b14c2eb"
+  },
+  {
+    "run": "motion03-native",
+    "file": "frames.csv",
+    "sha256": "26b68f58d6615390a5c0f09059e5cf1f27a80beb5c2bbc7044adcbb45cfe1ffe"
+  },
+  {
+    "run": "motion03-native",
+    "file": "summary.txt",
+    "sha256": "37a4e9ecbdad4ac20e2fd7596315d1d2b17d6ce5f415dc00e181ba4189ae6f75"
+  },
+  {
+    "run": "motion03-native",
+    "file": "motion.txt",
+    "sha256": "7cbe827ec7283af9f2f8edadff4724c1c6440ae6e4ca865ba9271a99c7ad65b0"
+  },
+  {
+    "run": "motion04-sr33",
+    "file": "frames.csv",
+    "sha256": "3344668a6871f949d4bca6c75c15c90b7c6299e453275e071064c9816449b73a"
+  },
+  {
+    "run": "motion04-sr33",
+    "file": "summary.txt",
+    "sha256": "8a5a104637e1fb4031dfd3094bc77594ccb2ed61e7d7f3116b8e54d272283ebe"
+  },
+  {
+    "run": "motion04-sr33",
+    "file": "motion.txt",
+    "sha256": "01ab4e85dab3c1a18380fa08ede919b3aefd6129080c2c137452885ff6f856bd"
+  },
+  {
+    "run": "motion05-native",
+    "file": "frames.csv",
+    "sha256": "3b455334b334920497c542ea4a60fb1ce8781653067dd4d5325a3eb9a3b27e25"
+  },
+  {
+    "run": "motion05-native",
+    "file": "summary.txt",
+    "sha256": "e29fa3a621d975b5ca61115249697153553d907312c1ae0848afd9528ccedb7b"
+  },
+  {
+    "run": "motion05-native",
+    "file": "motion.txt",
+    "sha256": "b4cfb8123702fc68013d432bf66c27f533a2cec7aca879e1492f3655730b6cb6"
+  },
+  {
+    "run": "motion06-sr50",
+    "file": "frames.csv",
+    "sha256": "669b07fd36ce2bf412aef402f12de7c25892bed420f196c8cc85698574c944b0"
+  },
+  {
+    "run": "motion06-sr50",
+    "file": "summary.txt",
+    "sha256": "c754c87eb8f18c412a91d16322d55735f13f23778aec2e2630fa2eb53577c887"
+  },
+  {
+    "run": "motion06-sr50",
+    "file": "motion.txt",
+    "sha256": "0130bf29e466a0ad48d050e1af4162f1b2e20b9823bc54b81cbcf4d659980030"
+  },
+  {
+    "run": "display01-immediate",
+    "file": "frames.csv",
+    "sha256": "daa5fe8fcc4a9802869e4cde8c1448b85e36a174b12bb95a7cf01f433c27c819"
+  },
+  {
+    "run": "display01-immediate",
+    "file": "display.csv",
+    "sha256": "2aaa6fbd4ce569db5ba5012540d0e40b5cd43ab851ecceafbb375e0be930bd25"
+  },
+  {
+    "run": "display01-immediate",
+    "file": "summary.txt",
+    "sha256": "4ca3e552f5e56ea3b7bf5d54143cd9b0e500b6ce8df10b76cac85449c70ea84f"
+  },
+  {
+    "run": "display01-immediate",
+    "file": "display-counts.txt",
+    "sha256": "3cb0205802d22837fd76fc514071b177859d2a5584c2956975290b9ab9d04e75"
+  },
+  {
+    "run": "display01-immediate",
+    "file": "motion.txt",
+    "sha256": "041180e138cff6716c3a2a17184ce5c088a0a3f8c50ae00be575b5e312a4bc12"
+  },
+  {
+    "run": "display02-fifo",
+    "file": "frames.csv",
+    "sha256": "477a5e84182af8f13ac211c48cde9f64e8b14d5d5065a333de5a71a8200191ea"
+  },
+  {
+    "run": "display02-fifo",
+    "file": "display.csv",
+    "sha256": "3ec810cf14595da9a755f8a9bfb405b352f78dd411913e3a1a0e0f2137300ecd"
+  },
+  {
+    "run": "display02-fifo",
+    "file": "summary.txt",
+    "sha256": "63fc5195fc54f37eb82c8c37adb4553ef92ca870abbb4309be96cfb7f825babe"
+  },
+  {
+    "run": "display02-fifo",
+    "file": "display-counts.txt",
+    "sha256": "df76cd514d9ffbd9d0118492cf1ed611a03df504b368b4ed9db93fcdb3a3d760"
+  },
+  {
+    "run": "display02-fifo",
+    "file": "motion.txt",
+    "sha256": "8ed5c32fab1619b09941fedf3acb06af3cfa64a137bb6cde90a76aab39e9be95"
+  },
+  {
+    "run": "display03-sr25-fifo",
+    "file": "frames.csv",
+    "sha256": "6d1d026f08f88136df42a7e4ef3bcf89266332be0397dc200357c970e7b22c35"
+  },
+  {
+    "run": "display03-sr25-fifo",
+    "file": "display.csv",
+    "sha256": "c4aaa2a9feda037733506f5de17a1c0b466698c874381ff2e16ec32a2382822e"
+  },
+  {
+    "run": "display03-sr25-fifo",
+    "file": "summary.txt",
+    "sha256": "669a8783d82e65f8504adf12fac2dd4f60fc3ec2d641b78e407a119c1001faa5"
+  },
+  {
+    "run": "display03-sr25-fifo",
+    "file": "display-counts.txt",
+    "sha256": "80bd379bfe64380e7057d2731d2ac4bde28cc684baa33d9c3931783d3a55ce04"
+  },
+  {
+    "run": "display03-sr25-fifo",
+    "file": "motion.txt",
+    "sha256": "ccd660b727a257590888cbb6fb6cb85a0d57902312d69b350bdaa8b017aec12b"
+  }
+]

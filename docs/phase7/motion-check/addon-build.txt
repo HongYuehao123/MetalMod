@@ -1,0 +1,1 @@
+note: 96 declared libraries are not present on disk (e.g. com/mojang/jtracy/1.0.37/jtracy-1.0.37-natives-linux.jar)

@@ -69,7 +69,9 @@ public class MetalModDebugEntry implements DebugScreenEntry {
             if (sr.requested()) displayer.addLine("§6[MetalMod]§r SR gen " + sr.generation()
                     + " create/fail/encode " + sr.creates() + "/" + sr.failures() + "/" + sr.encodes()
                     + " recovery/retired " + sr.recoveries() + "/" + sr.retirements()
-                    + " hooks " + sr.worldHooks() + "/" + sr.uiHooks() + " | GPU time unavailable");
+                    + " hooks " + sr.worldHooks() + "/" + sr.uiHooks()
+                    + (sr.gpuDurationNs() > 0 ? " | SR batch GPU " + oneDecimal(sr.gpuDurationNs()/1_000_000f) + " ms (completed)"
+                            : " | SR batch GPU unavailable"));
         }
         // The light set is only extracted when the feature is on and the Metal backend is drawing, so
         // this line is the in-game answer to "is the extractor running, and what did it publish?".

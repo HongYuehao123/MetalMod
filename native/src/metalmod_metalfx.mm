@@ -3,12 +3,19 @@
 #import <MetalFX/MetalFX.h>
 #include "metalmod/metalmod_metalfx.h"
 #include <atomic>
+#include <mutex>
+#include <cmath>
 #include "metalmod_spatial_aa.h"
 
-// Render-thread-owned state. Only the error latch is accessed on GPU completion threads.
+// Resources and submission sequence are render-thread owned. Completion threads publish
+// the atomic error latch and timing protected by timingMutex.
 @interface MMMSpatialState : NSObject {
 @public
     std::atomic<bool> failed;
+    std::mutex timingMutex;
+    uint64_t submissionSequence;
+    uint64_t completedSequence;
+    int64_t gpuDurationNs;
 }
 @property(nonatomic, strong) id<MTLFXSpatialScaler> scaler;
 @property(nonatomic, strong) id<MTLTexture> output;
@@ -45,6 +52,8 @@ void* mmm_fx_spatial_create(void* device, int32_t iw, int32_t ih, int32_t ow, in
             desc.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
             MMMSpatialState* state = [MMMSpatialState new];
             state->failed.store(false);
+            state->submissionSequence = state->completedSequence = 0;
+            state->gpuDurationNs = -1;
             state.antialiasEnabled = YES;
             state.scaler = [desc newSpatialScalerWithDevice:dev];
             if (!state.scaler) return NULL;
@@ -96,6 +105,13 @@ void mmm_fx_spatial_set_antialias(void* handle, bool enabled) {
 }
 bool mmm_fx_spatial_healthy(void* handle) {
     return handle && !((__bridge MMMSpatialState*)handle)->failed.load();
+}
+
+int64_t mmm_fx_spatial_gpu_duration_ns(void* handle) {
+    if (!handle) return -1;
+    MMMSpatialState* state = (__bridge MMMSpatialState*)handle;
+    std::lock_guard<std::mutex> guard(state->timingMutex);
+    return state->failed.load() ? -1 : state->gpuDurationNs;
 }
 
 int32_t mmm_fx_spatial_encode(void* handle, void* commandBuffer, void* source, void* destination,
@@ -156,8 +172,24 @@ int32_t mmm_fx_spatial_encode(void* handle, void* commandBuffer, void* source, v
                         toTexture:dest destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
                 [blit endEncoding];
             }
+            // This command buffer contains only AA + FX + output copy, or plain recovery.
+            // Measure one submission, never sum overlapping command-buffer spans as frame GPU time.
+            const uint64_t sequence = ++state->submissionSequence;
             // Retains this generation until its final submitted use completes.
             [cb addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+                const double start = completed.GPUStartTime, end = completed.GPUEndTime;
+                int64_t duration = !plainScale && completed.status == MTLCommandBufferStatusCompleted
+                        && std::isfinite(start) && std::isfinite(end) && start > 0 && end > start
+                        ? (int64_t)((end - start) * 1e9) : -1;
+                {
+                    // Completion handlers can arrive on different threads; an older sample
+                    // must not replace the timing of a newer submission from this generation.
+                    std::lock_guard<std::mutex> guard(state->timingMutex);
+                    if (sequence > state->completedSequence) {
+                        state->completedSequence = sequence;
+                        state->gpuDurationNs = duration;
+                    }
+                }
                 if (completed.status == MTLCommandBufferStatusError) {
                     state->failed.store(true);
                     NSLog(@"[MetalMod] MetalFX GPU failure: %@", completed.error);
