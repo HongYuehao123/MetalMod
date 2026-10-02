@@ -104,8 +104,9 @@ unrelated to graphics; no real account token was used.
 
 ## Candidate decision and remaining acceptance
 
-Spatial is the sole active **engineering reference**, with native fallback. Temporal is not implemented
-or secretly selected: the client has no complete per-object motion/jitter/history rejection contract
+Spatial is the sole active **engineering reference**, with native fallback. An isolated offline temporal
+prototype now exists ([contract v1](temporal-contract.md)); temporal is not selected for gameplay:
+the client has no complete per-object motion/jitter/history rejection producer
 for moving entities, hands, moving blocks, particles and translucency. Camera-only reprojection would
 violate the plan. This input-contract failure blocks its promotion; it is not measured proof that
 spatial is faster or better. No temporal/scaler history is advanced by this path.

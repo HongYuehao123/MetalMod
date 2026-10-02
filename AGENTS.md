@@ -22,7 +22,7 @@ Instead of translating Vulkan through MoltenVK, it plugs into Minecraft's Blaze3
 ### Phase Roadmap Status
 - **Phases 0–5 (Foundations to Vanilla Parity): COMPLETE.** Backend selection, resources, pipelines, draw calls, all 87 vanilla pipelines + 9 post-processing passes compile, and visual/performance parity confirmed on Apple Silicon (M4 Pro).
 - **Phase 6 (Dynamic Lighting): COMPLETE.** Light snapshotting, moving sources (held/dropped items, entities, moving blocks), 16-block clustered grid evaluator, and published light-record ABI v1 (`docs/lighting-abi.md`).
-- **Phase 7 (MetalFX & Pacing): IN PROGRESS.** World-only native MetalFX spatial reference (`native/src/metalmod_metalfx.mm`) implemented; quality/performance release selection pending. Temporal motion inputs and display-link/frame generation remain deferred.
+- **Phase 7 (MetalFX & Pacing): IN PROGRESS.** World-only native MetalFX spatial reference (`native/src/metalmod_metalfx.mm`) implemented; 7B offline temporal foundation (`native/src/metalmod_temporal.mm`) started with contract v1 in `docs/phase7/temporal-contract.md`. Gameplay temporal producers/history integration and quality/performance release selection pending. Display-link/frame generation remain deferred.
 - **Phase 8 (Native Material & Lighting Foundations): PLANNED.** Linear-light/HDR composition, G-buffer layouts, Phase 8B ray visibility occlusion/shadowing.
 - **Phase 9 (Hybrid Ray Tracing): PLANNED.** Metal ray tracing pipeline (`MTLAccelerationStructure`).
 - **Optional (GLSL Shaderpacks): DEFERRED.** Preserved as optional compatibility; not an RT prerequisite.

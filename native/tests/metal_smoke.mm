@@ -1253,6 +1253,125 @@ static void test_metalfx(void) {
     mmm_queue_release(queue); mmm_device_release(device);
 }
 
+static void test_temporal_prototype(void) {
+    printf("\n== temporal MetalFX prototype ABI v1 ==\n");
+    check("temporal NULL capability denied", !mmm_fx_temporal_supported(NULL), "");
+    check("temporal NULL encode rejected", mmm_fx_temporal_encode(NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+            0,0,false,true) == -1, "");
+    void* device = mmm_device_create();
+    if (!device) { check("temporal device", false, "no Metal device"); return; }
+    if (!mmm_fx_temporal_supported(device)) {
+        printf("[SKIP] temporal active encoding: device unsupported\n");
+        check("unsupported temporal creation denied", !mmm_fx_temporal_create(device,48,32,64,48), "");
+        mmm_device_release(device); return;
+    }
+    check("temporal zero size denied", !mmm_fx_temporal_create(device,0,32,64,48), "");
+    check("temporal downscale denied", !mmm_fx_temporal_create(device,64,48,48,32), "");
+    check("temporal aspect mismatch denied", !mmm_fx_temporal_create(device,48,32,64,48), "");
+    check("temporal overflow size denied", !mmm_fx_temporal_create(device,INT32_MAX,32,64,48), "");
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    auto texture = [&](MTLPixelFormat format, int w, int h, MTLStorageMode storage) {
+        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+                width:w height:h mipmapped:NO];
+        td.storageMode = storage;
+        td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+        // Depth is read/rendered, not writable by compute.
+        if (format == MTLPixelFormatDepth32Float) td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        return [dev newTextureWithDescriptor:td];
+    };
+    const int W=48, H=36, OW=64, OH=48;
+    id<MTLTexture> color = texture(MTLPixelFormatRGBA16Float,W,H,MTLStorageModeShared);
+    id<MTLTexture> depth = texture(MTLPixelFormatDepth32Float,W,H,MTLStorageModeShared);
+    id<MTLTexture> motion = texture(MTLPixelFormatRG16Float,W,H,MTLStorageModeShared);
+    id<MTLTexture> reactive = texture(MTLPixelFormatR8Unorm,W,H,MTLStorageModeShared);
+    id<MTLTexture> output = texture(MTLPixelFormatRGBA16Float,OW,OH,MTLStorageModePrivate);
+    id<MTLTexture> readback = texture(MTLPixelFormatRGBA16Float,OW,OH,MTLStorageModeShared);
+    if (!queue || !color || !depth || !motion || !reactive || !output || !readback) {
+        check("temporal test resources",false,"allocation failed"); mmm_device_release(device); return;
+    }
+    std::vector<__fp16> c(W*H*4), m(W*H*2,0), pixels(OW*OH*4);
+    std::vector<uint8_t> mask(W*H,0);
+    [motion replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:m.data() bytesPerRow:W*4];
+    [reactive replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:mask.data() bytesPerRow:W];
+    // Recreate real histories, encode repeated frames, then abruptly change colour with reset.
+    for (int generation=0; generation<3; generation++) {
+        void* fx = mmm_fx_temporal_create(device,W,H,OW,OH);
+        check("temporal real generation created",fx != NULL,"");
+        if (!fx) break;
+        id<MTLCommandBuffer> invalid = [queue commandBuffer];
+        check("temporal wrong output contract rejected",mmm_fx_temporal_encode(fx,(__bridge void*)invalid,
+                (__bridge void*)color,(__bridge void*)depth,(__bridge void*)motion,(__bridge void*)reactive,
+                (__bridge void*)readback,0,0,false,false)==-3,"shared output is illegal");
+        check("temporal NaN jitter rejected",mmm_fx_temporal_encode(fx,(__bridge void*)invalid,
+                (__bridge void*)color,(__bridge void*)depth,(__bridge void*)motion,(__bridge void*)reactive,
+                (__bridge void*)output,NAN,0,false,false)==-4,"");
+        id<MTLCommandQueue> otherQueue = [dev newCommandQueue];
+        for (int frame=0; frame<5; frame++) {
+            const bool blue = frame==3;
+            const bool quadrants = frame==4;
+            for (int i=0;i<W*H;i++) {
+                c[i*4]=blue?0.125f:0.75f; c[i*4+1]=0.25f;
+                c[i*4+2]=blue?0.75f:0.125f; c[i*4+3]=1;
+                if (quadrants) {
+                    const bool right=i%W>=W/2, bottom=i/W>=H/2;
+                    c[i*4]=!right || bottom?0.75f:0.125f;
+                    c[i*4+1]=right?0.75f:0.125f;
+                    c[i*4+2]=bottom?0.75f:0.125f;
+                }
+            }
+            // Deliberately replace history with asymmetric current content using the mask.
+            std::fill(mask.begin(),mask.end(),quadrants?255:0);
+            for (int i=0;i<W*H;i++) { m[i*2]=quadrants?-3:0; m[i*2+1]=quadrants?-2:0; }
+            [motion replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:m.data() bytesPerRow:W*4];
+            [reactive replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:mask.data() bytesPerRow:W];
+            [color replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:c.data() bytesPerRow:W*8];
+            id<MTLCommandBuffer> cb = [queue commandBuffer];
+            MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+            pd.depthAttachment.texture=depth; pd.depthAttachment.loadAction=MTLLoadActionClear;
+            pd.depthAttachment.storeAction=MTLStoreActionStore;
+            pd.depthAttachment.clearDepth=generation==1?0.25:0.75;
+            id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pd];
+            [enc endEncoding];
+            int rc=mmm_fx_temporal_encode(fx,(__bridge void*)cb,(__bridge void*)color,(__bridge void*)depth,
+                    (__bridge void*)motion,(__bridge void*)reactive,(__bridge void*)output,
+                    frame%2?0.25f:-0.25f,frame%2?-0.125f:0.125f,generation==1,blue);
+            check("temporal real history/reset encode",rc==0,"");
+            if (rc!=0) break;
+            id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];
+            [blit copyFromTexture:output sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+                    sourceSize:MTLSizeMake(OW,OH,1) toTexture:readback destinationSlice:0 destinationLevel:0
+                    destinationOrigin:MTLOriginMake(0,0,0)];
+            [blit endEncoding];
+            if (frame==4) { mmm_fx_temporal_release(fx); fx=NULL; } // submitted use retains generation
+            [cb commit]; [cb waitUntilCompleted];
+            check("temporal GPU completed",cb.status==MTLCommandBufferStatusCompleted,"");
+            [readback getBytes:pixels.data() bytesPerRow:OW*8 fromRegion:MTLRegionMake2D(0,0,OW,OH) mipmapLevel:0];
+            bool correct=true;
+            for (int y=12;y<OH;y+=24) for (int x=16;x<OW;x+=32) {
+                int p=(y*OW+x)*4;
+                const bool right=x>=OW/2, bottom=y>=OH/2;
+                float red=quadrants?(!right || bottom?0.75f:0.125f):(blue?0.125f:0.75f);
+                float green=quadrants?(right?0.75f:0.125f):0.25f;
+                float b=quadrants?(bottom?0.75f:0.125f):(blue?0.75f:0.125f);
+                correct &= fabs((float)pixels[p]-red)<0.06f
+                        && fabs((float)pixels[p+1]-green)<0.06f && fabs((float)pixels[p+2]-b)<0.06f;
+            }
+            check(quadrants?"temporal reactive replacement preserves quadrant orientation":
+                    blue?"temporal reset removes previous colour":"temporal linear flat colour preserved",correct,"");
+            if (fx) {
+                check("temporal completed generation healthy",mmm_fx_temporal_healthy(fx),"");
+                id<MTLCommandBuffer> wrongQueue=[otherQueue commandBuffer];
+                check("temporal unordered queue rejected",mmm_fx_temporal_encode(fx,(__bridge void*)wrongQueue,
+                        (__bridge void*)color,(__bridge void*)depth,(__bridge void*)motion,(__bridge void*)reactive,
+                        (__bridge void*)output,0,0,false,false)==-3,"");
+            }
+        }
+        mmm_fx_temporal_release(fx);
+    }
+    mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1261,6 +1380,7 @@ int main(void) {
         test_device();
         test_spatial_antialias();
         test_metalfx();
+        test_temporal_prototype();
         test_clear_and_readback();
         test_resources();
         test_mip_filter();

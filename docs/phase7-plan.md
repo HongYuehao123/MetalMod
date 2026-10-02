@@ -3,6 +3,8 @@
 Status: **implementation in progress (2026-10-01): 7A spatial reference implemented; acceptance pending.**
 7B release selection pending; temporal input contract incomplete. 7C explicitly deferred.
 See [phase7/implementation.md](phase7/implementation.md) for the actual delivered scope and evidence.
+2026-10-02: 7B has started with an offline temporal scaler/FFI prototype and sampling math.
+See [temporal contract v1](phase7/temporal-contract.md); gameplay producers and acceptance remain pending.
 Baseline inspected: `ee49799`, Minecraft 26.2 native Metal backend.
 This document defines acceptance gates; implementation results are recorded separately.
 

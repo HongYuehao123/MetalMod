@@ -51,10 +51,32 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | spatial integration implemented and tested (2026-10-01); release quality/performance acceptance pending; 7C deferred; see [docs/phase7/implementation.md](docs/phase7/implementation.md) |
+| 7 — MetalFX | spatial reference checkpoint committed; 7B offline temporal foundation started (2026-10-02); gameplay inputs and release selection pending; 7C deferred |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
+
+## Phase 7B temporal foundation (2026-10-02)
+
+Spatial checkpoint committed as `92f90bf` after rerunning all five gates with host GPU access.
+Added an isolated native temporal scaler API and optional Panama bindings, fixed-format linear
+RGBA16Float/Depth32Float/RG16Float/R8 reactive input contract, device ratio/texture/queue validation,
+fixed exposure, first-use/explicit history resets and completion-retained lifetime/error latching.
+Texture usage requirements are queryable. Deterministic scene-pixel jitter and unjittered NDC
+motion conversion helpers are implemented; neither is applied to the gameplay renderer yet.
+
+All five gates pass on M4 Pro/macOS 27.0.1, with Metal validation enabled for smoke and render.
+Smoke exercises 15 real temporal encodes across three generations, forward/reversed depth,
+flat linear colour, reset after an abrupt colour change, full reactive replacement/orientation,
+invalid inputs/queue and release with work in flight. Standalone tests exercise sampling signs
+and the real temporal creation/release/usage-query FFI. Existing 194 render assertions pass.
+Evidence and limitations: [temporal contract](docs/phase7/temporal-contract.md),
+[gate results](docs/phase7/temporal-foundation/results.md).
+
+Spatial remains the active game path. Next: verify scene SDR conversion and jitter projection
+signs, implement camera/object render-time motion and conservative reactive coverage, then connect
+the coordinator's reset lifecycle. Camera-only vectors cannot promote the temporal candidate.
+No temporal gameplay quality/performance acceptance or 7C pacing claim is made.
 
 ## Camera-motion and actual FIFO timestamp checks (2026-10-02)
 
@@ -74,8 +96,8 @@ calls (SR25 slowest 5%: 13.53 ms versus 3.97 ms otherwise), with frame/create co
 The driver/queue cause remains unproven; BUG-031 is open. Cropped near/mid-range camera snapshots
 show 50% detail softening; ~4 Hz sampling does not establish distant shimmer or full motion acceptance.
 
-M4 Pro temporal support and legal descriptor creation are confirmed. Ready to begin temporal
-prototype/input development; no temporal rendering is implemented or accepted. Per-object motion,
+M4 Pro temporal support and legal descriptor creation are confirmed. The offline temporal foundation
+above is now implemented; gameplay temporal rendering is not implemented or accepted. Per-object motion,
 jitter, history/reset and colour/exposure pixel contracts remain implementation work. All five gates
 were rerun and passed (194 pixel assertions). Evidence: [motion/timestamp results](docs/phase7/motion-check/results.md).
 

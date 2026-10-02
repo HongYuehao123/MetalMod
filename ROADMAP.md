@@ -446,6 +446,10 @@ upscaling regressions, not a substitute for the deferred scaling/performance acc
 routing is exercised. Quality/performance selection is pending; temporal inputs are incomplete,
 and 7C is explicitly deferred. Phase 7 remains in progress. See [implementation evidence](docs/phase7/implementation.md).
 
+**2026-10-02:** 7B offline temporal foundation implemented: native scaler, optional FFI and sampling
+math pass all five gates. Gameplay motion/jitter/colour producers and history lifecycle remain
+pending; see [contract v1](docs/phase7/temporal-contract.md). Spatial is still the active reference.
+
 Implementation plan: [docs/phase7-plan.md](docs/phase7-plan.md). Player controls are **Super Resolution
 On/Off** and one strength/percentage control. Ship one approach selected through internal
 quality/performance comparisons, with native rendering as fallback. The plan defines world/UI

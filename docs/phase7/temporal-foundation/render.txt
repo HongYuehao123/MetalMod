@@ -1,0 +1,539 @@
+Offline render check — a real vanilla pipeline through MetalMod
+  pipeline : minecraft:pipeline/gui
+
+[MetalMod] Metal backend native library ready (mmm_* symbols resolved).
+2026-10-02 16:28:23.222 java[38352:3398494] Metal API Validation Enabled
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.lwjgl.system.MemoryUtil (file:/Users/hongyuehao/Documents/.minecraft/libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar)
+WARNING: Please consider reporting this to the maintainers of class org.lwjgl.system.MemoryUtil
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+[MetalMod] metal pipeline compiled: minecraft:pipeline/gui
+PASS  pipeline compiled and registered
+[MetalMod] render target 'gui' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'gui'
+PASS  ColorModulator blue -> R0 G0 B255 (expected R0 G0 B255)
+[MetalMod] render target 'GUI with depth attachment' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'GUI with depth attachment'
+PASS  GUI pipeline without depth tests matches a depth framebuffer
+[MetalMod] render target 'GUI without depth attachment' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'GUI without depth attachment'
+PASS  GUI depth variant leaves depth-free variant intact
+PASS  ColorModulator red -> R255 G0 B0 (expected R255 G0 B0)
+PASS  ColorModulator grey -> R128 G128 B128 (expected R128 G128 B128)
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  terrain pipeline compiled and registered
+[MetalMod] render target 'terrain' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'terrain'
+PASS  terrain quad covers the centre (clear is green, so black means it drew something)  centre R255 G255 B255
+PASS  terrain quad is white -> R255 G255 B255
+[MetalMod] render target 'terrain rgss' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'terrain rgss'
+PASS  terrain with RGSS filtering (UseRgss = 1) is still white -> R255 G255 B255
+[MetalMod] metal pipeline compiled: minecraft:pipeline/entity_cutout
+PASS  entity pipeline compiled and registered
+[MetalMod] render target 'entity' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity'
+PASS  entity quad renders fully lit white, not the 102 back-face colour -> R255 G255 B255
+[MetalMod] render target 'entity fog' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity fog'
+PASS  entity fog mixes 86.6% of the FogColor over the whole quad -> R34 G34 B255 (expected 34 34 255; white would mean the Fog block was bound to something else)
+[MetalMod] render target 'entity tint' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity tint'
+PASS  entity ColorModulator reaches the fragment stage of the shared block -> R128 G64 B255 (expected 128 64 255)
+[MetalMod] render target 'cutout below' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'cutout below'
+[MetalMod] render target 'cutout above' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'cutout above'
+PASS  ALPHA_CUTOUT discards a fragment at alpha 25/255 -> the clear survives (0 255 0)
+PASS  ALPHA_CUTOUT keeps a fragment at alpha 26/255 -> not the clear (255 255 255)
+[MetalMod] metal pipeline compiled: minecraft:pipeline/lines
+PASS  lines pipeline compiled and registered
+[MetalMod] render target 'lines' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/lines' -> target 'lines'
+PASS  line band covers a row 4px above its centre -> R255 (line primitives would draw only the two edges and a diagonal)
+PASS  line band covers a row 4px below its centre -> R255
+PASS  line band does not reach a row 12px outside it -> R0 (a giant band would)
+[MetalMod] metal pipeline compiled: minecraft:pipeline/sky
+PASS  sky pipeline compiled and registered
+[MetalMod] render target 'fan' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/sky' -> target 'fan'
+PASS  triangle fan covers its centre -> R255 (a triangle list over the same 10 vertices leaves it empty)
+PASS  triangle fan covers all 8 sampled points around the centre -> 8/8
+PASS  nothing is drawn outside the fan's radius -> R0
+[MetalMod] metal pipeline compiled: minecraft:pipeline/gui_textured
+PASS  textured pipeline compiled and registered
+[MetalMod] render target 'quad' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui_textured' -> target 'quad'
+PASS  texCoord samples top-left -> R255 G0 B0 (expected R255 G0 B0)
+PASS  texCoord samples top-right -> R0 G255 B0 (expected R0 G255 B0)
+PASS  texCoord samples bottom-left -> R0 G0 B255 (expected R0 G0 B255)
+PASS  texCoord samples bottom-right -> R255 G255 B255 (expected R255 G255 B255)
+[MetalMod] render target 'mip target' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui_textured' -> target 'mip target'
+PASS  a minified mipmapped texture samples a higher mip -> R0 G0 B255 (level 0 alone would be red)
+PASS  absent LOD cap selects higher mips (Minecraft terrain sampler contract)  centre [0, 0, 255]
+PASS  explicit zero LOD cap keeps level zero
+PASS  diagnostic mipFilter off reproduces fine-level sampling
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'mip target'
+PASS  real terrain textureGrad uses distant mips with absent cap  centre [0, 0, 255]
+PASS  real terrain RGSS textureLod uses distant mips with absent cap  centre [0, 0, 255]
+PASS  copyTextureToTexture copies the whole texture byte for byte
+PASS  a 2x2 copy at (1,1) changes exactly that rectangle  0a14 4614 8214 be14 
+      0a50 c864 c864 be50 
+      0a8c c864 c864 be8c 
+      0ac8 46c8 82c8 bec8 
+      
+PASS  copyToBuffer copies the whole buffer byte for byte
+PASS  copyToBuffer honours offsets and leaves the gap untouched
+PASS  writeToBuffer writes the whole buffer byte for byte
+[MetalMod] render target 'minecraft:textures/atlas/render-check.png' yFlip=true clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'minecraft:textures/atlas/render-check.png'
+PASS  atlas target: NDC y=-1 lands in framebuffer row 0 (red at the top, was green if unflipped) -> top R255 G0 / bottom R0 G255
+[MetalMod] render target 'multidraw' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'multidraw'
+PASS  multiDrawIndexed drew both entries (left B255, right B255)
+[MetalMod] render target 'scissor' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'scissor'
+PASS  scissor(0,0,32,32) draws the bottom-left quadrant (B255) and nothing else (opposite quadrant B0)
+[MetalMod] render target 'UI scissor texture' yFlip=true clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'UI scissor texture'
+PASS  a flipped-viewport target keeps the scissor as given (top-left quadrant B255), so it matches the region clear (opposite quadrant B0)
+PASS  draw census counts the frame's draws (26 encoded)
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'quad'
+PASS  50%-alpha white over black blends to mid grey -> R128 (expected ~128)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_0
+[MetalMod] draw 'minecraft:blend_check/case_0' -> target 'quad'
+PASS  blend CRUMBLING (solid terrain-adjacent multiply) -> 96 129  96 191 (expected 96 129  96 191)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_1
+[MetalMod] draw 'minecraft:blend_check/case_1' -> target 'quad'
+PASS  blend ENERGY_SWIRL (additive) -> 255 255 255 255 (expected 255 255 255 255)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_2
+[MetalMod] draw 'minecraft:blend_check/case_2' -> target 'quad'
+PASS  blend GUI_TEXTURED_PREMULTIPLIED_ALPHA (premultiplied alpha) -> 207 160 112 223 (expected 207 160 112 223)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_3
+[MetalMod] draw 'minecraft:blend_check/case_3' -> target 'quad'
+PASS  blend GUI_INVERT (invert) -> 159 127 159 191 (expected 159 127 159 191)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_4
+[MetalMod] draw 'minecraft:blend_check/case_4' -> target 'quad'
+PASS  blend WORLD_BORDER (additive by alpha) -> 207 224 239 191 (expected 207 224 239 191)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_5
+[MetalMod] draw 'minecraft:blend_check/case_5' -> target 'quad'
+PASS  blend LIGHTNING (additive, alpha in both equations) -> 207 224 239 255 (expected 207 224 239 255)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_6
+[MetalMod] draw 'minecraft:blend_check/case_6' -> target 'quad'
+PASS  blend TRANSLUCENT_TERRAIN (translucent) -> 159 128  96 223 (expected 159 128  96 223)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_7
+[MetalMod] draw 'minecraft:blend_check/case_7' -> target 'quad'
+PASS  blend ENTITY_OUTLINE_BLIT (translucent colour, keep destination alpha) -> 159 128  96 128 (expected 159 128  96 128)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_8
+[MetalMod] draw 'minecraft:blend_check/case_8' -> target 'quad'
+PASS  blend GLINT (source colour over destination) -> 207 192 207 128 (expected 207 192 207 128)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_9
+[MetalMod] draw 'minecraft:blend_check/case_9' -> target 'quad'
+PASS  blend VIGNETTE (destination faded by the inverse source) -> 16  64 143 128 (expected 16  64 143 128)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_10
+[MetalMod] draw 'minecraft:blend_check/case_10' -> target 'quad'
+PASS  blend SRC_ALPHA_SATURATE (was OneMinusBlendAlpha) -> 111  96  80 223 (expected 111  96  80 223)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_11
+[MetalMod] draw 'minecraft:blend_check/case_11' -> target 'quad'
+PASS  blend CONSTANT_COLOR (was SourceAlphaSaturated) -> 16  32  48  32 (expected 16  32  48  32)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_12
+[MetalMod] draw 'minecraft:blend_check/case_12' -> target 'quad'
+PASS  blend ONE_MINUS_CONSTANT_COLOR (was BlendColor) -> 207 160 112 223 (expected 207 160 112 223)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_13
+[MetalMod] draw 'minecraft:blend_check/case_13' -> target 'quad'
+PASS  blend CONSTANT_ALPHA (was OneMinusBlendColor) -> 16  32  48  32 (expected 16  32  48  32)
+[MetalMod] metal pipeline compiled: minecraft:blend_check/case_14
+[MetalMod] draw 'minecraft:blend_check/case_14' -> target 'quad'
+PASS  blend ONE_MINUS_CONSTANT_ALPHA (was BlendAlpha) -> 207 160 112 223 (expected 207 160 112 223)
+PASS  no vanilla pipeline exceeds the reported colour-attachment limit of 1 (checked 87)
+[MetalMod] render target 'depth copy color' yFlip=false clear=true depthClear=true
+[MetalMod] metal pipeline compiled lazily: minecraft:depth_compare/depth_copy
+[MetalMod] draw 'minecraft:depth_compare/depth_copy' -> target 'depth copy color'
+PASS  the depth-copy source renders a 0.75 quad -> R255
+[MetalMod] render target 'depth copy color' yFlip=false clear=true depthClear=false
+PASS  a copied depth buffer rejects a nearer.. no: a farther draw: 0.5 against a copied 0.75 leaves the clear -> R0 (a copied depth of 0.0 would draw the white quad instead)
+PASS  control: 0.5 against a cleared 0.0 is accepted, so the draw itself works -> R255
+[MetalMod] metal pipeline compiled: minecraft:write_mask/none
+[MetalMod] metal pipeline compiled: minecraft:write_mask/color
+[MetalMod] draw 'minecraft:write_mask/none' -> target 'quad'
+PASS  WRITE_NONE leaves the target alone -> 0 0 255 64 (expected the blue clear 0 0 255 64)
+[MetalMod] draw 'minecraft:write_mask/color' -> target 'quad'
+PASS  WRITE_COLOR writes RGB and leaves alpha -> 255 255 255 64 (expected 255 255 255 64)
+PASS  a 20000-texel buffer becomes a 4096x5 texture (expected 4096x5)
+PASS  every texel is where spvTexelBufferCoord(tc) = (tc % 4096, tc / 4096) looks for it (20000/20000 match, first wrong at -1)
+[MetalMod] metal pipeline compiled: minecraft:depth_compare/compare_writer
+[MetalMod] metal pipeline compiled: minecraft:depth_compare/compare_always_pass
+[MetalMod] metal pipeline compiled: minecraft:depth_compare/compare_less_than
+[MetalMod] metal pipeline compiled: minecraft:depth_compare/compare_less_than_or_equal
+[MetalMod] metal pipeline compiled: minecraft:depth_compare/compare_equal
+[MetalMod] metal pipeline compiled: minecraft:depth_compare/compare_not_equal
+[MetalMod] render target 'depth compare' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:depth_compare/compare_writer' -> target 'depth compare'
+[MetalMod] draw 'minecraft:depth_compare/compare_always_pass' -> target 'depth compare'
+PASS  depth compare ALWAYS_PASS -> <:pass =:pass >:pass
+[MetalMod] draw 'minecraft:depth_compare/compare_less_than' -> target 'depth compare'
+PASS  depth compare LESS_THAN -> <:pass =:fail >:fail
+[MetalMod] draw 'minecraft:depth_compare/compare_less_than_or_equal' -> target 'depth compare'
+PASS  depth compare LESS_THAN_OR_EQUAL -> <:pass =:pass >:fail
+[MetalMod] draw 'minecraft:depth_compare/compare_equal' -> target 'depth compare'
+PASS  depth compare EQUAL -> <:fail =:pass >:fail
+[MetalMod] draw 'minecraft:depth_compare/compare_not_equal' -> target 'depth compare'
+PASS  depth compare NOT_EQUAL -> <:pass =:fail >:pass
+[MetalMod] draw 'minecraft:depth_compare/compare_greater_than_or_equal' -> target 'depth compare'
+PASS  depth compare GREATER_THAN_OR_EQUAL -> <:fail =:pass >:pass
+[MetalMod] draw 'minecraft:depth_compare/compare_greater_than' -> target 'depth compare'
+PASS  depth compare GREATER_THAN -> <:fail =:fail >:pass
+[MetalMod] draw 'minecraft:depth_compare/compare_never_pass' -> target 'depth compare'
+PASS  depth compare NEVER_PASS -> <:fail =:fail >:fail
+PASS  DEBUG_POINTS pipeline compiled
+[MetalMod] render target 'points' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/debug_points' -> target 'points'
+PASS  DEBUG_POINTS draws one gl_PointSize-sized point: 8x8 pixels, 64 lit, at x 28..35 y 28..35
+PASS  triangle strip pipeline compiled
+[MetalMod] render target 'topology' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:topology_check/strip' -> target 'topology'
+PASS  TRIANGLE_STRIP covers the left half (R255) and not the right (R0) - a triangle list over the same four vertices would miss the upper-left
+PASS  lightmap pipeline compiled and registered
+[MetalMod] render target 'lightmap' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/lightmap' -> target 'lightmap'
+PASS  lightmap: no light at the first row, texCoord (0.03, 0.03) -> 0 0 0 (expected 0 0 0)
+PASS  lightmap: sky light at the last row, texCoord (0.03, 0.97) -> 64 128 255 (expected 64 128 255)
+PASS  lightmap: block light at texCoord (0.97, 0.03) -> 255 242 236 (expected 255 242 236)
+PASS  lightmap: both lights at texCoord (0.97, 0.97) -> 255 255 255 (expected 255 255 255)
+PASS  a post-processing pipeline compiles (no colour target, no vertex format, null source)
+[MetalMod] render target 'post target' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:post_check/blit' -> target 'post target'
+PASS  the post pass drew its result into the target -> R255 G0 (the clear is black, so black means nothing was drawn)
+[MetalMod] render target 'depth bias' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:depth_check/biased' -> target 'depth bias'
+[MetalMod] draw 'minecraft:depth_check/unbiased' -> target 'depth bias'
+PASS  a pipeline with no depth bias after a biased one keeps its own depth -> R255 B0 (blue means the biased pipeline's bias leaked, which pushes every later draw toward the viewer)
+[MetalMod] render target 'depth state' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:depth_check/with_depth' -> target 'depth state'
+[MetalMod] draw 'minecraft:depth_check/no_depth' -> target 'depth state'
+PASS  a pipeline that declares no depth state is not depth-tested by the previous one's -> R0 B255 (red means it inherited GREATER_THAN_OR_EQUAL and was rejected)
+[MetalMod] render target 'short index' yFlip=false clear=true depthClear=false
+[MetalMod] draw 'minecraft:pipeline/gui' -> target 'short index'
+PASS  16-bit indices at firstIndex=6 draw the left half (B255) and baseVertex=4 draws the right half (B255)
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  point-light device created
+[MetalMod] lighting variant terrain-point-light-v1 applied to minecraft:pipeline/solid_terrain
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  terrain proof reflects fragment light buffer
+[MetalMod] render target 'proof automatic' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof automatic'
+[MetalMod] point-light proof: camera-centred, radius 8, terrain only, unshadowed
+PASS  camera-centred default light binds automatically  [106, 80, 54, 128]
+[MetalMod] render target 'proof distance' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof distance'
+PASS  point light distance 0 -> expected 128/32/32, alpha 128  [128, 32, 32, 128]
+PASS  point light distance 1 -> expected 56/32/32, alpha 128  [56, 32, 32, 128]
+PASS  point light distance 2 -> expected 32/32/32, alpha 128  [32, 32, 32, 128]
+PASS  point light distance 3 -> expected 32/32/32, alpha 128  [32, 32, 32, 128]
+[MetalMod] render target 'proof zero' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof zero'
+[MetalMod] point-light proof skipped for minecraft:pipeline/solid_terrain: unrecognized terrain shader source; keeping supplied shaders
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  replacement terrain shader keeps original path
+[MetalMod] render target 'proof replacement' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof replacement'
+PASS  same-ID changed source reaches GPU  [16, 32, 32, 128]
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  disabled terrain has no light binding
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+[MetalMod] render target 'proof vanilla' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof vanilla'
+PASS  zero intensity exactly matches vanilla RGBA  [32, 32, 32, 128] vs [32, 32, 32, 128]
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  reload restores lit variant
+[MetalMod] render target 'proof large origin' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof large origin'
+PASS  light and terrain agree across chunk/large/fractional camera origins  [128, 32, 32, 128]
+[MetalMod] render target 'proof fog' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof fog'
+PASS  dynamic illumination is applied before fog  [0, 0, 255, 128]
+[MetalMod] lighting variant terrain-point-light-v1 applied to minecraft:pipeline/cutout_terrain
+[MetalMod] metal pipeline compiled: minecraft:pipeline/cutout_terrain
+[MetalMod] render target 'proof cutout' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/cutout_terrain' -> target 'proof cutout'
+PASS  lit cutout retains alpha discard  [0, 255, 0, 255]
+[MetalMod] lighting variant terrain-point-light-v1 applied to minecraft:pipeline/translucent_terrain
+[MetalMod] metal pipeline compiled: minecraft:pipeline/translucent_terrain
+PASS  translucent terrain variant compiles
+[MetalMod] render target 'proof translucent' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/translucent_terrain' -> target 'proof translucent'
+PASS  lit translucent terrain blends over background  [64, 143, 16, 255]
+[MetalMod] render target 'proof daylight' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'proof daylight'
+PASS  full baked light remains unchanged  [128, 128, 128, 128]
+[MetalMod] metal pipeline compiled: minecraft:pipeline/gui
+PASS  GUI excluded from lighting
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  dynamic-light device created
+[MetalMod] lighting variant terrain-dynamic-lights-v1 applied to minecraft:pipeline/solid_terrain
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  dynamic terrain reflects the light-set block
+PASS  dynamic variant is not the point-light variant
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+[MetalMod] render target 'dynamic vanilla reference' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic vanilla reference'
+PASS  vanilla reference is lit only by the baked lightmap  [32, 32, 32, 128]
+[MetalMod] render target 'dynamic empty' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic empty'
+PASS  empty light set is pixel-identical to vanilla  [32, 32, 32, 128] vs [32, 32, 32, 128]
+[MetalMod] render target 'dynamic one' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic one'
+PASS  published single red light lifts red only  [128, 32, 32, 128] vs [32, 32, 32, 128]
+[MetalMod] render target 'dynamic radius edge' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic radius edge'
+PASS  light at its radius contributes nothing  [32, 32, 32, 128]
+[MetalMod] render target 'dynamic outside radius' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic outside radius'
+PASS  light outside its radius contributes nothing  [32, 32, 32, 128]
+[MetalMod] render target 'dynamic two coloured' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic two coloured'
+PASS  two coloured lights sum into one pixel  [80, 80, 32, 128] vs [32, 32, 32, 128]
+[MetalMod] render target 'dynamic ring 0' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic ring 0'
+PASS  light ring rotation 0 publishes its own set  [128, 32, 32, 128] vs [128, 32, 32, 128]
+[MetalMod] render target 'dynamic ring 1' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic ring 1'
+PASS  light ring rotation 1 publishes its own set  [128, 32, 32, 128] vs [128, 32, 32, 128]
+[MetalMod] render target 'dynamic ring 2' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic ring 2'
+PASS  light ring rotation 2 publishes its own set  [128, 32, 32, 128] vs [128, 32, 32, 128]
+[MetalMod] render target 'dynamic ring 3' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic ring 3'
+PASS  light ring rotation 3 publishes its own set  [128, 32, 32, 128] vs [128, 32, 32, 128]
+[MetalMod] render target 'dynamic full set' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'dynamic full set'
+PASS  full light set sums to the same pixel  [128, 32, 32, 128] vs [128, 32, 32, 128]
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  clustered-light device created
+[MetalMod] lighting variant terrain-clustered-lights-v1 applied to minecraft:pipeline/solid_terrain
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  clustered terrain declares the cluster blocks
+PASS  clustered variant keeps the flat light list bound too
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+[MetalMod] render target 'cluster vanilla reference' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'cluster vanilla reference'
+[MetalMod] render target 'cluster one light' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'cluster one light'
+PASS  a clustered light lights the fragment it reaches  [128, 32, 32, 128] vs [32, 32, 32, 128]
+PASS  the grid carries the published light  Stats[lights=1, assigned=8, orphaned=0, cellsTouched=8, cellsOverflowing=0, evicted=0, occupancyMax=1, occupancyMeanTimes100=100]
+[MetalMod] render target 'cluster far light' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'cluster far light'
+PASS  a light outside the cluster window lights nothing  [32, 32, 32, 128]
+PASS  the grid counts the unreachable light  Stats[lights=1, assigned=0, orphaned=1, cellsTouched=0, cellsOverflowing=0, evicted=0, occupancyMax=0, occupancyMeanTimes100=0]
+[MetalMod] render target 'cluster overflowing cell' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'cluster overflowing cell'
+PASS  an overflowing cell still lights the fragment (clamped, not out of bounds)  [128, 32, 32, 128]
+PASS  overflow is counted  Stats[lights=18, assigned=128, orphaned=0, cellsTouched=8, cellsOverflowing=8, evicted=16, occupancyMax=16, occupancyMeanTimes100=1600]
+[MetalMod] render target 'cluster empty' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'cluster empty'
+PASS  an empty cluster grid is pixel-identical to vanilla  [32, 32, 32, 128]
+[MetalMod] metal pipeline compiled: minecraft:pipeline/gui
+PASS  GUI is excluded from clustering
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  particle-light device created
+[MetalMod] lighting variant particle-clustered-lights-v1 applied to minecraft:pipeline/opaque_particle
+[MetalMod] metal pipeline compiled: minecraft:pipeline/opaque_particle
+PASS  particle terrain declares the light set
+PASS  particle variant reads the cluster table too
+[MetalMod] render target 'particle reference' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/opaque_particle' -> target 'particle reference'
+PASS  particles are lit only by the baked lightmap with no source  [64, 64, 64, 255]
+[MetalMod] render target 'particle lit' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/opaque_particle' -> target 'particle lit'
+PASS  a published source lights the particle it reaches  [159, 64, 64, 255] vs [64, 64, 64, 255]
+[MetalMod] render target 'particle outside radius' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/opaque_particle' -> target 'particle outside radius'
+PASS  a particle outside the light radius is unchanged  [64, 64, 64, 255]
+[MetalMod] render target 'particle discarded' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/opaque_particle' -> target 'particle discarded'
+PASS  the particle alpha discard still fires under a light  [0, 255, 0, 255]
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  entity-light device created
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/entity_cutout
+[MetalMod] metal pipeline compiled: minecraft:pipeline/entity_cutout
+PASS  entity terrain declares the light set
+PASS  entity variant reads the cluster table too
+[MetalMod] render target 'entity light reference' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity light reference'
+PASS  an unlit entity is the lightmap times the surface  [64, 64, 64, 255]
+[MetalMod] render target 'entity light lit' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity light lit'
+PASS  a published source lights the entity it reaches  [159, 64, 64, 255] vs [64, 64, 64, 255]
+[MetalMod] render target 'entity light outside radius' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity light outside radius'
+PASS  an entity outside the light radius is unchanged  [64, 64, 64, 255]
+[MetalMod] render target 'entity light partial headroom' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity light partial headroom'
+PASS  a partially lit entity gains only the lightmap's headroom  [214, 200, 200, 255] (a missing headroom term would read 255)
+[MetalMod] render target 'entity light daylight' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/entity_cutout' -> target 'entity light daylight'
+PASS  a fully lit entity gains nothing from a source  [255, 255, 255, 255]
+[MetalMod] metal pipeline compiled: minecraft:pipeline/entity_translucent_emissive
+PASS  an emissive entity pipeline is deliberately not lit
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  item-light device created
+[MetalMod] lighting variant item-clustered-lights-v1 applied to minecraft:pipeline/item_cutout
+[MetalMod] metal pipeline compiled: minecraft:pipeline/item_cutout
+PASS  the held-item pipeline declares the light set
+PASS  the item variant reads the cluster table too
+[MetalMod] render target 'item light reference' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/item_cutout' -> target 'item light reference'
+PASS  an unlit item is the lightmap times the surface  [64, 64, 64, 255]
+[MetalMod] render target 'item light lit' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/item_cutout' -> target 'item light lit'
+PASS  a published source lights the held item it reaches  [159, 64, 64, 255] vs [64, 64, 64, 255]
+[MetalMod] render target 'item light outside radius' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/item_cutout' -> target 'item light outside radius'
+PASS  an item outside the light radius is unchanged  [64, 64, 64, 255]
+[MetalMod] render target 'item light full brightness' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/item_cutout' -> target 'item light full brightness'
+PASS  a fully lit item - as the inventory draws it - gains nothing at all  [255, 255, 255, 255]
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  block-light device created
+[MetalMod] lighting variant block-clustered-lights-v1 applied to minecraft:pipeline/solid_block
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_block
+PASS  the moving-block pipeline declares the light set
+PASS  the block variant reads the cluster table too
+[MetalMod] render target 'block light reference' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_block' -> target 'block light reference'
+PASS  an unlit moving block is the lightmap times the surface  [64, 64, 64, 255]
+[MetalMod] render target 'block light lit' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_block' -> target 'block light lit'
+PASS  a published source lights the moving block it reaches  [159, 64, 64, 255] vs [64, 64, 64, 255]
+[MetalMod] render target 'block light outside radius' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_block' -> target 'block light outside radius'
+PASS  a moving block outside the light radius is unchanged  [64, 64, 64, 255]
+PASS  no launch flag is set while the settings toggle is exercised
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  a device created with lighting off reports it off
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  lighting off compiles the vanilla terrain pipeline
+[MetalMod] render target 'lighting off draw' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'lighting off draw'
+PASS  lighting off uploads nothing and builds no cluster lists  uploads=0 clusterBuilds=0
+[MetalMod] lighting settings applied: pointLightProof=false dynamicLights=true clusteredLights=true
+PASS  the live device adopts the toggle
+[MetalMod] lighting variant terrain-clustered-lights-v1 applied to minecraft:pipeline/solid_terrain
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  the rebuilt pipeline is the clustered variant
+[MetalMod] render target 'lighting on draw' yFlip=false clear=true depthClear=true
+[MetalMod] draw 'minecraft:pipeline/solid_terrain' -> target 'lighting on draw'
+PASS  lighting on uploads the set and builds the cluster list  uploads=6 clusterBuilds=2
+[MetalMod] lighting settings applied: pointLightProof=false dynamicLights=false clusteredLights=false
+[MetalMod] metal pipeline compiled: minecraft:pipeline/solid_terrain
+PASS  toggling back rebuilds the vanilla terrain pipeline
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+PASS  MetalFX integration device
+PASS  SR Off bypass leaves target native
+PASS  SR On 100% bypass creates no scaler
+[MetalMod] MetalFX generation 1 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+PASS  SR actual world color/depth attachments reduced
+PASS  SR real encode counted
+PASS  SR steady frame reuses generation
+PASS  SR reconstructed world + native one-pixel UI ordering
+[MetalMod] Super Resolution: MetalFX encode failed -6; native next frame
+PASS  SR failed encode uses validated same-frame recovery
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failure latched native fallback
+PASS  SR failed generation does not retry per frame
+[MetalMod] MetalFX generation 2 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+PASS  SR explicit Off/On retries
+PASS  SR menu bypass restores native targets
+[MetalMod] Super Resolution: MetalFX creation failed
+PASS  SR injected creation failure falls back native
+[MetalMod] Super Resolution: MetalFX unsupported/denied
+PASS  SR denied capability falls back native
+[MetalMod] MetalFX generation 3 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 4 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 5 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 6 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 7 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 8 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 9 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 10 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 11 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 12 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 13 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 14 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 15 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 16 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 17 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 18 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 19 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 20 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 21 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 22 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 23 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 24 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 25 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 26 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 27 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 28 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 29 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 30 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 31 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 32 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 33 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 34 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 35 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 36 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 37 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 38 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 39 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 40 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 41 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 42 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 43 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 44 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 45 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 46 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 47 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 48 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 49 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 50 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 51 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 52 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 53 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 54 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 55 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 56 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 57 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 58 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 59 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 60 scene 49x37 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 61 scene 44x33 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 62 scene 33x25 -> 66x50 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 63 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 64 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 65 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 66 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 67 scene 44x34 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 68 scene 33x25 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 69 scene 50x38 -> 67x51 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 70 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 71 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 72 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 73 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 74 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 75 scene 48x36 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 76 scene 43x32 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+[MetalMod] MetalFX generation 77 scene 32x24 -> 65x49 | spatial SDR perceptual | input AA On | shared scene/native UI, private FX output
+PASS  SR 100 mixed toggle/preset/resize transitions encoded
+
+RENDER CHECK PASSED

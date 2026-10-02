@@ -21,6 +21,7 @@ public final class MetalNative {
 
     private static MethodHandle mhPipelineDepthVariant;
     private static MethodHandle mhFxSupported, mhFxCreate, mhFxRelease, mhFxEncode, mhFxHealthy, mhFxSetAntialias, mhFxGpuDuration;
+    private static MethodHandle mhTemporalSupported, mhTemporalCreate, mhTemporalRelease, mhTemporalHealthy, mhTemporalEncode, mhTemporalTextureUsage;
 
     private static boolean available = false;
     private static String loadError = null;
@@ -168,6 +169,18 @@ public final class MetalNative {
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A))).orElse(null);
         mhFxHealthy = lookup.find("mmm_fx_spatial_healthy")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhTemporalSupported = lookup.find("mmm_fx_temporal_supported")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhTemporalCreate = lookup.find("mmm_fx_temporal_create")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, I, I, I, I))).orElse(null);
+        mhTemporalRelease = lookup.find("mmm_fx_temporal_release")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhTemporalHealthy = lookup.find("mmm_fx_temporal_healthy")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhTemporalEncode = lookup.find("mmm_fx_temporal_encode")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, A, A, A, F, F, B, B))).orElse(null);
+        mhTemporalTextureUsage = lookup.find("mmm_fx_temporal_texture_usage")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A, I))).orElse(null);
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
         mhCommandBufferCommit = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_commit"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferWait = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_wait"), FunctionDescriptor.ofVoid(A));
@@ -476,6 +489,51 @@ public final class MetalNative {
         if (mhFxEncode == null) return -1;
         try { return (int) mhFxEncode.invokeExact(scaler, cb, input, output, plain); }
         catch (Throwable t) { return -1; }
+    }
+
+    /** Prototype capability; never selects temporal for the active spatial coordinator. */
+    public static boolean temporalSupported(MemorySegment device) {
+        if (mhTemporalSupported == null || mhTemporalCreate == null || mhTemporalRelease == null
+                || mhTemporalHealthy == null || mhTemporalEncode == null || mhTemporalTextureUsage == null) return false;
+        try { return (boolean) mhTemporalSupported.invokeExact(device); }
+        catch (Throwable t) { return false; }
+    }
+
+    /** Fixed-format linear-light ABI v1; see docs/phase7/temporal-contract.md. */
+    public static MemorySegment temporalCreate(MemorySegment device, int iw, int ih, int ow, int oh) {
+        if (mhTemporalCreate == null) return MemorySegment.NULL;
+        try { return (MemorySegment) mhTemporalCreate.invokeExact(device, iw, ih, ow, oh); }
+        catch (Throwable t) { return MemorySegment.NULL; }
+    }
+
+    public static void temporalRelease(MemorySegment scaler) {
+        if (mhTemporalRelease == null || scaler.address() == 0) return;
+        try { mhTemporalRelease.invokeExact(scaler); }
+        catch (Throwable t) { throw new RuntimeException("Temporal prototype release", t); }
+    }
+
+    public static boolean temporalHealthy(MemorySegment scaler) {
+        if (mhTemporalHealthy == null || scaler.address() == 0) return false;
+        try { return (boolean) mhTemporalHealthy.invokeExact(scaler); }
+        catch (Throwable t) { return false; }
+    }
+
+    /** Required usage bits: colour/depth/motion/reactive/output roles 0..4, -1 if unavailable. */
+    public static long temporalTextureUsage(MemorySegment scaler, int role) {
+        if (mhTemporalTextureUsage == null) return -1;
+        try { return (long) mhTemporalTextureUsage.invokeExact(scaler, role); }
+        catch (Throwable t) { throw new RuntimeException("Temporal texture usage query", t); }
+    }
+
+    /** Motion points from current to previous unjittered scene pixels; jitter is in scene pixels. */
+    public static int temporalEncode(MemorySegment scaler, MemorySegment cb, MemorySegment color,
+                                     MemorySegment depth, MemorySegment motion, MemorySegment reactive,
+                                     MemorySegment output, float jitterX, float jitterY,
+                                     boolean depthReversed, boolean reset) {
+        if (mhTemporalEncode == null) return -1;
+        try { return (int) mhTemporalEncode.invokeExact(scaler, cb, color, depth, motion, reactive,
+                output, jitterX, jitterY, depthReversed, reset); }
+        catch (Throwable t) { throw new RuntimeException("Temporal prototype encode", t); }
     }
 
     public static MemorySegment commandBufferCreate(MemorySegment queue) {
