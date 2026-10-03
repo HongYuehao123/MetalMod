@@ -1,0 +1,3 @@
+Observed submissions: 3309
+Callbacks: 3307
+Includes five-second countdown and export tail; constant present mode.

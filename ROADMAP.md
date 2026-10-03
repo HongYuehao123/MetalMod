@@ -449,15 +449,25 @@ and 7C is explicitly deferred. Phase 7 remains in progress. See [implementation 
 **2026-10-03:** Temporal gameplay reconstruction now includes scene colour conversion/jitter,
 camera and independent-object motion, reactive coverage, history resets and native hand/HUD
 composition. The requested in-game switch selects it at reduced strengths. See the
-[contract](docs/phase7/temporal-contract.md); release quality/performance selection remains pending.
+[contract](docs/phase7/temporal-contract.md); formal release quality/performance acceptance remains pending.
+
+**2026-10-03 default decision:** use **spatial by default**; **Temporal Upscaling defaults to Off**
+and stays available through the existing in-game switch as an experimental opt-in. Spatial is
+user-confirmed usable. Temporal promotion is blocked by reproduced dense-forest FPS drops
+(BUG-035) and reported stationary foliage-edge shaking (BUG-036); see
+[manual reproduction](docs/phase7/manual-motion-check/results.md). Preserve the temporal work and
+tests. This supersedes the earlier temporal-preferred/single-production-algorithm policy; it does
+not declare Phase 7 complete. Applying/verifying the runtime default is still a plan task; this
+record does not alter existing saved preferences.
 
 **2026-10-02:** 7B offline temporal foundation implemented: native scaler, optional FFI and sampling
 math pass all five gates. Gameplay motion/jitter/colour producers and history lifecycle remain
 pending; see [contract v1](docs/phase7/temporal-contract.md). Spatial is still the active reference.
 
 Implementation plan: [docs/phase7-plan.md](docs/phase7-plan.md). Player controls are **Super Resolution
-On/Off** and one strength/percentage control. Ship one approach selected through internal
-quality/performance comparisons, with native rendering as fallback. The plan defines world/UI
+On/Off**, one strength/percentage control and the live **Temporal Upscaling** toggle. The default
+reduced-resolution approach is spatial; temporal is experimental opt-in. Native rendering remains
+the unsupported/failure fallback. The plan defines world/UI
 separation, failure detection and acceptance gates. Frame generation remains independently gated
 and is not enabled by upscaling On.
 
@@ -470,12 +480,12 @@ Deliver in three increments:
 - **7A — Integration and spatial reference.** Add render-resolution controls and spatial upscaling,
   keep the HUD at native resolution, handle window resizing, and measure image quality and performance against
   native-resolution rendering.
-- **7B — Select and release one Super Resolution approach.** Evaluate temporal against the spatial
-  reference, then choose spatial, temporal or a measured combination for the single release path.
-  For the temporal candidate, add projection jitter, motion information and temporal-history
-  lifecycle management, including resets on camera cuts, world changes and resolution changes.
-  Depth reprojection can describe camera motion but is not sufficient for independently moving
-  objects. Validate entities, particles, water and camera movement for ghosting and instability.
+- **7B — Accept spatial as default; retain experimental temporal.** Spatial is selected as the default
+  approach. Apply and verify Temporal Upscaling Off by default, preserving explicit saved choices,
+  then complete spatial release quality/performance and lifecycle checks. Temporal motion/jitter/
+  history implementation is retained behind the opt-in switch. Resolve BUG-035/036 and validate
+  stationary foliage, fast turns, entities, particles, water and same-scene performance against
+  native/spatial before reconsidering temporal as default.
 - **7C — Frame generation.** A separate milestone for interpolation and presentation pacing via
   `CAMetalDisplayLink`. Validate delivery of interpolated frames, hardware/OS capability fallback,
   frame pacing and input latency; treat latency as a measured tradeoff, not a free performance win.
@@ -485,8 +495,9 @@ coordinate conventions, and temporal-history ownership. Specify where upscaling/
 relative to post-processing and HUD composition so Phases 8–9 can compose native lighting and RT
 against this contract. Optional pack integration must declare its own temporal-processing ownership.
 
-**Done when:** one selected Super Resolution approach renders correctly through resizing and any
-required history resets, with measured quality and performance; frame generation passes its separate
+**Done when:** spatial is the verified default Super Resolution approach, with measured quality,
+performance and correct lifecycle behavior; temporal remains experimental opt-in until its promotion
+checks pass. Frame generation passes its separate
 pacing and latency checks on supported hardware. Unsupported configurations fall back cleanly to
 native, and the feature-off path retains native-resolution rendering.
 
@@ -580,7 +591,9 @@ must not delay Phases 8–9.
 
 ## 7. Immediate next step
 
-**Phase 7 — MetalFX, natively; Phase 8 in parallel for the lighting gaps.** Phase 6 is complete: the
+**Phase 7 — finish spatial release acceptance with temporal Off by default; Phase 8 in parallel
+for the lighting gaps.** Keep temporal as experimental opt-in and track BUG-035/036 before any
+future default promotion. Phase 6 is complete: the
 dynamic-lighting model, its clustered path, its in-game switches and its published light-record ABI
 exist and are exercised in game. What it deliberately leaves behind is named in
 [the Phase 6 plan](docs/phase6-plan.md#phase-6-closed-2026-09-25) — occlusion and linear composition

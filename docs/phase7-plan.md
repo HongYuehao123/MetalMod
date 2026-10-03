@@ -3,21 +3,28 @@
 > superseding this plan's earlier single-method UI restriction during testing. The switch selects
 > spatial or temporal; it does not run both scalers in series. See
 > [contract](phase7/temporal-contract.md) and [evidence](phase7/temporal-gameplay/results.md).
-> Quality/performance release selection and 7C pacing remain separate acceptance work.
+> **2026-10-03 user decision: spatial is the default Super Resolution approach; Temporal Upscaling
+> defaults to Off and remains an experimental opt-in through the existing in-game switch.**
+> Spatial is usable; temporal promotion is blocked by the reproduced dense-forest FPS drops
+> (BUG-035) and reported stationary tree-edge shaking (BUG-036). See
+> [manual reproduction](phase7/manual-motion-check/results.md). This supersedes the earlier
+> temporal-preferred/single-production-algorithm policy. Release acceptance and 7C pacing remain open.
+> This documentation change records the policy; it does not change runtime defaults or saved preferences.
 
 # Phase 7 — Native MetalFX and presentation pacing
 
 Status: **7A spatial and 7B temporal gameplay implementation delivered (2026-10-03); release acceptance pending.**
-Temporal producers/history integration are connected. Release quality/performance selection remains
-pending; 7C is explicitly deferred. See [temporal gameplay evidence](phase7/temporal-gameplay/results.md)
+Temporal producers/history integration are connected. Spatial is selected as the default; temporal
+remains experimental opt-in. Formal release quality/performance acceptance remains pending; 7C is explicitly deferred. See [temporal gameplay evidence](phase7/temporal-gameplay/results.md)
 and [contract v1](phase7/temporal-contract.md). The 2026-10-02 offline foundation preceded this integration.
 Baseline inspected: `ee49799`, Minecraft 26.2 native Metal backend.
 This document defines acceptance gates; implementation results are recorded separately.
 
 User-confirmed controls: **Super Resolution On/Off, percentage/strength and a live Temporal Upscaling toggle.**
-Ship **one upscaling approach**, chosen by measured performance and image quality. Spatial,
-temporal or a justified combination are implementation candidates, not separate player modes.
-The user-requested temporal toggle selects the candidate during testing; there is no automatic runtime switch between competing methods.
+Use **spatial as the default upscaling approach**. Keep temporal available only when the player
+explicitly enables the experimental Temporal Upscaling toggle. Super Resolution Off still uses
+native rendering; the temporal default does not enable Super Resolution. There is no automatic
+switch between spatial and temporal, and they do not run in series.
 
 ## 1. Starting point and scope
 
@@ -47,8 +54,7 @@ status claims are not proof of implementation. Reconcile them when implementatio
 packaged description in `fabric.mod.json` also still advertises the retired Vulkan/MetalFX path;
 correct it as part of the implementation's documentation/metadata pass.
 
-Deliver in order: **7A integration and spatial reference → 7B evaluate and ship one Super Resolution
-approach → 7C frame generation/pacing**. 7A is an engineering baseline, not a commitment to ship
+Deliver in order: **7A integration and spatial reference → 7B accept spatial as the default and retain experimental temporal → 7C frame generation/pacing**. 7A is an engineering baseline, not a commitment to ship
 multiple upscalers. This revises the older roadmap's requirement to deliver both spatial and temporal
 modes. Do not call the whole phase complete when only the integration prototype is done. Shaderpacks,
 Sodium/Iris, ray tracing, dynamic resolution, HDR conversion and unrelated renderer rewrites are
@@ -57,12 +63,13 @@ outside this phase. Define interfaces that Phases 8–9 can extend without intro
 ## 2. Player controls and percentage semantics
 
 Place a **Super Resolution…** page under Options → MetalMod… and the same Mod Menu entry point.
-It has exactly two upscaling controls:
+It has three upscaling controls:
 
 | Control | Behavior |
 |---|---|
 | `Super Resolution: OFF / ON` | One click toggles the preference. Off renders at native framebuffer resolution and skips all upscaler passes. Default: Off |
 | `Strength: 25%` | One click cycles **0% → 25% → 33% → 50% → 0%**, corresponding to render scales **100% → 75% → 67% → 50%**. Default remembered strength: 25%. Editable while Off; changing it does not enable upscaling |
+| `Temporal Upscaling: OFF / ON` | Default: **Off**, selecting spatial when Super Resolution is enabled at a reduced strength. On explicitly selects experimental temporal. Retain the switch and remembered user choice; this plan edit does not reset existing preferences |
 
 Define strength as the percentage reduction in **each dimension of the 3D scene**:
 `render scale = 100% - strength`. Higher strength renders fewer scene pixels and asks the chosen
@@ -210,7 +217,7 @@ fails safely and resources survive repeated recreation with Metal validation ena
 
 ### 7A.2 — Runtime controls, lifecycle and comparison baseline
 
-- [ ] Add the two controls, persistence and requested/effective telemetry from §2.
+- [ ] Verify the three controls, persistence and requested/effective telemetry from §2.
 - [ ] Connect scene resolution and reconstruction to the proven frame boundary.
 - [ ] Rebuild every affected world attachment/post target coherently; leave UI coordinates native.
 - [ ] Implement fallback: validate before switching; if creation fails, use native rendering on the
@@ -224,16 +231,16 @@ fails safely and resources survive repeated recreation with Metal validation ena
 
 ### 7B — Evaluate candidates and release one approach
 
-**Planning choice: evaluate temporal as the preferred final candidate, with spatial as the measured
-reference.** The hypothesis is better reconstruction of fine edges in motion at reduced resolution;
-this is not a claim that it already wins on Minecraft or this hardware. Its motion/history cost and
-ghosting risk can outweigh the benefit. Make the final choice from §6's actual results, using the
-following decision gate rather than shipping both and asking the player to choose:
+**Default decision (2026-10-03): spatial selected; temporal defaults to Off.** The user confirms
+spatial is usable. The manual temporal reproduction exposes dense-forest missed refreshes, and
+stationary foliage instability remains unresolved. Preserve temporal implementation, contracts and
+tests as an experimental opt-in; it is not accepted as the default. The following gate governs any
+future promotion, while spatial's remaining release checks continue independently:
 
 | Candidate | Selection rule |
 |---|---|
 | Temporal | Choose if motion/history correctness passes, quality improves over spatial in the representative still/motion scenes, and total frame-time benefit over native remains repeatable at the intended strengths |
-| Spatial | Choose if temporal has unresolved artifacts, unacceptable p95/memory cost or no useful quality advantage relative to its cost; document the rejected candidate and remove it from the release path |
+| Spatial | **Selected default.** Complete its release quality/performance and lifecycle gates; retain temporal only as explicit experimental opt-in |
 | Combined | Consider only if the measurements identify a specific remaining defect and the combination improves it within the same frame-time/memory budgets. Define one coherent pipeline; do not simply run two complete upscalers in series |
 
 Compare native, spatial and temporal at identical scene/output sizes and lighting settings. Record
@@ -243,12 +250,12 @@ confirm or revise the default based on results. Correctness is mandatory; for ca
 prefer the demonstrated quality gain while retaining useful speedup. If results are equivalent
 within variation, choose the simpler/lower-cost implementation. If none pass, do not ship the feature.
 
-Ship only the winner in the active rendering path; retain comparison evidence/tests without
-maintaining an unused production upscaler. Unsupported hardware or a failure of the winner falls
-back to **native rendering**, not a second upscaling algorithm. The user sees only Super Resolution
-and strength; algorithm names belong in developer diagnostics. A later algorithm replacement needs
-the same comparison gate. No measurements exist yet, so the winner is an explicit implementation
-decision, not a benchmark result invented during planning.
+The ordinary reduced-resolution path uses spatial. Experimental temporal is selected only by the
+existing live switch. Preserve native rendering as the unsupported/failure fallback; do not silently
+switch algorithms on a failure. Before reconsidering temporal as the default, resolve BUG-035 and
+BUG-036 and record representative stationary foliage, rapid-turn, moving-object/disocclusion and
+same-scene native/spatial/temporal performance evidence. A default selection does not establish
+formal acceptance or finish the whole phase.
 
 For the temporal candidate:
 
@@ -267,9 +274,10 @@ For the temporal candidate:
       Decide and test reset behavior after a long pause, minimization and missing frames.
 - [ ] Validate static subpixel edges, moving mobs/items, fast turns, newly uncovered surfaces, rain,
       water and dynamic-light changes with recorded sequences, not only screenshots.
-- [ ] Reject the temporal candidate if its input contract or visual acceptance is incomplete.
-      Record the decision, then validate the single selected approach through all release gates.
-      Selecting spatial with evidence can complete 7B; delivering both algorithms is not required.
+- [x] Record the user's selection of spatial as default and temporal as experimental opt-in (2026-10-03).
+- [ ] Apply the Temporal Upscaling Off default and verify persistence without resetting explicit saved choices.
+- [ ] Validate spatial through all release gates. Resolve temporal performance/foliage instability and
+      pass the comparison gates before considering promotion to default. Preserve experimental coverage.
 
 Implementation uses render-state root transforms plus bounded depth-validated pose correspondence;
 unknown/ambiguous deformation is reactive. The hand is composed natively after world reconstruction.
@@ -432,11 +440,11 @@ its dependent implementation; do not silently fill a gap with an assumption.
 
 Completion checklist:
 
-- [ ] **7A accepted:** the requested two controls work, native UI/input is preserved, fallback and
+- [ ] **7A accepted:** the requested controls work, native UI/input is preserved, fallback and
       lifecycle cases pass, all offline gates pass, and quality/performance evidence is recorded.
-- [ ] **7B accepted:** quality/performance comparisons select one approach, its applicable input and
-      lifecycle gates pass, the release has only that upscaling path with native fallback, and rejected
-      alternatives are documented. If temporal is selected, motion coverage and history resets pass.
+- [ ] **7B accepted:** spatial is the verified default with native fallback and its quality/performance
+      and lifecycle gates pass. Temporal defaults to Off and remains explicitly experimental opt-in;
+      its known defects and promotion gates are documented. Selection alone does not satisfy acceptance.
       Absence of support on one machine is not universal validation.
 - [ ] **7C accepted or explicitly deferred:** independent interpolation, pacing and latency evidence;
       any release/UI decision is recorded. Deferred work remains visible in phase status.

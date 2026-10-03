@@ -81,3 +81,16 @@ this addresses macOS app activation independently of making a GLFW window key. R
 It reports unique displayed times, interval distributions and zero timestamps. Displayed update
 rate in IMMEDIATE mode is not a monitor-refresh-rate measurement, and neither mode's data measures
 input-to-display latency. The observer and camera Mixins are never shipped in MetalMod.
+
+## User-controlled reproduction
+
+`python3 tools/metalfx_benchmark/run_manual.py --world WORLD --output NEW_DIRECTORY` launches
+an isolated copy of a saved world from the normal test instance, using its saved camera/inventory
+and upscaling preference, 32 chunks, full screen and simulation distance 5. It adds only passive
+camera/history/display recording. No automatic camera movement or world commands run.
+After `manual-ready.txt` appears, create `capture.start` in the copied game directory. The ordinary
+F8 five-second countdown and 60-second capture run while the human demonstrates the issue.
+`manual-complete.txt` names the export. No screenshots occur during timing. Compile/run requires
+host Minecraft/GPU access. Analyze with `analyze_manual.py CAPTURE_FOLDER`; the analysis requires
+exact pose/frame telemetry alignment. See `docs/phase7/manual-motion-check/results.md` for the
+first human-controlled recording and its limitations.

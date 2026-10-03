@@ -56,6 +56,18 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## User-controlled temporal performance investigation (2026-10-03)
+
+Manual copied-world reproduction at 5120×2880/32 chunks/temporal strength 50/FIFO confirms the
+reported movement drop: 3064 focused frames, 51.1 FPS average, p95 26.723 ms. Real drawable
+presentation timestamps confirm missed refreshes. Settled low/high draw-count views run
+59.74/46.01 FPS; the temporal helper remains near 10.87/11.33 ms while terrain submission and
+driver backpressure grow. Exact GPU-stage/driver attribution remains open (BUG-035), distinct
+from the earlier BUG-031 stall trace. The user additionally reports foliage shaking when stationary;
+this needs pixel-sequence evidence (BUG-036). No production rendering source, installed JAR,
+original world/config or Git commit changed. Test-only passive recording and raw evidence:
+[manual motion investigation](docs/phase7/manual-motion-check/results.md).
+
 ## Phase 7B temporal gameplay (2026-10-03, uncommitted)
 
 The user-requested **Temporal Upscaling** switch now selects actual MetalFX temporal history at

@@ -8,6 +8,32 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-036 — Stationary foliage edges reported unstable with temporal
+
+**Status:** **OPEN; visual root cause unverified** (2026-10-03).
+During the user-controlled 5K/32-chunk treetop reproduction, the user also reports tree-edge shaking,
+including after the camera stops. No pixel/video sequence was captured in the timing run. The log
+contains 23 sharp-turn history resets, but these cannot by themselves explain stationary shaking.
+The previous static/slow-motion tests do not establish stability for this scene. Follow up with a
+stationary image sequence and native/spatial controls; do not mark the jitter-sign regression
+reopened or claim another fix without pixel evidence. Renderer unchanged. Evidence:
+[manual reproduction](docs/phase7/manual-motion-check/results.md#tree-edge-shaking).
+
+## BUG-035 — Dense treetop views miss 60 Hz refreshes with temporal
+
+**Status:** **OPEN; slowdown reproduced, precise CPU/GPU attribution pending** (2026-10-03).
+The user manually reproduced the drop in a copy of their saved scene: 5120×2880, strength 50,
+32 chunks, FIFO. All 3064 gameplay frames are focused; average 51.1 FPS and p95 26.723 ms.
+Real drawable timestamps confirm 530/3063 displayed intervals above 25 ms (p95 33.335 ms).
+After excluding the first ten seconds, below-4000-draw views run 59.74 FPS and above-6000-draw
+views 46.01 FPS. Temporal helper GPU time stays near 10.87/11.33 ms respectively; shader compiles,
+FX failures and published lights are zero. Heavier views increase terrain submission work and
+command creation stalls; long frames predominantly wait for drawables. This supports scene work
+and presentation backpressure exceeding the refresh budget, but does not prove total GPU-frame
+cost, one expensive temporal kernel, or the driver's internal scheduling cause. Unlike BUG-031,
+frame/command-creation correlation is only 0.181 here. No rendering fix or commit was made.
+Evidence: [manual results and raw CSVs](docs/phase7/manual-motion-check/results.md).
+
 ## BUG-034 — Empty indexed jobs abort Metal validation after chunk replacement
 
 **Status:** **FIXED**, GPU regression verified (2026-10-03).

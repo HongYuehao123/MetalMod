@@ -1,0 +1,207 @@
+{
+  "frames": 3064,
+  "focused_gameplay_frames": 3064,
+  "alignment_matches": 3064,
+  "motion_sample_offset": 242,
+  "fps": 51.06252631108118,
+  "frame_ms": {
+    "mean": 19.58383323825065,
+    "p50": 18.829542,
+    "p95": 26.723458,
+    "p99": 28.151708,
+    "max": 56.648583
+  },
+  "helper_gpu_ms": {
+    "mean": 11.084495012402089,
+    "p50": 11.322041,
+    "p95": 12.327833,
+    "p99": 12.571333,
+    "max": 13.310625
+  },
+  "display_interval_ms": {
+    "mean": 19.584168312765264,
+    "p50": 16.6675,
+    "p95": 33.335042,
+    "p99": 33.335084,
+    "max": 100.004834
+  },
+  "display_intervals": 3063,
+  "display_intervals_over25ms": 530,
+  "display_hz": 51.06165265890738,
+  "shader_compiles": 0,
+  "sr_failures_delta": 0,
+  "published_lights_max": 0,
+  "groups": {
+    "settled-low-draw": {
+      "frames": 1022,
+      "fps": 59.73842475536867,
+      "frame_ns": 16739644.610567514,
+      "sr_gpu_ns": 10866007.091976516,
+      "drawable_wait_ns": 11423742.910958905,
+      "command_buffer_create_ns": 435605.73287671234,
+      "draws": 2625.8101761252447,
+      "submissions": 63.47553816046967,
+      "buffer_upload_bytes": 1395.5420743639922,
+      "other_cpu_ms": 4.880295966731898
+    },
+    "settled-high-draw": {
+      "frames": 1129,
+      "fps": 46.00827628553925,
+      "frame_ns": 21735219.85031001,
+      "sr_gpu_ns": 11331563.336581046,
+      "drawable_wait_ns": 10645437.222320639,
+      "command_buffer_create_ns": 3247889.744021258,
+      "draws": 6783.801594331267,
+      "submissions": 62.54295837023915,
+      "buffer_upload_bytes": 1959.8972542072631,
+      "other_cpu_ms": 7.8418928839681135
+    }
+  },
+  "correlations": {
+    "draws": 0.6323845253499946,
+    "sr_gpu_ns": 0.07311399282590647,
+    "drawable_wait_ns": 0.48237366027588424,
+    "command_buffer_create_ns": 0.1813369269971547
+  },
+  "history_resets": [
+    {
+      "elapsed_s": 2.019853584,
+      "yaw_delta": -36.90001000000001,
+      "pitch_delta": 2.5499969999999976,
+      "frame_ms": 20.322375
+    },
+    {
+      "elapsed_s": 2.920506584,
+      "yaw_delta": 25.650000000000006,
+      "pitch_delta": 3.2999969999999976,
+      "frame_ms": 20.112167
+    },
+    {
+      "elapsed_s": 6.504036584,
+      "yaw_delta": 45.900003,
+      "pitch_delta": -1.5,
+      "frame_ms": 20.090042
+    },
+    {
+      "elapsed_s": 9.550510209,
+      "yaw_delta": 33.00000499999999,
+      "pitch_delta": 3.899996999999999,
+      "frame_ms": 17.654959
+    },
+    {
+      "elapsed_s": 11.941037042,
+      "yaw_delta": 27.44999999999999,
+      "pitch_delta": 7.200000000000003,
+      "frame_ms": 21.622542
+    },
+    {
+      "elapsed_s": 15.771323959,
+      "yaw_delta": -26.700009999999992,
+      "pitch_delta": 3.2999989999999997,
+      "frame_ms": 20.078375
+    },
+    {
+      "elapsed_s": 16.798931875,
+      "yaw_delta": 39.450006,
+      "pitch_delta": 6.450004,
+      "frame_ms": 7.321
+    },
+    {
+      "elapsed_s": 18.932712917,
+      "yaw_delta": -32.10001,
+      "pitch_delta": 10.800004999999999,
+      "frame_ms": 17.545125
+    },
+    {
+      "elapsed_s": 25.619160667,
+      "yaw_delta": 38.25000399999999,
+      "pitch_delta": 9.450000999999993,
+      "frame_ms": 18.311333
+    },
+    {
+      "elapsed_s": 29.139919375,
+      "yaw_delta": -28.950002400000017,
+      "pitch_delta": -4.650000999999996,
+      "frame_ms": 19.688458
+    },
+    {
+      "elapsed_s": 29.167310709,
+      "yaw_delta": -32.25000059999999,
+      "pitch_delta": -4.349999000000004,
+      "frame_ms": 27.391334
+    },
+    {
+      "elapsed_s": 30.904268375,
+      "yaw_delta": 46.050005,
+      "pitch_delta": 13.799999999999997,
+      "frame_ms": 20.211833
+    },
+    {
+      "elapsed_s": 35.471562542,
+      "yaw_delta": -47.25000699999998,
+      "pitch_delta": -1.3499979999999994,
+      "frame_ms": 18.009125
+    },
+    {
+      "elapsed_s": 36.685629167,
+      "yaw_delta": 37.95000400000001,
+      "pitch_delta": 8.099999999999994,
+      "frame_ms": 19.367875
+    },
+    {
+      "elapsed_s": 39.05293375,
+      "yaw_delta": 28.35000500000001,
+      "pitch_delta": 7.200000000000003,
+      "frame_ms": 17.311291
+    },
+    {
+      "elapsed_s": 41.450130875,
+      "yaw_delta": 31.350000000000023,
+      "pitch_delta": 6.45000499999999,
+      "frame_ms": 16.452541
+    },
+    {
+      "elapsed_s": 43.502690709,
+      "yaw_delta": -29.550005,
+      "pitch_delta": 0.0,
+      "frame_ms": 18.746167
+    },
+    {
+      "elapsed_s": 43.56750425,
+      "yaw_delta": -38.400007999999985,
+      "pitch_delta": -0.900000999999996,
+      "frame_ms": 25.909958
+    },
+    {
+      "elapsed_s": 43.586189292,
+      "yaw_delta": -32.700005000000004,
+      "pitch_delta": 0.0,
+      "frame_ms": 18.685042
+    },
+    {
+      "elapsed_s": 45.207034292,
+      "yaw_delta": 29.25,
+      "pitch_delta": 9.449999999999996,
+      "frame_ms": 20.653042
+    },
+    {
+      "elapsed_s": 46.902918667,
+      "yaw_delta": -30.000004999999987,
+      "pitch_delta": 2.400002999999998,
+      "frame_ms": 18.235958
+    },
+    {
+      "elapsed_s": 48.120998959,
+      "yaw_delta": 32.10000200000002,
+      "pitch_delta": 8.700001,
+      "frame_ms": 19.607875
+    },
+    {
+      "elapsed_s": 57.8884725,
+      "yaw_delta": -36.30000000000001,
+      "pitch_delta": 0.0,
+      "frame_ms": 19.587041
+    }
+  ],
+  "helper_gpu_is_not_total_frame_gpu": true
+}

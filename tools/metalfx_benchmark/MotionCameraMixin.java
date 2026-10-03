@@ -1,5 +1,6 @@
 package net.metalmod.benchmark.mixin;
 import net.metalmod.benchmark.MotionBenchmark;
+import net.metalmod.benchmark.ManualRecording;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.renderer.GameRenderer;
 import org.spongepowered.asm.mixin.Mixin;
@@ -11,5 +12,5 @@ public class MotionCameraMixin {
     @Inject(method="extract",at=@At("HEAD"))
     private void benchmark$pose(DeltaTracker tracker,boolean active,CallbackInfo ci) {MotionBenchmark.beforeExtract();}
     @Inject(method="render",at=@At("RETURN"))
-    private void benchmark$image(DeltaTracker tracker,boolean active,CallbackInfo ci) {MotionBenchmark.afterRender();}
+    private void benchmark$image(DeltaTracker tracker,boolean active,CallbackInfo ci) {MotionBenchmark.afterRender();ManualRecording.afterRender();}
 }
