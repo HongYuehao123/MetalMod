@@ -1,0 +1,6 @@
+{
+  "jar": "/Users/hongyuehao/Projects/MetalMod/build/libs/metalmod-1.0.0.jar",
+  "sha256": "2743066fc293952ff225cf64782d3ac128a01128bfd444ad5027df8bc9173567",
+  "embedded_native_matches": true,
+  "test_addon_absent": true
+}

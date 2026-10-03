@@ -446,6 +446,11 @@ upscaling regressions, not a substitute for the deferred scaling/performance acc
 routing is exercised. Quality/performance selection is pending; temporal inputs are incomplete,
 and 7C is explicitly deferred. Phase 7 remains in progress. See [implementation evidence](docs/phase7/implementation.md).
 
+**2026-10-03:** Temporal gameplay reconstruction now includes scene colour conversion/jitter,
+camera and independent-object motion, reactive coverage, history resets and native hand/HUD
+composition. The requested in-game switch selects it at reduced strengths. See the
+[contract](docs/phase7/temporal-contract.md); release quality/performance selection remains pending.
+
 **2026-10-02:** 7B offline temporal foundation implemented: native scaler, optional FFI and sampling
 math pass all five gates. Gameplay motion/jitter/colour producers and history lifecycle remain
 pending; see [contract v1](docs/phase7/temporal-contract.md). Spatial is still the active reference.

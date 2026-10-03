@@ -51,10 +51,54 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | spatial reference checkpoint committed; 7B offline temporal foundation started (2026-10-02); gameplay inputs and release selection pending; 7C deferred |
+| 7 — MetalFX | spatial + temporal gameplay implemented (2026-10-03); release quality/performance selection pending; 7C deferred |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
+
+## Phase 7B temporal gameplay (2026-10-03, uncommitted)
+
+The user-requested **Temporal Upscaling** switch now selects actual MetalFX temporal history at
+reduced strengths 25/33/50, with spatial selected when Off. The former jitter-only diagnostic is
+replaced; old saved preferences migrate. World projection jitter, linear SDR conversion,
+camera-relative reprojection, stable entity/moving-block identities, rendered-pose correspondence,
+raster transient coverage, disocclusion/lighting rejection and history lifecycle are connected.
+World reconstruction happens before the hand-depth clear; hand, screen effects and HUD stay native
+and unjittered. Unsupported/failed generations fall back to native, with validated same-frame
+plain recovery after encode failure and no steady-frame recreation retries.
+
+The static GPU regression found and fixed a MetalFX lookup-sign mismatch (BUG-033): full-cycle
+output centroid movement dropped from 2.080 to 0.018 pixels. Real GPU tests cover camera and
+independent-object vectors, pose refinement, unknown objects, transient raster coverage,
+disocclusion and sky rejection. Both normal and temporal-reactive variants of all 87+9 shaders
+compile, including dynamic/clustered lighting. The five gates pass with Metal validation.
+A packaged copied-world run passed all checks across native/spatial/temporal strengths, odd resize,
+UI callbacks/persistence, native hand/HUD, turns, teleport, FOV, render gaps, resource reload,
+rain/entities/items and repeated generation retirement. Additional lifecycle/sequence evidence is
+recorded in [temporal gameplay results](docs/phase7/temporal-gameplay/results.md).
+
+There is no per-frame readback/wait in the production path. The object producer combines extracted
+root transforms with bounded depth-validated appearance correspondence; unhandled or ambiguous
+poses are reactive, not fabricated motion. This conservative approach can soften transient detail.
+Quality/performance **release selection remains pending**, as does 7C pacing/frame generation;
+this implementation does not claim a release winner or every-world visual acceptance.
+Final validation passes all five gates plus lighting shader inventory and 385 packaged-game checks
+across 40 stages/18,227 frames, including lighting On/Off, actual piston poses, dimension changes
+and reconnect. Static gameplay movement is below 0.10 output pixel in the recorded terrain ROI.
+The verified JAR is installed in normal `MetalMod_Test_26.2`, with prior-JAR backup and unchanged
+config. Its saved temporal On preference now selects actual temporal history at strength 50;
+restart Minecraft to load it. The late empty-draw abort (BUG-034) is fixed and regression-tested.
+The frozen-scene timing pilot remained near 60 FPS despite configured 260/IMMEDIATE and is not
+release throughput acceptance. See the linked evidence for exact limits and artifact hash.
+All changes after `6a18738` remain uncommitted at the user's request.
+
+## Historical temporal input checkpoint (2026-10-02)
+
+The colour/projection/depth proof and in-game diagnostic switch passed all five gates and copied
+world tests before full gameplay integration. That diagnostic build was installed with a prior-JAR
+backup. It intentionally had no history and could shake spatial output; it is superseded above.
+The packaged launch also exposed duplicate native extraction (BUG-032), now fixed by shared
+`NativeLibrary.load()`. Historical evidence: [input results](docs/phase7/temporal-inputs/results.md).
 
 ## Phase 7B temporal foundation (2026-10-02)
 
@@ -63,7 +107,7 @@ Added an isolated native temporal scaler API and optional Panama bindings, fixed
 RGBA16Float/Depth32Float/RG16Float/R8 reactive input contract, device ratio/texture/queue validation,
 fixed exposure, first-use/explicit history resets and completion-retained lifetime/error latching.
 Texture usage requirements are queryable. Deterministic scene-pixel jitter and unjittered NDC
-motion conversion helpers are implemented; neither is applied to the gameplay renderer yet.
+motion conversion helpers were implemented; at this checkpoint neither was applied to gameplay.
 
 All five gates pass on M4 Pro/macOS 27.0.1, with Metal validation enabled for smoke and render.
 Smoke exercises 15 real temporal encodes across three generations, forward/reversed depth,
@@ -73,7 +117,7 @@ and the real temporal creation/release/usage-query FFI. Existing 194 render asse
 Evidence and limitations: [temporal contract](docs/phase7/temporal-contract.md),
 [gate results](docs/phase7/temporal-foundation/results.md).
 
-Spatial remains the active game path. Next: verify scene SDR conversion and jitter projection
+At this historical checkpoint, spatial remained the active game path. Next work was scene SDR conversion and jitter projection
 signs, implement camera/object render-time motion and conservative reactive coverage, then connect
 the coordinator's reset lifecycle. Camera-only vectors cannot promote the temporal candidate.
 No temporal gameplay quality/performance acceptance or 7C pacing claim is made.
@@ -97,7 +141,7 @@ The driver/queue cause remains unproven; BUG-031 is open. Cropped near/mid-range
 show 50% detail softening; ~4 Hz sampling does not establish distant shimmer or full motion acceptance.
 
 M4 Pro temporal support and legal descriptor creation are confirmed. The offline temporal foundation
-above is now implemented; gameplay temporal rendering is not implemented or accepted. Per-object motion,
+above was then implemented; gameplay temporal rendering was not yet implemented. Per-object motion,
 jitter, history/reset and colour/exposure pixel contracts remain implementation work. All five gates
 were rerun and passed (194 pixel assertions). Evidence: [motion/timestamp results](docs/phase7/motion-check/results.md).
 

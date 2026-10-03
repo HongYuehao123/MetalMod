@@ -1,0 +1,114 @@
+{
+  "static": {
+    "frames": 16,
+    "unique_jitter_samples": 16,
+    "registration": "edge-gradient least squares after 1.5-pixel Gaussian low-pass; additive brightness fitted",
+    "shifts_xy_output_pixels": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        -0.008013868435049368,
+        -0.0032321237768000765
+      ],
+      [
+        -0.02233563028095704,
+        -0.029512394279329016
+      ],
+      [
+        0.011724206575746752,
+        -0.012886495213045383
+      ],
+      [
+        -0.00804505924541404,
+        -0.010793010178190227
+      ],
+      [
+        0.0035401418237492365,
+        -0.014518199715658413
+      ],
+      [
+        -0.03455078346052453,
+        -0.01139529635236617
+      ],
+      [
+        0.023446932658456845,
+        -0.04832464704562975
+      ],
+      [
+        0.008915644094906968,
+        0.03629811139511956
+      ],
+      [
+        -0.034383247536845726,
+        -0.01293991330067929
+      ],
+      [
+        -0.022684182448198673,
+        -0.014926380522757993
+      ],
+      [
+        0.020844382570178243,
+        -0.01738151446761164
+      ],
+      [
+        -0.029144372301986046,
+        -0.004123148031784927
+      ],
+      [
+        0.019947380926511937,
+        -0.010903336213368316
+      ],
+      [
+        -0.04861777069581948,
+        -0.05699571931203922
+      ],
+      [
+        0.00877592503064733,
+        -0.04655529629751213
+      ]
+    ],
+    "range_xy_output_pixels": [
+      0.07206470335427632,
+      0.09329383070715878
+    ],
+    "one_pixel_x_control": [
+      -0.9966122245475264,
+      -0.0004004177735712273
+    ],
+    "one_pixel_y_control": [
+      0.003077409318264724,
+      -1.0082261898774636
+    ],
+    "pass": true,
+    "limit": "Measures coherent image movement in this opaque ROI; does not measure all alias shimmer or transient content"
+  },
+  "quality": {
+    "10n-native-quality-00.png": {
+      "rmse_rgb8_vs_native": 0.0,
+      "mean_rgb8_bias_vs_native": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "10o-spatial-quality-00.png": {
+      "rmse_rgb8_vs_native": 6.514709695679577,
+      "mean_rgb8_bias_vs_native": [
+        3.5762125651041665,
+        3.2671440972222223,
+        2.287448459201389
+      ]
+    },
+    "10p-temporal-quality-00.png": {
+      "rmse_rgb8_vs_native": 6.614866470591511,
+      "mean_rgb8_bias_vs_native": [
+        4.909450954861111,
+        4.620856391059028,
+        3.0001356336805554
+      ]
+    },
+    "limit": "One frozen scene at strength 50; reference aliasing means RMSE alone cannot rank perceived quality; readback frames are not performance samples"
+  }
+}

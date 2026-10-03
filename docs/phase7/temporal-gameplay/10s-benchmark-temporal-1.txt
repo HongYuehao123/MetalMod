@@ -1,0 +1,10 @@
+samples=1200
+mean_ms=16.666769791666667
+fps=59.99962875229709
+p95_ms=18.002167
+gpu_batch_mean_ms=7.126399794166667
+unfocused=0
+configured_fps=260
+vsync=false
+surface=Configuration[width=3842, height=2162, presentMode=IMMEDIATE]
+Stats[requested=true, strength=50, effective=MetalFX temporal, reason=, sceneWidth=1921, sceneHeight=1081, outputWidth=3842, outputHeight=2162, generation=36, creates=36, failures=0, encodes=10113, recoveries=0, retirements=35, worldHooks=13075, uiHooks=13075, gpuDurationNs=7022499]

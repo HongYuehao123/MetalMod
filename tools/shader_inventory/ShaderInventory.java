@@ -137,7 +137,9 @@ public final class ShaderInventory {
             detail = detail.substring(marker);
         }
         if (compiled != null) {
+            boolean reactive=compiled.handleForTemporalDepth(pipeline.wantsDepthTexture()?252L:0L).address()!=0;
             compiled.close();
+            if(!reactive)return new Result(location,Status.FAILED,"Temporal reactive variant failed: "+net.metalmod.backend.MetalNative.lastError());
             // A successful compile can still have produced diagnostics (a binding-kind mismatch, a
             // slot collision). They are the point of running this, so keep them rather than
             // discarding everything that is not a failure.

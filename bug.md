@@ -8,6 +8,47 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-034 — Empty indexed jobs abort Metal validation after chunk replacement
+
+**Status:** **FIXED**, GPU regression verified (2026-10-03).
+The final copied-world temporal validation teleported back to a foliage anchor after reconnect.
+Minecraft submitted `indexCount=0`; `mmm_render_pass_draw_indexed` forwarded it to Metal,
+whose validation requires a nonzero count and aborted the client. This is a backend empty-draw
+contract defect, also reachable with native/spatial rendering. Empty vertex/index/instance counts
+now return before encoding and are excluded from draw telemetry. Triangle fans also skip zero
+instances. A native GPU regression submits all empty forms and asserts the cleared target remains
+unchanged under Metal validation. The expanded packaged run is repeated after this correction.
+
+## BUG-033 — Temporal diagnostic shakes the world; reconstruction lookup sign mismatch
+
+**Status:** **FIXED**, GPU regression verified (2026-10-03).
+The prior Temporal Input Test intentionally shifted spatial frames without a temporal history,
+causing the reported whole-image shake. The replacement connects world colour/depth, camera and
+independent-object motion, reactive rejection and MetalFX history before native hand/HUD rendering.
+During integration, a measured static sequence exposed a second cause: the projection renders
+samples at pixel+jitter, while MetalFX needs the opposite lookup offset to restore the reference.
+Passing the projection sample offset directly moved the reconstructed image by 2.080 output pixels.
+The complete-frame helper now negates the MetalFX lookup offset; the same 64-frame GPU regression
+measures 0.018 pixels over a full Halton cycle and passes a 0.20-pixel bound. Camera/root/pose motion
+and reactive/disocclusion tests also pass. The gameplay switch selects actual temporal history,
+never jitter-only spatial output. Evidence: [temporal results](docs/phase7/temporal-gameplay/results.md).
+
+## BUG-032 — Packaged renderer and memory bindings load duplicate native images
+
+**Status:** **FIXED**, verified in a packaged copied-world launch (2026-10-02).
+`MetalBridge` and `MetalNative` independently extracted the embedded dylib to different temporary
+paths and called `System.load` on both. Development runs use the same `native/build` path and
+hid this issue. In a packaged launch, Objective-C reported duplicate `MMMSpatialState`,
+`MMMTemporalState` and `MMMTemporalColorState` class registrations, risking ambiguous classes and
+separately initialized native global state.
+
+Both Panama surfaces now call synchronized `NativeLibrary.load()`, which selects/extracts and
+loads once per mod classloader, closes the resource stream and retains normal development-path
+selection. Reproduction: launch the packaged mod from a game directory without `native/build`.
+The repeat launch passes all 93 temporal-input checks over 3384 frames with no duplicate-class
+warnings. All five offline gates pass after the change. Evidence:
+[packaged validation](docs/phase7/temporal-inputs/results.md#packaged-game-validation).
+
 ## BUG-031 — Dense-scene slow frames stall in command-buffer creation
 
 **Status:** **OPEN; CPU stall location measured, internal cause unproven** (2026-10-02).

@@ -1,0 +1,7 @@
+PASS build (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/01-build.log)
+PASS native-smoke (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/02-native-smoke.log)
+PASS shader-inventory (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/03-shader-inventory.log)
+PASS shader-inventory-lighting (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/04-shader-inventory-lighting.log)
+PASS render-check (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/05-render-check.log)
+PASS standalone (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/06-standalone.log)
+PASS packaged-game (/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230831-486468/07-packaged-game.log)

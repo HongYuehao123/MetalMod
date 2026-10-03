@@ -1,0 +1,38 @@
+Picked up JAVA_TOOL_OPTIONS:  -Dmetalmod.dynamicLights=true -Dmetalmod.clusteredLights=true
+Shader inventory
+  instance : /Users/hongyuehao/Documents/.minecraft/versions/MetalMod_Test_26.2
+  jar      : /Users/hongyuehao/Documents/.minecraft/versions/MetalMod_Test_26.2/MetalMod_Test_26.2.jar
+  pipelines: 87
+[MetalMod] Metal backend native library ready (mmm_* symbols resolved).
+2026-10-03 00:43:46.818 java[58477:3880032] Metal API Validation Enabled
+[MetalMod] Metal device: Apple M4 Pro | maxTexture=16384 | maxBuffer=14302248960
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.lwjgl.system.MemoryUtil (file:/Users/hongyuehao/Documents/.minecraft/libraries/org/lwjgl/lwjgl/3.4.1/lwjgl-3.4.1-unsafe.jar)
+WARNING: Please consider reporting this to the maintainers of class org.lwjgl.system.MemoryUtil
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+  post    : 9
+
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/armor_cutout_no_cull
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/armor_decal_cutout_no_cull
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/armor_translucent
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/banner_pattern
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/breeze_wind
+[MetalMod] lighting variant block-clustered-lights-v1 applied to minecraft:pipeline/cutout_block
+[MetalMod] lighting variant terrain-clustered-lights-v1 applied to minecraft:pipeline/cutout_terrain
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/end_crystal_beam
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/entity_cutout
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/entity_cutout_cull
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/entity_cutout_dissolve
+[MetalMod] lighting variant entity-clustered-lights-v1 applied to minecraft:pipeline/entity_cutout_z_offset
+cache: shader pairs: compiled=63 reused=33 cached=63
+
+
+=========== static pipelines ===========
+(no diagnostics from any pipeline)
+
+static pipelines: total=87 ok=87 failed=0 no-source=0
+
+=========== post-processing ===========
+(no diagnostics from any pipeline)
+
+post-processing: total=9 ok=9 failed=0 no-source=0

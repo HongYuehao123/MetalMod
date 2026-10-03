@@ -23,6 +23,8 @@ set(SOURCES
     src/metalmod_metal.mm
     src/metalmod_metalfx.mm
     src/metalmod_temporal.mm
+    src/metalmod_temporal_frame.mm
+    src/metalmod_temporal_color.mm
 )
 
 add_library(metalmod SHARED ${SOURCES})

@@ -38,6 +38,8 @@ public class MetalConfig {
 
     public volatile boolean enableSuperResolution = false;
     public volatile int superResolutionStrength = 25;
+    /** Temporal reconstruction preference; bypassed at native resolution. */
+    public volatile boolean enableTemporalUpscaling = false;
 
     // The MetalFX scaling mode, quality preset, frame generation, sharpness, HDR and target-refresh
     // settings that used to live here drove the retired MoltenVK-interop frame pipeline
@@ -53,6 +55,8 @@ public class MetalConfig {
             Properties props = new Properties();
             props.load(reader);
 
+            this.enableTemporalUpscaling = Boolean.parseBoolean(props.getProperty("enableTemporalUpscaling",
+                    props.getProperty("enableTemporalJitterProof", "false")));
             this.enableSuperResolution = Boolean.parseBoolean(props.getProperty("enableSuperResolution", "false"));
             this.superResolutionStrength = net.metalmod.upscaling.UpscalingSettings.parseStrength(props.getProperty("superResolutionStrength", "25"));
             this.enableUnifiedMemoryPool = Boolean.parseBoolean(props.getProperty("enableUnifiedMemoryPool", "false"));
@@ -74,6 +78,7 @@ public class MetalConfig {
             }
             try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
                 Properties props = new Properties();
+                props.setProperty("enableTemporalUpscaling", Boolean.toString(this.enableTemporalUpscaling));
                 props.setProperty("enableSuperResolution", Boolean.toString(this.enableSuperResolution));
                 props.setProperty("superResolutionStrength", Integer.toString(this.superResolutionStrength));
                 props.setProperty("enableUnifiedMemoryPool", Boolean.toString(this.enableUnifiedMemoryPool));

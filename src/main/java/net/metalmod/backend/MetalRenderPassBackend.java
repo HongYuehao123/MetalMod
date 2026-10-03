@@ -38,6 +38,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final int width;
     private final int height;
     private final long depthFormat;
+    private final boolean temporalCoverage;
 
     private final Map<String, GpuBufferSlice> uniforms = new HashMap<>();
     private final Map<String, GpuTextureView> textures = new HashMap<>();
@@ -67,7 +68,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private int indexType = 1;
 
     public MetalRenderPassBackend(MetalCommandEncoderBackend owner, MemorySegment encoder,
-                                  int width, int height, long depthFormat) {
+                                  int width, int height, boolean temporalCoverage, long depthFormat) {
+        this.temporalCoverage=temporalCoverage;
         this.depthFormat = depthFormat;
         this.owner = owner;
         this.encoder = encoder;
@@ -121,7 +123,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         this.pipelineName = resolved.name();
         this.topology = resolved.topology();
-        MemorySegment compatible = resolved.handleForDepth(this.depthFormat);
+        MemorySegment compatible = temporalCoverage ? resolved.handleForTemporalDepth(this.depthFormat)
+                : resolved.handleForDepth(this.depthFormat);
         if (compatible.address() == 0) {
             this.pipeline = null;
             MetalDevice.reportResourceFailure("depth-compatible pipeline " + resolved.name());
@@ -535,6 +538,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
      */
     private void encodeIndexed(int indexCount, int instanceCount, int firstIndex,
                                int baseVertex, int firstInstance) {
+        if (indexCount <= 0 || instanceCount <= 0) return;
         MetalDevice.countDraw();
         MetalNative.renderPassDrawIndexed(this.encoder, indexedTopology(), this.indexBuffer,
                 this.indexBufferOffset, this.indexType, indexCount, instanceCount, firstIndex,
@@ -544,6 +548,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     /** Encode one non-indexed draw and count it. */
     private void encodeDraw(int topology, int firstVertex, int vertexCount, int instanceCount,
                             int firstInstance) {
+        if (vertexCount <= 0 || instanceCount <= 0) return;
         MetalDevice.countDraw();
         MetalNative.renderPassDraw(this.encoder, topology, firstVertex, vertexCount, instanceCount,
                 firstInstance);
@@ -551,6 +556,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     /** Encode one expanded triangle fan and count it. */
     private void encodeFan(int firstVertex, int vertexCount, int instanceCount, int firstInstance) {
+        if (vertexCount < 3 || instanceCount <= 0) return;
         MetalDevice.countDraw();
         MetalNative.renderPassDrawFan(this.encoder, firstVertex, vertexCount, instanceCount,
                 firstInstance);

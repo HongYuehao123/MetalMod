@@ -1,0 +1,3 @@
+frames=271
+Stats[requested=true, strength=25, effective=Native, reason=no world, sceneWidth=3842, sceneHeight=2162, outputWidth=3842, outputHeight=2162, generation=8, creates=8, failures=0, encodes=2256, recoveries=0, retirements=8, worldHooks=3535, uiHooks=3535, gpuDurationNs=-1]
+Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]

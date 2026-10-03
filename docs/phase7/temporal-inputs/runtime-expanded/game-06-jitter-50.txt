@@ -1,0 +1,3 @@
+frames=287
+Stats[requested=true, strength=50, effective=MetalFX spatial, reason=, sceneWidth=1280, sceneHeight=720, outputWidth=2560, outputHeight=1440, generation=4, creates=4, failures=0, encodes=1148, recoveries=0, retirements=3, worldHooks=1881, uiHooks=1881, gpuDurationNs=811333]
+Stats[applied=true, generation=4, frames=287, width=1280, height=720, jitterX=0.4375, jitterY=-0.24074075, worldUploads=287, handUploads=287]

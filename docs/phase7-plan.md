@@ -1,17 +1,23 @@
+> 2026-10-03 implementation update: temporal gameplay inputs, reconstruction, reactive coverage
+> and history lifecycle are connected. The user explicitly requested a live temporal switch,
+> superseding this plan's earlier single-method UI restriction during testing. The switch selects
+> spatial or temporal; it does not run both scalers in series. See
+> [contract](phase7/temporal-contract.md) and [evidence](phase7/temporal-gameplay/results.md).
+> Quality/performance release selection and 7C pacing remain separate acceptance work.
+
 # Phase 7 — Native MetalFX and presentation pacing
 
-Status: **implementation in progress (2026-10-01): 7A spatial reference implemented; acceptance pending.**
-7B release selection pending; temporal input contract incomplete. 7C explicitly deferred.
-See [phase7/implementation.md](phase7/implementation.md) for the actual delivered scope and evidence.
-2026-10-02: 7B has started with an offline temporal scaler/FFI prototype and sampling math.
-See [temporal contract v1](phase7/temporal-contract.md); gameplay producers and acceptance remain pending.
+Status: **7A spatial and 7B temporal gameplay implementation delivered (2026-10-03); release acceptance pending.**
+Temporal producers/history integration are connected. Release quality/performance selection remains
+pending; 7C is explicitly deferred. See [temporal gameplay evidence](phase7/temporal-gameplay/results.md)
+and [contract v1](phase7/temporal-contract.md). The 2026-10-02 offline foundation preceded this integration.
 Baseline inspected: `ee49799`, Minecraft 26.2 native Metal backend.
 This document defines acceptance gates; implementation results are recorded separately.
 
-User-confirmed controls: **Super Resolution On/Off and one percentage/strength control.**
+User-confirmed controls: **Super Resolution On/Off, percentage/strength and a live Temporal Upscaling toggle.**
 Ship **one upscaling approach**, chosen by measured performance and image quality. Spatial,
 temporal or a justified combination are implementation candidates, not separate player modes.
-There is no Spatial/Temporal/Auto selector or automatic runtime switch between competing methods.
+The user-requested temporal toggle selects the candidate during testing; there is no automatic runtime switch between competing methods.
 
 ## 1. Starting point and scope
 
@@ -246,17 +252,17 @@ decision, not a benchmark result invented during planning.
 
 For the temporal candidate:
 
-- [ ] Inspect the selected temporal API and define a versioned colour/depth/motion/jitter/exposure
+- [x] Inspect the selected temporal API and define a versioned colour/depth/motion/jitter/exposure
       contract. Record supported scale ranges; never silently clamp a requested preset without
       reporting its effective dimensions.
-- [ ] Add deterministic projection jitter only to the scene. Keep HUD, input, culling/frustum margins
+- [x] Add deterministic projection jitter only to the scene. Keep HUD, input, culling/frustum margins
       and picking consistent with the unjittered camera. Test signs with known camera translations.
-- [ ] Generate camera and object motion using previous/current render-time transforms. Handle
+- [x] Generate camera and object motion using previous/current render-time transforms. Handle
       camera-relative origin changes, moving blocks, animated entities, first-person hands and newly
       appearing geometry. Camera-only depth reprojection is insufficient for independent motion.
-- [ ] Define coverage and rejection behavior for particles, water, translucency, animated textures,
+- [x] Define coverage and rejection behavior for particles, water, translucency, animated textures,
       sky and disocclusion. Do not fabricate valid vectors where previous geometry is unavailable.
-- [ ] Reset history on first use, Off/On, scale/format/algorithm changes, resize, world/dimension change,
+- [x] Reset history on first use, Off/On, scale/format/algorithm changes, resize, world/dimension change,
       disconnect/reconnect, teleport/camera cut, incompatible FOV/projection change and resource reload.
       Decide and test reset behavior after a long pause, minimization and missing frames.
 - [ ] Validate static subpixel edges, moving mobs/items, fast turns, newly uncovered surfaces, rain,
@@ -264,6 +270,10 @@ For the temporal candidate:
 - [ ] Reject the temporal candidate if its input contract or visual acceptance is incomplete.
       Record the decision, then validate the single selected approach through all release gates.
       Selecting spatial with evidence can complete 7B; delivering both algorithms is not required.
+
+Implementation uses render-state root transforms plus bounded depth-validated pose correspondence;
+unknown/ambiguous deformation is reactive. The hand is composed natively after world reconstruction.
+Automated evidence covers a copied bamboo/river world, not every representative release scene.
 
 Consult Apple's [temporal scaler descriptor](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscalerdescriptor)
 and installed SDK for precise input and support requirements. Freeze the conventions in the plan

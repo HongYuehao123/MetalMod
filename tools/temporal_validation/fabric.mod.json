@@ -1,0 +1,1 @@
+{"schemaVersion":1,"id":"metalmod-temporal-input-validation","version":"1.0.0","name":"Disposable temporal input validation","environment":"client","entrypoints":{"client":["net.metalmod.validation.TemporalInputValidation"]},"depends":{"metalmod":"*","fabricloader":">=0.15.0"},"mixins":["validation.mixins.json"]}

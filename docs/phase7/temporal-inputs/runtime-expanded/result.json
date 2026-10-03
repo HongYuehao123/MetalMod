@@ -1,0 +1,44 @@
+[
+  {
+    "name": "build",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/01-build.log"
+  },
+  {
+    "name": "native-smoke",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/02-native-smoke.log"
+  },
+  {
+    "name": "shader-inventory",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/03-shader-inventory.log"
+  },
+  {
+    "name": "render-check",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/04-render-check.log"
+  },
+  {
+    "name": "standalone",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/05-standalone.log"
+  },
+  {
+    "name": "packaged-game",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/06-packaged-game.log"
+  },
+  {
+    "name": "shader-inventory-lighting",
+    "status": "PASS",
+    "exit_code": 0,
+    "log": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261002-230009-726806/07-shader-inventory-lighting.log"
+  }
+]

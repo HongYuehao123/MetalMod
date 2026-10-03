@@ -71,6 +71,10 @@ public final class MetalRenderPipeline {
     private final boolean clusteredLights;
     private boolean closed;
     private MemorySegment withoutDepth, withDepth;
+    private String temporalFragmentSource;
+    private MemorySegment temporalFragmentLibrary=MemorySegment.NULL;
+    private MemorySegment nativeDevice;
+    private final Map<Long,MemorySegment> temporalPipelines=new java.util.HashMap<>();
 
     private MetalRenderPipeline(MemorySegment handle, MemorySegment vertexLibrary, MemorySegment fragmentLibrary,
                                 Map<String, Integer> vertexBuffers, Map<String, Integer> fragmentBuffers,
@@ -272,7 +276,7 @@ public final class MetalRenderPipeline {
                             + pipeline.getLocation() + ": " + MetalNative.lastError());
                     return null;
                 }
-                return new MetalRenderPipeline(pipe, vlib, flib,
+                MetalRenderPipeline result=new MetalRenderPipeline(pipe, vlib, flib,
                         vs.vertexBuffers(), fs.fragmentBuffers(),
                         vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology,
                         collectTexelBuffers(pipeline, vs, fs),
@@ -281,6 +285,9 @@ public final class MetalRenderPipeline {
                         isPointLightVariant(variant),
                         isDynamicVariant(variant),
                         isClusteredVariant(variant));
+                result.nativeDevice=device.deviceHandle();
+                result.temporalFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad);
+                return result;
             }
         } catch (Throwable t) {
             System.err.println("[MetalMod] pipeline compile failed for " + pipeline.getLocation() + ": " + t);
@@ -482,6 +489,29 @@ public final class MetalRenderPipeline {
     public MemorySegment handle() { return this.handle; }
 
     /** Metal requires an exact depth-attachment format even when depth testing is disabled. */
+    /** Same fragment discard/depth/colour semantics, plus exact raster reactive coverage. */
+    private static String reactiveFragment(String source,String name,boolean blended,boolean screenquad) {
+        if(!source.contains("struct main0_out"))return null;
+        var color=java.util.regex.Pattern.compile("(?:float|half)4\\s+(\\w+)\\s*\\[\\[color\\(0\\)\\]\\]").matcher(source);
+        if(!color.find())return null;
+        String field=color.group(1);
+        String result=source.replaceFirst("struct main0_out\\s*\\{","struct main0_out {\n    half mmmReactive [[color(1)]];");
+        int start=result.indexOf("fragment ");if(start<0)return null;
+        String family=name.toLowerCase(java.util.Locale.ROOT);
+        boolean transientContent=screenquad||blended||family.contains("sky")||family.contains("cloud")||family.contains("particle")
+                ||family.contains("weather")||family.contains("glint")||family.contains("portal")||family.contains("screenquad");
+        String value=transientContent?blended?"(out."+field+".a>0.001f?1.0f:0.0f)":"1.0f":"0.0f";
+        return result.substring(0,start)+result.substring(start).replace("return out;","out.mmmReactive=half("+value+"); return out;");
+    }
+    public MemorySegment handleForTemporalDepth(long format) {
+        return temporalPipelines.computeIfAbsent(format,depth->{
+            if(temporalFragmentSource==null)return MemorySegment.NULL;
+            if(temporalFragmentLibrary.address()==0)temporalFragmentLibrary=MetalNative.libraryCreate(nativeDevice,temporalFragmentSource);
+            if(temporalFragmentLibrary.address()==0)return MemorySegment.NULL;
+            return MetalNative.renderPipelineReactiveVariant(handle,temporalFragmentLibrary,depth);
+        });
+    }
+
     public MemorySegment handleForDepth(long format) {
         MemorySegment cached = format == 0 ? withoutDepth : withDepth;
         if (cached != null) return cached;
@@ -531,6 +561,8 @@ public final class MetalRenderPipeline {
             return;
         }
         this.closed = true;
+        for(var variant:temporalPipelines.values())MetalNative.renderPipelineRelease(variant);
+        MetalNative.libraryRelease(temporalFragmentLibrary);
         if (this.handle.address() != 0) {
             MetalNative.renderPipelineRelease(this.handle);
         }

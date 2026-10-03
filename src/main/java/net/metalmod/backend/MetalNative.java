@@ -1,7 +1,5 @@
 package net.metalmod.backend;
 
-import java.io.File;
-import java.io.InputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
@@ -10,8 +8,6 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 
 /**
  * Panama FFI bindings for the Metal substrate (metalmod_metal.h): device, queue, layer, texture,
@@ -19,9 +15,11 @@ import java.nio.file.StandardCopyOption;
  */
 public final class MetalNative {
 
-    private static MethodHandle mhPipelineDepthVariant;
+    private static MethodHandle mhPipelineDepthVariant, mhPipelineReactiveVariant;
     private static MethodHandle mhFxSupported, mhFxCreate, mhFxRelease, mhFxEncode, mhFxHealthy, mhFxSetAntialias, mhFxGpuDuration;
     private static MethodHandle mhTemporalSupported, mhTemporalCreate, mhTemporalRelease, mhTemporalHealthy, mhTemporalEncode, mhTemporalTextureUsage;
+    private static MethodHandle mhTemporalFrameCreate, mhTemporalFrameRelease, mhTemporalFrameHealthy, mhTemporalFrameEncode, mhTemporalFrameDuration, mhTemporalFrameTexture;
+    private static MethodHandle mhTemporalColorCreate, mhTemporalColorRelease, mhTemporalColorHealthy, mhTemporalColorEncode;
 
     private static boolean available = false;
     private static String loadError = null;
@@ -75,22 +73,7 @@ public final class MetalNative {
     }
 
     private static void load() throws Exception {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (!os.contains("mac")) throw new UnsupportedOperationException("MetalMod requires macOS.");
-
-        File devBuild = new File("native/build/libmetalmod.dylib");
-        File dylib;
-        if (devBuild.exists()) {
-            dylib = devBuild;
-        } else {
-            InputStream in = MetalNative.class.getResourceAsStream("/natives/libmetalmod.dylib");
-            if (in == null) in = MetalNative.class.getResourceAsStream("/libmetalmod.dylib");
-            if (in == null) throw new IllegalStateException("Embedded libmetalmod.dylib not found");
-            dylib = File.createTempFile("libmetalmod-", ".dylib");
-            dylib.deleteOnExit();
-            Files.copy(in, dylib.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-        System.load(dylib.getAbsolutePath());
+        net.metalmod.ffi.NativeLibrary.load();
 
         Linker linker = Linker.nativeLinker();
         SymbolLookup lookup = SymbolLookup.loaderLookup();
@@ -169,6 +152,8 @@ public final class MetalNative {
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A))).orElse(null);
         mhFxHealthy = lookup.find("mmm_fx_spatial_healthy")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhPipelineReactiveVariant=lookup.find("mmm_render_pipeline_reactive_variant")
+                .map(h->linker.downcallHandle(h,FunctionDescriptor.of(A,A,A,A,L))).orElse(null);
         mhTemporalSupported = lookup.find("mmm_fx_temporal_supported")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
         mhTemporalCreate = lookup.find("mmm_fx_temporal_create")
@@ -181,6 +166,26 @@ public final class MetalNative {
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, A, A, A, F, F, B, B))).orElse(null);
         mhTemporalTextureUsage = lookup.find("mmm_fx_temporal_texture_usage")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A, I))).orElse(null);
+        mhTemporalFrameCreate = lookup.find("mmm_fx_temporal_frame_create")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, I, I, I, I, L))).orElse(null);
+        mhTemporalFrameRelease = lookup.find("mmm_fx_temporal_frame_release")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhTemporalFrameHealthy = lookup.find("mmm_fx_temporal_frame_healthy")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhTemporalFrameDuration = lookup.find("mmm_fx_temporal_frame_gpu_duration_ns")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A))).orElse(null);
+        mhTemporalFrameTexture = lookup.find("mmm_fx_temporal_frame_texture")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, I))).orElse(null);
+        mhTemporalFrameEncode = lookup.find("mmm_fx_temporal_frame_encode")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, A, A, A, I, F, F, B))).orElse(null);
+        mhTemporalColorCreate = lookup.find("mmm_fx_temporal_color_create")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, L))).orElse(null);
+        mhTemporalColorRelease = lookup.find("mmm_fx_temporal_color_release")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhTemporalColorHealthy = lookup.find("mmm_fx_temporal_color_healthy")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhTemporalColorEncode = lookup.find("mmm_fx_temporal_color_encode")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, B))).orElse(null);
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
         mhCommandBufferCommit = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_commit"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferWait = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_wait"), FunctionDescriptor.ofVoid(A));
@@ -534,6 +539,69 @@ public final class MetalNative {
         try { return (int) mhTemporalEncode.invokeExact(scaler, cb, color, depth, motion, reactive,
                 output, jitterX, jitterY, depthReversed, reset); }
         catch (Throwable t) { throw new RuntimeException("Temporal prototype encode", t); }
+    }
+
+    public static MemorySegment renderPipelineReactiveVariant(MemorySegment pipeline,MemorySegment library,long depth) {
+        if(mhPipelineReactiveVariant==null)return MemorySegment.NULL;
+        try(var arena=Arena.ofConfined()) {
+            return (MemorySegment)mhPipelineReactiveVariant.invokeExact(pipeline,library,arena.allocateFrom("main0"),depth);
+        }catch(Throwable error){throw new RuntimeException("Temporal reactive pipeline",error);}
+    }
+    public static MemorySegment temporalFrameCreate(MemorySegment device, int iw, int ih, int ow, int oh, long format) {
+        if (mhTemporalFrameCreate == null || mhTemporalFrameEncode == null || mhTemporalFrameRelease == null
+                || mhTemporalFrameHealthy == null) return MemorySegment.NULL;
+        try { return (MemorySegment)mhTemporalFrameCreate.invokeExact(device,iw,ih,ow,oh,format); }
+        catch (Throwable error) { throw new RuntimeException("Temporal frame creation",error); }
+    }
+    public static void temporalFrameRelease(MemorySegment frame) {
+        if (frame.address()==0 || mhTemporalFrameRelease==null) return;
+        try { mhTemporalFrameRelease.invokeExact(frame); }
+        catch (Throwable error) { throw new RuntimeException("Temporal frame release",error); }
+    }
+    public static boolean temporalFrameHealthy(MemorySegment frame) {
+        if (frame.address()==0 || mhTemporalFrameHealthy==null) return false;
+        try { return (boolean)mhTemporalFrameHealthy.invokeExact(frame); }
+        catch (Throwable error) { return false; }
+    }
+    public static MemorySegment temporalFrameTexture(MemorySegment frame,int role) {
+        if(frame.address()==0||mhTemporalFrameTexture==null)return MemorySegment.NULL;
+        try{return (MemorySegment)mhTemporalFrameTexture.invokeExact(frame,role);}
+        catch(Throwable error){return MemorySegment.NULL;}
+    }
+    public static long temporalFrameDuration(MemorySegment frame) {
+        if (frame.address()==0 || mhTemporalFrameDuration==null) return -1;
+        try { return (long)mhTemporalFrameDuration.invokeExact(frame); }
+        catch (Throwable error) { return -1; }
+    }
+    public static int temporalFrameEncode(MemorySegment frame, MemorySegment cb, MemorySegment color, MemorySegment depth,
+            MemorySegment output, MemorySegment matrices, MemorySegment objects, int count, float jx, float jy, boolean reset) {
+        if (mhTemporalFrameEncode==null) return -1;
+        try { return (int)mhTemporalFrameEncode.invokeExact(frame,cb,color,depth,output,matrices,objects,count,jx,jy,reset); }
+        catch (Throwable error) { throw new RuntimeException("Temporal frame encoding",error); }
+    }
+
+    /** Reusable sRGB-transfer conversion for SDR RGBA8/BGRA8; no filtering or size changes. */
+    public static MemorySegment temporalColorCreate(MemorySegment device, long sdrFormat) {
+        if (mhTemporalColorCreate == null || mhTemporalColorRelease == null
+                || mhTemporalColorHealthy == null || mhTemporalColorEncode == null) return MemorySegment.NULL;
+        try { return (MemorySegment) mhTemporalColorCreate.invokeExact(device, sdrFormat); }
+        catch (Throwable t) { return MemorySegment.NULL; }
+    }
+    public static void temporalColorRelease(MemorySegment converter) {
+        if (mhTemporalColorRelease == null || converter.address() == 0) return;
+        try { mhTemporalColorRelease.invokeExact(converter); }
+        catch (Throwable t) { throw new RuntimeException("Temporal colour release", t); }
+    }
+    public static boolean temporalColorHealthy(MemorySegment converter) {
+        if (mhTemporalColorHealthy == null || converter.address() == 0) return false;
+        try { return (boolean) mhTemporalColorHealthy.invokeExact(converter); }
+        catch (Throwable t) { return false; }
+    }
+    public static int temporalColorEncode(MemorySegment converter, MemorySegment cb,
+                                         MemorySegment input, MemorySegment output, boolean toLinear) {
+        if (mhTemporalColorEncode == null) return -1;
+        try { return (int) mhTemporalColorEncode.invokeExact(converter, cb, input, output, toLinear); }
+        catch (Throwable t) { throw new RuntimeException("Temporal colour encode", t); }
     }
 
     public static MemorySegment commandBufferCreate(MemorySegment queue) {

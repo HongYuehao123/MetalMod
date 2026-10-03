@@ -1,11 +1,7 @@
 package net.metalmod.ffi;
 
-import java.io.File;
-import java.io.InputStream;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 
 /**
  * Java Foreign Function &amp; Memory API (Panama FFI) bindings to libmetalmod.dylib.
@@ -68,30 +64,7 @@ public final class MetalBridge {
     }
 
     private static void loadNativeLibrary() throws Exception {
-        String osName = System.getProperty("os.name", "").toLowerCase();
-        if (!osName.contains("mac")) {
-            throw new UnsupportedOperationException("MetalMod requires macOS.");
-        }
-
-        // Try to load from built path first, then fallback to extract from JAR
-        File devBuild = new File("native/build/libmetalmod.dylib");
-        File dylibFile;
-        if (devBuild.exists()) {
-            dylibFile = devBuild;
-        } else {
-            InputStream in = MetalBridge.class.getResourceAsStream("/natives/libmetalmod.dylib");
-            if (in == null) {
-                in = MetalBridge.class.getResourceAsStream("/libmetalmod.dylib");
-            }
-            if (in == null) {
-                throw new IllegalStateException("Embedded libmetalmod.dylib not found in resources or native/build");
-            }
-            dylibFile = File.createTempFile("libmetalmod-", ".dylib");
-            dylibFile.deleteOnExit();
-            Files.copy(in, dylibFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-
-        System.load(dylibFile.getAbsolutePath());
+        net.metalmod.ffi.NativeLibrary.load();
 
         Linker linker = Linker.nativeLinker();
         SymbolLookup lookup = SymbolLookup.loaderLookup();

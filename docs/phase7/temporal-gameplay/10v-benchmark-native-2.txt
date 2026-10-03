@@ -1,0 +1,10 @@
+samples=1201
+mean_ms=16.653672980849294
+fps=60.04681376594454
+p95_ms=17.715666
+gpu_batch_mean_ms=-1.0E-6
+unfocused=0
+configured_fps=260
+vsync=false
+surface=Configuration[width=3842, height=2162, presentMode=IMMEDIATE]
+Stats[requested=false, strength=50, effective=Native, reason=Off, sceneWidth=3842, sceneHeight=2162, outputWidth=3842, outputHeight=2162, generation=38, creates=38, failures=0, encodes=13105, recoveries=0, retirements=38, worldHooks=17568, uiHooks=17568, gpuDurationNs=-1]

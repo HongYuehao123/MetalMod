@@ -106,6 +106,7 @@ public final class RenderCheck {
                     "ColorModulator red", 255, 0, 0);
             drawAndCheck(device, pipeline, new float[]{0.5f, 0.5f, 0.5f, 1.0f},
                     "ColorModulator grey", 128, 128, 128);
+            temporalJitterProjectionCheck(device, pipeline);
 
             // The terrain path. terrain.vsh places vertices with
             //   pos = Position + (ChunkPosition - CameraBlockPos) + CameraOffset
@@ -310,7 +311,7 @@ public final class RenderCheck {
             System.out.println("SKIP MetalFX integration: unsupported device"); fxDevice.close(); return;
         }
         String[] properties = {"metalmod.superResolution", "metalmod.superResolutionStrength", "metalmod.fxDeny",
-                "metalmod.fxFailCreate", "metalmod.fxFailEncode"};
+                "metalmod.fxFailCreate", "metalmod.fxFailEncode", "metalmod.temporalJitterProof"};
         String[] saved = java.util.Arrays.stream(properties).map(System::getProperty).toArray(String[]::new);
         var coordinator = new net.metalmod.upscaling.MetalFxCoordinator();
         com.mojang.blaze3d.pipeline.TextureTarget output = null;
@@ -352,9 +353,37 @@ public final class RenderCheck {
                 check("SR reconstructed world + native one-pixel UI ordering",rc==0 && (pixels.get(center+1)&255)==255
                         && (pixels.get(neighbor)&255)>=249 && (pixels.get(neighbor+1)&255)<=6, "");
             }
+            System.setProperty(properties[5], "true");
+            var proofScene = coordinator.begin(output,true,resize);
+            check("temporal jitter proof gated to reduced scene",coordinator.jitterProof().active(), "");
+            fxDevice.createCommandEncoder().clearDepthTexture(proofScene.getDepthTexture(),0.75);
+            coordinator.finish(output);
+            fxDevice.createCommandEncoder().clearDepthTexture(output.getDepthTexture(),0);
+            MetalNative.queueSynchronize(fxDevice.queueHandle());
+            try (var arena=java.lang.foreign.Arena.ofConfined()) {
+                int width=proofScene.width, height=proofScene.height;
+                var savedDepth=arena.allocate((long)width*height*4);
+                var handDepth=arena.allocate((long)width*height*4);
+                int a=MetalNative.textureReadRegion(coordinator.temporalWorldDepth(),0,0,0,0,width,height,
+                        savedDepth,savedDepth.byteSize(),width*4);
+                int b=MetalNative.textureReadRegion(((MetalTexture)output.getDepthTexture()).handle(),0,0,0,0,width,height,
+                        handDepth,handDepth.byteSize(),width*4);
+                float worldValue=savedDepth.asByteBuffer().order(ByteOrder.nativeOrder()).getFloat();
+                float handValue=handDepth.asByteBuffer().order(ByteOrder.nativeOrder()).getFloat();
+                check("temporal world-depth copy precedes hand clear",a==0 && b==0 && worldValue==0.75f && handValue==0,
+                        "world="+worldValue+" hand="+handValue);
+            }
+            check("temporal reconstruction ends before GUI",!coordinator.jitterProof().active(), "");
+            long depthCopies=coordinator.temporalDepthCopies();
+            System.setProperty(properties[5], "false");
+            coordinator.begin(output,true,resize);
+            check("ordinary spatial path skips temporal depth work",coordinator.temporalDepthCopies()==depthCopies
+                    && coordinator.temporalWorldDepth().address()==0 && !coordinator.jitterProof().active(), "");
+            coordinator.finish(output);
+            System.setProperty(properties[5],"true");
             System.setProperty(properties[4],"true");
             coordinator.begin(output,true,resize); coordinator.finish(output);
-            check("SR failed encode uses validated same-frame recovery",net.metalmod.upscaling.MetalFxCoordinator.stats().recoveries()==1, "");
+            check("temporal failed encode uses validated same-frame recovery",net.metalmod.upscaling.MetalFxCoordinator.stats().recoveries()==1, "");
             long creates=net.metalmod.upscaling.MetalFxCoordinator.stats().creates();
             for(int i=0;i<8;i++) { check("SR failure latched native fallback",coordinator.begin(output,true,resize)==output, ""); coordinator.finish(output); }
             check("SR failed generation does not retry per frame",net.metalmod.upscaling.MetalFxCoordinator.stats().creates()==creates, "");
@@ -415,6 +444,41 @@ public final class RenderCheck {
         indices.close();
         for (GpuBuffer buffer : uniforms.values()) {
             buffer.close();
+        }
+    }
+
+    /** A subpixel edge through the real vanilla GUI shader proves projection pixel signs on Metal. */
+    private static void temporalJitterProjectionCheck(MetalDevice device, RenderPipeline pipeline) {
+        ByteBuffer positions = ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder());
+        // Centre sample at (32.5,32.5) lies just inside the right/bottom edges.
+        for (float[] p : new float[][]{{-0.5f,-0.016f},{0.016f,-0.016f},{0.016f,0.5f},{-0.5f,0.5f}}) {
+            positions.putFloat(p[0]).putFloat(p[1]).putFloat(0);
+            positions.putInt(-1);
+        }
+        positions.flip();
+        try (GpuBuffer vertices=device.createBuffer(()->"jitter sign vertices",GpuBuffer.USAGE_VERTEX,positions);
+             GpuBuffer indices=device.createBuffer(()->"jitter sign indices",GpuBuffer.USAGE_INDEX,indexBytes());
+             GpuBuffer dynamic=device.createBuffer(()->"jitter sign transforms",GpuBuffer.USAGE_UNIFORM,
+                     dynamicTransforms(new float[]{1,0,0,1}))) {
+            float[][] offsets={{0,0},{0.5f,0},{-0.5f,0},{0,0.5f},{0,-0.5f}};
+            String[] labels={"zero jitter preserves edge","positive X samples right of edge","negative X samples inside edge",
+                    "positive Y samples below edge","negative Y samples inside edge"};
+            for (int i=0;i<offsets.length;i++) {
+                org.joml.Matrix4f original=new org.joml.Matrix4f();
+                org.joml.Matrix4f shifted=net.metalmod.upscaling.TemporalSampling.jitterProjection(original,
+                        new net.metalmod.upscaling.TemporalSampling.Offset(offsets[i][0],offsets[i][1]),WIDTH,HEIGHT);
+                ByteBuffer matrix=ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder());
+                shifted.get(0,matrix);
+                try (GpuBuffer projection=device.createBuffer(()->"jitter sign projection",GpuBuffer.USAGE_UNIFORM,matrix)) {
+                    Map<String,GpuBuffer> uniforms=new LinkedHashMap<>();
+                    uniforms.put("Projection",projection); uniforms.put("DynamicTransforms",dynamic);
+                    int[] pixel=renderQuad(device,pipeline,vertices,indices,uniforms,new LinkedHashMap<>(),false,
+                            "jitter sign",new float[]{0,0,1,1});
+                    boolean covered=i==0 || i==2 || i==4;
+                    check("temporal projection " + labels[i], covered?pixel[0]>250 && pixel[2]<3:pixel[2]>250 && pixel[0]<3,
+                            "R"+pixel[0]+" B"+pixel[2]);
+                }
+            }
         }
     }
 

@@ -1,0 +1,4 @@
+time_ns=231005733608166
+Stats[applied=true, generation=10, frames=271, width=1921, height=1081, jitterX=0.4375, jitterY=-0.24074075, worldUploads=271, handUploads=0]
+Stats[resets=9, reason=resource generation, objects=0, frames=2168, lightRegions=0]
+roi=691,1405,512,288

@@ -1,0 +1,3 @@
+frames=288
+Stats[requested=true, strength=0, effective=Native, reason=100% bypass, sceneWidth=2560, sceneHeight=1440, outputWidth=2560, outputHeight=1440, generation=0, creates=0, failures=0, encodes=0, recoveries=0, retirements=0, worldHooks=733, uiHooks=733, gpuDurationNs=-1]
+Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]

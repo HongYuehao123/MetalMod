@@ -817,6 +817,39 @@ void* mmm_render_pipeline_depth_variant(void* handle, int64_t depthFormat) {
     }
 }
 
+void* mmm_render_pipeline_reactive_variant(void* handle,void* library,const char* function,int64_t depthFormat) {
+    if(!handle||!library||!function||(depthFormat!=0&&depthFormat!=MTLPixelFormatDepth32Float))return NULL;
+    MMMPipeline* original=(MMMPipeline*)handle;if(!original->descriptor)return NULL;
+    @autoreleasepool {
+        MTLRenderPipelineDescriptor* descriptor=[(__bridge MTLRenderPipelineDescriptor*)original->descriptor copy];
+        descriptor.fragmentFunction=[(__bridge id<MTLLibrary>)library newFunctionWithName:[NSString stringWithUTF8String:function]];
+        descriptor.depthAttachmentPixelFormat=(MTLPixelFormat)depthFormat;
+        descriptor.colorAttachments[1].pixelFormat=MTLPixelFormatR8Unorm;
+        descriptor.colorAttachments[1].writeMask=MTLColorWriteMaskRed;
+        if(descriptor.colorAttachments[0].blendingEnabled) {
+            descriptor.colorAttachments[1].blendingEnabled=YES;
+            descriptor.colorAttachments[1].sourceRGBBlendFactor=MTLBlendFactorOne;
+            descriptor.colorAttachments[1].destinationRGBBlendFactor=MTLBlendFactorOne;
+            descriptor.colorAttachments[1].rgbBlendOperation=MTLBlendOperationMax;
+        }
+        id<MTLDevice> device=((__bridge id<MTLRenderPipelineState>)original->pipelineState).device;
+        NSError* error=nil;
+        id<MTLRenderPipelineState> state=[device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+        if(!state){mmm_set_last_error(error.localizedDescription);return NULL;}
+        id<MTLDepthStencilState> depth=nil;
+        if(depthFormat) {
+            MTLDepthStencilDescriptor* dd=[MTLDepthStencilDescriptor new];
+            dd.depthCompareFunction=(MTLCompareFunction)original->depthCompare;dd.depthWriteEnabled=original->depthWrite!=0;
+            depth=[device newDepthStencilStateWithDescriptor:dd];if(!depth)return NULL;
+        }
+        MMMPipeline* result=(MMMPipeline*)calloc(1,sizeof(MMMPipeline));if(!result)return NULL;
+        *result=*original;result->depthVariant=NULL;result->depthFormat=depthFormat;
+        result->descriptor=(__bridge_retained void*)descriptor;result->pipelineState=(__bridge_retained void*)state;
+        result->depthStencilState=depth?(__bridge_retained void*)depth:NULL;
+        return result;
+    }
+}
+
 void mmm_render_pipeline_release(void* pipeline) {
     if (pipeline == NULL) return;
     MMMPipeline* metalPipeline = (MMMPipeline*)pipeline;
@@ -994,6 +1027,8 @@ void mmm_render_pass_set_scissor(void* encoder, int32_t x, int32_t y, int32_t wi
 
 void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t vertexStart, int32_t vertexCount,
                           int32_t instanceCount, int32_t firstInstance) {
+    // Blaze3D permits empty draws; Metal validation requires strictly positive counts.
+    if (vertexCount <= 0 || instanceCount <= 0) return;
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     if (metalEncoder == nil) return;
     mmm_capture_count(MMM_CAPTURE_DRAWS);
@@ -1061,7 +1096,7 @@ void mmm_render_pass_draw_fan(void* encoder, int32_t vertexStart, int32_t vertex
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     if (metalEncoder == nil) return;
     // A fan of fewer than three vertices has no triangles in it at all.
-    if (vertexCount < 3) return;
+    if (vertexCount < 3 || instanceCount <= 0) return;
 
     id<MTLBuffer> indices = mmm_fan_index_buffer((NSUInteger)(vertexCount - 2));
     if (indices == nil) return;
@@ -1080,6 +1115,7 @@ void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBu
                                   int64_t indexBufferOffset, int32_t indexType, int32_t indexCount,
                                   int32_t instanceCount, int32_t firstIndex, int32_t baseVertex,
                                   int32_t firstInstance) {
+    if (indexCount <= 0 || instanceCount <= 0) return;
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     id<MTLBuffer> indices = (__bridge id<MTLBuffer>)indexBuffer;
     if (metalEncoder == nil || indices == nil) return;

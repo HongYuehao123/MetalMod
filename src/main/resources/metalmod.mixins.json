@@ -6,6 +6,10 @@
   "client": [
     "GameRendererMixin",
     "SuperResolutionMixin",
+    "TemporalEntityStateMixin",
+    "TemporalEntityExtractionMixin",
+    "TemporalMovingBlockMixin",
+    "TemporalFrustumMixin",
     "SkyRendererTargetAccessor",
     "LevelExtractorLightMixin",
     "OptionsScreenMetalModMixin",

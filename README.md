@@ -11,7 +11,7 @@ ray tracing are the core later phases. **GLSL shaderpacks are optional future co
 **dynamic lighting** is Phase 6 and is complete — see
 [docs/phase6-plan.md](docs/phase6-plan.md). Known defects are parked in [bug.md](bug.md).
 
-> ## Current status: Phase 6 complete; Phase 7 MetalFX spatial reference in testing
+> ## Current status: Phase 6 complete; Phase 7 spatial and temporal world upscaling in testing
 >
 > Minecraft selects the **Metal backend**, creates the device and a `CAMetalLayer`, creates real
 > Metal **textures, views, buffers and samplers**, compiles the engine's shaders
@@ -41,9 +41,11 @@ ray tracing are the core later phases. **GLSL shaderpacks are optional future co
 > Open **Options → MetalMod… → Super Resolution…**. The feature defaults Off; strength
 > 0/25/33/50% means world render scale 100/75/67/50%. On+0% bypasses scaling.
 > Native rendering is the fallback. Performance and image-quality release acceptance are pending;
-> temporal reconstruction and frame generation are absent from the active path.
-> See [implementation evidence and remaining gates](docs/phase7/implementation.md).
-> The retired MoltenVK interop code remains deleted; these controls drive backend-owned resources.
+> Frame generation remains deferred.
+> Enable **Temporal Upscaling** on the same screen for full world-history reconstruction at
+> strengths 25/33/50. Off uses spatial upscaling. Hands/HUD stay native and unjittered. The setting
+> saves as `enableTemporalUpscaling`; old diagnostic preferences migrate automatically. See the
+> [temporal contract](docs/phase7/temporal-contract.md) for motion, rejection and reset behavior.
 
 ---
 

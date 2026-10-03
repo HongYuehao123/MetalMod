@@ -3,6 +3,53 @@
 How to build, verify, and check the Metal backend. `HANDOFF.md` is the current status;
 `ROADMAP.md` §7 is what is left; `bug.md` lists defects.
 
+## Quick verification
+
+From the repository directory on macOS, run:
+
+```bash
+python3 scripts/verify_mod.py
+```
+
+This builds with the canonical script, checks the packaged native library, runs all five gates
+with Metal validation enabled plus the lighting-enabled shader inventory, and writes a PASS/FAIL result plus individual logs under
+`build/reports/verification-*/`. It exits nonzero on a failed gate. Host GPU and Minecraft
+instance access are required; `no Metal device` in an isolated sandbox is an access failure.
+
+To include automated gameplay and settings-screen checks in a disposable copy:
+
+```bash
+python3 scripts/verify_mod.py \
+  --runtime-source "$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2" \
+  --runtime-world 'Your existing world folder name'
+```
+
+Use the actual folder name under `saves/`. The source save/config/mods are never modified by this
+command. The copied game closes automatically and retains results and screenshots under the
+report's `game-copy/validation/`. See [the validation harness](tools/temporal_validation/README.md).
+
+For a quick manual check, launch the test instance normally and open **Options → MetalMod… →
+Super Resolution…**. Toggle Off for native rendering, then On at strengths 25/33/50; changes apply
+on the next frame. On at strength 0 also renders natively. The status shows the actual scene/output
+dimensions. Check that the world and held item remain visible and that HUD text, inventory icons,
+pause and resized windows render correctly. F3 reports backend health and the effective scaler;
+resource/pipeline/unbound/missing-attribute counters should remain zero. F8 records a 60-second
+performance capture and F7 records/replays routes for comparisons.
+
+**Options → MetalMod… → Super Resolution… → Temporal Upscaling** now selects real temporal
+reconstruction, with spatial selected when Off. Enable Super Resolution and choose strength
+25/33/50; strength 0 and menus render natively. `enableTemporalUpscaling` defaults Off;
+`-Dmetalmod.temporalUpscaling=true` can seed it, and the live UI takes precedence. Old
+`enableTemporalJitterProof` preferences migrate. The previous jitter-only diagnostic is replaced.
+
+For temporal, hold the camera still to check that the world does not shake, then turn/move, watch
+moving mobs/items, water/rain and changing torch lighting, uncover surfaces, teleport, change FOV,
+pause/resume, resize and reload resources. F3 must show **MetalFX temporal**, healthy counters and
+history resets after cuts/changes; hand/HUD text must remain stable. Turn temporal Off to compare
+spatial at the same strength. The automated copied-world run exercises these boundaries and saves
+sequences without modifying normal saves. See [results](docs/phase7/temporal-gameplay/results.md).
+Quality/performance release selection still requires matched representative scene acceptance.
+
 ---
 
 ## 1. Build and install

@@ -93,12 +93,17 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         MemorySegment cb = ensureCommandBuffer();
         List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colors = descriptor.colorAttachments();
         int count = colors.size();
+        MemorySegment coverage=count==1&&colors.getFirst().textureView()!=null
+                ? net.metalmod.upscaling.MetalFxCoordinator.coverageFor(colors.getFirst().textureView().texture())
+                :MemorySegment.NULL;
+        boolean temporalCoverage=coverage.address()!=0;
+        int nativeCount=count+(temporalCoverage?1:0);
         int width = 0;
         int height = 0;
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment colorTextures = arena.allocate(ValueLayout.ADDRESS, Math.max(1, count));
-            MemorySegment loadClear = arena.allocate(ValueLayout.JAVA_INT, Math.max(1, count));
-            MemorySegment clearColors = arena.allocate(ValueLayout.JAVA_FLOAT, Math.max(4, count * 4));
+            MemorySegment colorTextures = arena.allocate(ValueLayout.ADDRESS, Math.max(1, nativeCount));
+            MemorySegment loadClear = arena.allocate(ValueLayout.JAVA_INT, Math.max(1, nativeCount));
+            MemorySegment clearColors = arena.allocate(ValueLayout.JAVA_FLOAT, Math.max(4, nativeCount * 4));
 
             for (int i = 0; i < count; i++) {
                 RenderPassDescriptor.Attachment<Optional<Vector4fc>> attachment = colors.get(i);
@@ -126,6 +131,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 }
             }
 
+            if(temporalCoverage) {
+                colorTextures.setAtIndex(ValueLayout.ADDRESS,count,coverage);
+                loadClear.setAtIndex(ValueLayout.JAVA_INT,count,0);
+            }
             MemorySegment depthTexture = MemorySegment.NULL;
             boolean depthClear = false;
             double depthValue = 0.0;
@@ -153,7 +162,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 targetLabel = colors.get(0).textureView().texture().getLabel();
             }
 
-            MemorySegment encoder = MetalNative.renderPassBegin(cb, count, colorTextures, loadClear,
+            MemorySegment encoder = MetalNative.renderPassBegin(cb, nativeCount, colorTextures, loadClear,
                     clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
             boolean atlasTarget = needsYFlip(targetLabel);
             noteRenderTarget(targetLabel, atlasTarget,
@@ -176,7 +185,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             if (encoder.address() == 0) {
                 System.err.println("[MetalMod] render pass begin failed");
             }
-            return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height),
+            return new MetalRenderPassBackend(this, encoder, Math.max(1, width), Math.max(1, height), temporalCoverage,
                     depth == null || depth.textureView() == null ? 0
                             : MetalFormat.mtlPixelFormat(depth.textureView().texture().getFormat()));
         }

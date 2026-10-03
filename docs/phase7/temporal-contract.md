@@ -1,92 +1,97 @@
-# Phase 7B temporal prototype — input contract v1
+# Phase 7B temporal gameplay contract v1
 
-Started 2026-10-02 from spatial checkpoint `92f90bf`. This is an offline native prototype,
-not an accepted release candidate or an active gameplay upscaler. Spatial remains the reference.
-The implemented surface is `mmm_fx_temporal_*` in `native/src/metalmod_temporal.mm`, with
-optional Panama bindings in `MetalNative` and sampling math in `TemporalSampling`.
+Temporal world reconstruction is implemented and selected by the in-game **Temporal Upscaling**
+switch. Spatial remains available when the switch is Off. This replaces the jitter-only diagnostic:
+there is no gameplay path that deliberately jitters spatial output. All changes after `6a18738`
+remain uncommitted. Phase 7 release quality/performance selection is a separate acceptance decision.
 
-## Implemented resource and sampling conventions
+## Resources and sampling
 
-| Input/output | ABI v1 convention |
+| Resource | Contract |
 |---|---|
-| Colour | Scene-sized, linear RGB `RGBA16Float`, straight alpha. Diagnostic scenes are opaque. No spatial AA prepass, automatic exposure, HDR tone mapping or implicit sRGB texture view |
-| Depth | Scene-sized `Depth32Float`. Caller explicitly supplies `depthReversed`; far is 1 for forward depth and 0 for reversed depth. Scene/depth sample orientation must match |
-| Motion | Scene-sized `RG16Float`. **Previous minus current** unjittered position, in scene pixels, X right/Y down. MetalFX scale factors are both 1. Jitter is excluded |
-| Reactive mask | Scene-sized `R8Unorm`, 0 normal accumulation, 1 reject history; intermediate values blend rejection. Required even for opaque tests |
-| Output | Native-sized, linear `RGBA16Float`, private storage as required by MetalFX. Owned by caller; not a drawable or the SDR UI target |
-| Exposure | Scaler-owned shared 1×1 `R16Float` containing 1; auto exposure disabled, pre-exposure 1 |
-| Jitter | Current scene sampling offset in scene pixels, top-left coordinates, each component within ±0.5. Deterministic 16-sample Halton(2,3) helper, restarted on history reset |
-| Sizes | Fixed for a scaler generation, positive dimensions, output at least input, bounded at 16384. Aspect ratio preserved within one input pixel of rounding; both output/input ratios validated against device-reported support, with no silent preset clamping |
+| Scene | Reduced RGBA8/BGRA8 perceptual SDR, decoded texel-exactly to linear RGBA16Float |
+| Depth | Reduced Depth32Float, reversed Z, zero means sky/no geometry |
+| Motion | RG16Float, previous minus current **unjittered** position in scene pixels; X right, Y down; scale factors 1 |
+| Reactive | R8Unorm, 0 normal history, 1 reject; raster coverage and correspondence confidence are combined conservatively |
+| Output | Native RGBA16Float private MetalFX output, converted to SDR before native hand/HUD composition |
+| Exposure | Fixed 1, auto exposure disabled, no HDR/tone-mapping change |
+| Sizes | Fixed per generation; device-reported ratios checked without silent preset clamping |
 
-The installed SDK's `MTLFXTemporalScaler.h` defines the vector direction, scale factors,
-reactive mask, exposure and private output requirements. See Apple's
-[temporal scaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscaler) and
-[motion-vector convention](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscalerbase/motionvectorscalex).
-ABI v1 uses the original command-buffer API and macOS 14.4 reactive masks; it does not depend on
-macOS 27 output-resolution or jittered-motion features. Device support and legal creation are
-separate checks. No format support is inferred solely from the GPU name.
+The copied world projection is translated in clip space by (-2*jx/width,+2*jy/height).
+Geometry moves by -jitter, so pixel centres sample at +jitter. The compute pass reconstructs
+unjittered coordinates using pixel+jitter and samples previous raster history at previous-jitter.
+**MetalFX receives (-jx,-jy)**, the texture lookup offset needed to return that sampled texture to
+the reference frame. The measured static-image regression caught and corrected the opposite sign:
+centroid movement fell from 2.080 to 0.018 output pixels over a complete 16-sample cycle.
+The raw `mmm_fx_temporal_encode` API accepts the MetalFX lookup offset directly; the complete
+`mmm_fx_temporal_frame_encode` API accepts the projection's sampling offset and converts it.
 
-`TemporalSampling.motion` converts unjittered NDC into this pixel convention:
-`motion.x = (previous.x - current.x) * width/2`,
-`motion.y = (current.y - previous.y) * height/2`.
-An object moving right/down by ten scene pixels therefore publishes (-10,-10).
-This assumes NDC +Y up. The renderer producer still must validate the actual projection and
-texture orientation using asymmetric camera/object tests; unit arithmetic does not prove it.
+Source matrices, extraction, picking and input stay unjittered. The cube/frustum test adds a
+conservative two-scene-pixel margin. First-person hands and screen effects render at native
+resolution without jitter, after world reconstruction and the native hand-depth clear. They do
+not need fabricated world motion vectors. HUD and menus also stay native.
 
-## Submission and history ownership
+## Camera and independent objects
 
-All calls and mutable scaler state are render-thread-owned. Inputs, output, device and command
-buffer are caller-owned Metal handles, retained as needed by the scaler/submission. Input texture
-usage must include the scaler's SDK-reported requirements, exposed by
-`mmm_fx_temporal_texture_usage` / `MetalNative.temporalTextureUsage` for roles 0–4. The output must additionally be private.
-Use tracked resources and one ordered command queue per generation. Complete source rendering
-and utility uploads before encoding. The prototype never creates or commits command buffers,
-waits for the GPU, owns presentation, or advances the Phase 6 light publication cadence.
+`TemporalSceneMotion` captures the actual composed world projection and extracted render-time
+camera rotation/origin before jitter. It pairs previous/current camera-relative origins in double
+precision before conversion to float. Previous-from-current clip reprojection supplies terrain
+motion, with depth agreement rejecting disocclusion and invalid/behind-camera history. Previous depth zero
+is always rejected, including far geometry with near-zero depth and matching sky colour.
 
-First encoding always resets history. Thereafter the caller explicitly requests resets.
-Null arguments, bad texture/device/queue contracts and nonfinite/out-of-range jitter fail before
-encoding. A successful encode consumes this generation's history: commit it in order. If its
-command buffer is discarded, retire the generation before further use. An encoding exception or
-asynchronous GPU error latches failure; retire the generation rather than retrying each frame.
-Completion retains the generation, so releasing the caller's handle with work in flight is safe.
-Caller texture reuse still requires normal GPU synchronization.
+Entity render states carry stable UUIDs. Positions and bounds come from extracted render-time
+states; moving blocks use actual submitted poses and block/state identities. Only a successfully
+submitted previous frame supplies an old identity. New/missing states, overlapping bounds, object
+capacity overflow, invalid coordinates and incompatible depths reject history.
 
-The future frame coordinator must reset on first use, Off/On, size/format/algorithm changes,
-world/dimension change, disconnect/reconnect, teleport/camera cut, incompatible FOV/projection
-change, reload, minimize/restore, a missed rendered frame and resumption after a long pause.
-Publish the reason and restart jitter/previous transforms together. This lifecycle integration
-is pending; an explicit native reset flag is not proof that game reset triggers are implemented.
+Independent object pixels apply previous-minus-current root translation. A depth-validated,
+bounded ±4-scene-pixel rendered-colour patch search refines deformation/pose correspondence.
+Ambiguous or unmatched patches reject history rather than claiming zero motion. This is a hybrid
+render-state/appearance producer, not a per-vertex previous-skinning buffer. Deformation beyond the
+search radius is conservatively rejected; scene acceptance must include those cases.
 
-## Producer work required before gameplay integration
+## Reactive coverage
 
-1. Verify actual SDR transfer/alpha semantics with ramps and reference readbacks. Add bounded
-   scene-only SDR→linear input and linear→SDR output conversions with an identity test against
-   native colour. `RGBA8Unorm` perceptual scene data cannot simply be cast to float. Keep HUD native
-   and preserve the vanilla composition boundary; this is an SDR reconstruction conversion, not HDR.
-2. Apply jitter only to scene rendering. Keep extraction, culling margins, picking, input and UI
-   consistent with the unjittered camera. Capture previous/current render-time transforms and each
-   frame's own camera-relative origin. Do not substitute simulation tick transforms.
-3. Generate object motion for terrain, moving blocks, entities and hands. Reject new, missing,
-   invalid or behind-camera previous geometry. Define stable object identity and previous-pose
-   lifetime; a depth-only camera vector pass is an incomplete producer.
-4. Publish conservative reactive coverage for particles, water, translucent layers, animated
-   textures, sky, disocclusion and rapidly changing lighting. Missing motion must not be passed as
-   valid stationary geometry. Test the resulting masks and moving-object vectors in debug views.
-5. Connect the complete generation/history lifecycle, then run recorded gameplay quality/performance
-   comparisons and the complete Phase 7 acceptance matrix. No temporal promotion before those gates.
+Temporal scene passes get an internal R8 raster attachment. The instrumented fragment shader
+preserves original colour, alpha, discard and depth behavior. Blended/transient fragments (particles,
+water/translucency, weather, clouds, sky, glint, portals and screen-quad post effects) mark coverage
+as reactive. MAX blending preserves rejection through transparent layers; opaque stable surfaces
+overwrite occluded coverage. These variants compile for all 87 vanilla and 9 post pipelines,
+including dynamic/clustered lighting variants. The public Blaze3D attachment contract stays intact.
 
-## Verification of this increment
+Sky/no depth, disocclusion, changed opaque/animated appearance and uncertain object matches add
+compute rejection. Changed/new/removed dynamic-light influence volumes also reject history using
+Phase 6's existing published snapshot; its ABI and publication cadence are unchanged. Conservative
+rejection can reduce temporal detail in transient regions; it avoids using unsupported history.
 
-Native smoke adds three recreated histories with fifteen real MetalFX encodes, alternating nonzero
-jitter, forward/reversed depth, flat linear-colour checks, abrupt colour changes with explicit
-reset, illegal shared-output rejection, invalid dimensions/jitter and queue rejection, and release
-before final submission completes. Asymmetric quadrants with full reactive rejection and nonzero
-motion check current-frame replacement and orientation. These synthetic tests do not establish
-object-motion accuracy, projection jitter, partial reactive-mask quality, image alpha, disocclusion
-or game SDR conversion correctness.
-Standalone tests check jitter determinism/bounds, NDC motion signs, invalid geometry, actual Panama
-creation/release and ABI float/bool arguments on the null rejection path. Native tests exercise the
-valid encode path. Unsupported hardware explicitly skips active temporal encoding.
+## Ordering, ownership and reset lifecycle
 
-Run all five gates using `AGENTS.md`; enable `MTL_DEBUG_LAYER=1` for smoke and pixel rendering.
-Results for this increment are recorded in `temporal-foundation/` and `HANDOFF.md`.
+One ordered command buffer encodes SDR decode → motion/reactive inputs → MetalFX temporal → SDR
+encode → current colour/depth history copies. Pending world/utility rendering precedes it. World
+history is captured before vanilla clears depth for the hand. There is no per-frame GPU wait or
+CPU texture readback. Completion retains native ownership and latches asynchronous errors.
+
+Configuration/resource retirement waits only at transitions. First use, Off/On, algorithm/preset,
+size/format/device changes, reload, world/dimension replacement and disconnect retire/restart
+history. Camera cuts over eight blocks, large turns, incompatible projection changes, pause/resume,
+missing rendered frames and gaps over 250 ms reset camera/object history and the Halton sequence.
+Minimize/restore is covered by the elapsed render-gap policy. F3 reports reset count/reason and
+object count. Native and strength-0 bypass perform no temporal work.
+
+Unsupported creation fails to native rendering before scene jitter. Encode failure uses a
+prevalidated plain reconstruction for that frame, then latches native fallback. Explicit changes
+permit a retry; steady failed frames do not repeatedly create resources. The plain recovery is
+not an accumulated temporal result and can contain one jittered frame. GPU errors are latched.
+
+## Verification
+
+Run `python3 scripts/verify_mod.py` for all five gates, lighting shader inventory, embedded-native
+identity and production/add-on separation. Add `--runtime-source PATH --runtime-world FOLDER`
+for automated copied-world gameplay. Native smoke executes camera/root/pose motion, transient
+coverage, unknown objects, disocclusion, sky and static jitter stability on the actual GPU.
+Pixel checks distinguish preserved world depth from cleared native hand depth and exercise bypass,
+recovery, denial and repeated preset/resize transitions. The separate gameplay add-on checks
+actual temporal/spatial/native modes, live UI persistence, hand/HUD composition, depth, turns,
+teleport, FOV, render gaps, reload and generation stress, and saves image sequences.
+
+Current evidence and acceptance limits: [gameplay results](temporal-gameplay/results.md).

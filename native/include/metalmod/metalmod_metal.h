@@ -251,6 +251,8 @@ MMM_API void* mmm_render_pipeline_create(
 /// Cached borrowed variant matching the actual depth attachment (0 or Depth32Float).
 /// The original pipeline owns it; declared depth testing/writes are preserved.
 MMM_API void* mmm_render_pipeline_depth_variant(void* pipeline, int64_t depthFormat);
+/// Internal second R8 attachment for conservative temporal reactive coverage.
+MMM_API void* mmm_render_pipeline_reactive_variant(void* pipeline, void* library, const char* function, int64_t depthFormat);
 MMM_API void mmm_render_pipeline_release(void* pipeline);
 
 /// Human-readable message for the most recent failure from mmm_library_create or

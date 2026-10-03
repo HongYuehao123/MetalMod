@@ -65,6 +65,15 @@ public class MetalModDebugEntry implements DebugScreenEntry {
         displayer.addLine(head.toString());
         if (metalActive) {
             var sr = net.metalmod.upscaling.MetalFxCoordinator.stats();
+            var jitter = net.metalmod.upscaling.TemporalJitterProof.stats();
+            if (jitter.applied()) displayer.addLine("§6[MetalMod]§r Temporal world history "
+                    + jitter.jitterX() + "," + jitter.jitterY() + " px | world/native hand "
+                    + jitter.worldUploads() + "/" + jitter.handUploads());
+            if (jitter.applied()) {
+                var history=net.metalmod.upscaling.TemporalSceneMotion.stats();
+                displayer.addLine("§6[MetalMod]§r Temporal objects " + history.objects() + " | reset "
+                        + history.resets() + " " + history.reason());
+            }
             displayer.addLine("§6[MetalMod]§r " + sr.summary());
             if (sr.requested()) displayer.addLine("§6[MetalMod]§r SR gen " + sr.generation()
                     + " create/fail/encode " + sr.creates() + "/" + sr.failures() + "/" + sr.encodes()

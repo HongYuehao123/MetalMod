@@ -913,6 +913,21 @@ static void test_draw(void) {
     }
 
     mmm_command_buffer_release(cb);
+    // BUG-034: teleport/chunk replacement may submit empty draw jobs. None may reach Metal.
+    void* emptyIndices=mmm_buffer_create(device,6);
+    uint16_t indexData[3]={0,1,2};std::memcpy(mmm_buffer_contents(emptyIndices),indexData,sizeof(indexData));
+    cb=mmm_command_buffer_create(queue);
+    encoder=mmm_render_pass_begin(cb,1,colors,clears,clearColor,NULL,0,0.0,W,H);
+    mmm_render_pass_set_pipeline(encoder,pipeline);mmm_render_pass_set_vertex_buffer(encoder,vertexBuffer,0,0);
+    mmm_render_pass_draw(encoder,3,0,0,1,0);mmm_render_pass_draw(encoder,3,0,3,0,0);
+    mmm_render_pass_draw_indexed(encoder,3,emptyIndices,0,0,0,1,0,0,0);
+    mmm_render_pass_draw_indexed(encoder,3,emptyIndices,0,0,3,0,0,0,0);
+    mmm_render_pass_draw_fan(encoder,0,3,0,0);mmm_render_pass_end(encoder);
+    mmm_command_buffer_commit(cb);mmm_command_buffer_wait(cb);
+    rc=mmm_texture_read_region(target,0,0,0,0,W,H,pixels,sizeof(pixels),W*4);
+    unsigned char* untouched=pixels+(32*W+32)*4;
+    check("empty vertex/index/instance draws preserve clear",rc==0&&untouched[0]<40&&untouched[1]<40&&untouched[2]>200,"");
+    mmm_command_buffer_release(cb);mmm_buffer_release(emptyIndices);
     if (vertexBuffer) mmm_buffer_release(vertexBuffer);
     mmm_texture_release(target);
     mmm_render_pipeline_release(pipeline);
@@ -1253,6 +1268,80 @@ static void test_metalfx(void) {
     mmm_queue_release(queue); mmm_device_release(device);
 }
 
+static void test_temporal_color(void) {
+    printf("\n== temporal SDR transfer conversion ==\n");
+    void* device=mmm_device_create();
+    if (!device) { check("temporal colour device",false,"no Metal device"); return; }
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;
+    id<MTLCommandQueue> queue=[dev newCommandQueue];
+    check("temporal colour sRGB views denied",!mmm_fx_temporal_color_create(device,MTLPixelFormatRGBA8Unorm_sRGB),"");
+    check("temporal colour NULL encode denied",mmm_fx_temporal_color_encode(NULL,NULL,NULL,NULL,true)==-1,"");
+    const int W=256,H=3;
+    auto texture=[&](MTLPixelFormat format,int w,int h) {
+        auto td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+        td.storageMode=MTLStorageModeShared; td.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;
+        return [dev newTextureWithDescriptor:td];
+    };
+    for (MTLPixelFormat format : {MTLPixelFormatRGBA8Unorm,MTLPixelFormatBGRA8Unorm}) {
+        void* converter=mmm_fx_temporal_color_create(device,format);
+        check("temporal colour pipelines created",converter!=NULL,"");
+        if (!converter) continue;
+        id<MTLTexture> source=texture(format,W,H), linear=texture(MTLPixelFormatRGBA16Float,W,H);
+        id<MTLTexture> output=texture(format,W,H), wrongSize=texture(MTLPixelFormatRGBA16Float,W-1,H);
+        if (!source || !linear || !output || !wrongSize) {
+            check("temporal colour resources",false,"allocation failed"); mmm_fx_temporal_color_release(converter); continue;
+        }
+        std::vector<uint8_t> original(W*H*4), actual(W*H*4), unchanged(W*H*4);
+        std::vector<__fp16> floats(W*H*4);
+        bool bgra=format==MTLPixelFormatBGRA8Unorm;
+        for (int y=0;y<H;y++) for (int x=0;x<W;x++) {
+            int p=(y*W+x)*4;
+            original[p+(bgra?2:0)]=x; original[p+1]=255-x;
+            original[p+(bgra?0:2)]=y==0?32:y==1?170:255; original[p+3]=(x+y)%256;
+        }
+        [source replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:original.data() bytesPerRow:W*4];
+        id<MTLCommandBuffer> cb=[queue commandBuffer];
+        check("temporal colour refuses resizing",mmm_fx_temporal_color_encode(converter,(__bridge void*)cb,
+                (__bridge void*)source,(__bridge void*)wrongSize,true)==-3,"");
+        int decode=mmm_fx_temporal_color_encode(converter,(__bridge void*)cb,(__bridge void*)source,(__bridge void*)linear,true);
+        int encode=mmm_fx_temporal_color_encode(converter,(__bridge void*)cb,(__bridge void*)linear,(__bridge void*)output,false);
+        check("temporal colour ordered decode/encode",decode==0 && encode==0,"");
+        [cb commit]; [cb waitUntilCompleted];
+        check("temporal colour GPU completed",cb.status==MTLCommandBufferStatusCompleted,"");
+        [output getBytes:actual.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+        [linear getBytes:floats.data() bytesPerRow:W*8 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+        [source getBytes:unchanged.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+        bool identity=true,transfer=true;
+        for (int p=0;p<W*H*4;p++) identity &= abs((int)actual[p]-(int)original[p])<=1;
+        for (int p=0;p<W*H*4;p+=4) for (int channel=0;channel<4;channel++) {
+            int packed=bgra && channel==0?2:bgra && channel==2?0:channel;
+            float value=original[p+packed]/255.0f;
+            float expected=channel==3?value:value<=0.04045f?value/12.92f:powf((value+0.055f)/1.055f,2.4f);
+            transfer &= fabs((float)floats[p+channel]-expected)<0.001f;
+        }
+        check("temporal sRGB transfer matches CPU reference and preserves alpha",transfer,"");
+        check(bgra?"BGRA SDR round-trip all 256 levels/orientation/alpha":"RGBA SDR round-trip all 256 levels/orientation/alpha",identity,"");
+        check("temporal conversion source unchanged",original==unchanged,"");
+        check("temporal colour generation healthy",mmm_fx_temporal_color_healthy(converter),"");
+        auto otherQueue=[dev newCommandQueue];
+        auto invalid=[otherQueue commandBuffer];
+        check("temporal colour unordered queue denied",mmm_fx_temporal_color_encode(converter,(__bridge void*)invalid,
+                (__bridge void*)source,(__bridge void*)linear,true)==-3,"");
+        for (int p=0;p<W*H*4;p+=4) { floats[p]=-0.25f; floats[p+1]=0.25f; floats[p+2]=1.25f; floats[p+3]=0.5f; }
+        [linear replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:floats.data() bytesPerRow:W*8];
+        cb=[queue commandBuffer];
+        check("temporal colour clamp encode",mmm_fx_temporal_color_encode(converter,(__bridge void*)cb,
+                (__bridge void*)linear,(__bridge void*)output,false)==0,"");
+        mmm_fx_temporal_color_release(converter); // completion keeps reusable pipelines alive
+        [cb commit]; [cb waitUntilCompleted];
+        [output getBytes:actual.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+        check("temporal SDR clamps overshoot and preserves alpha with in-flight release",
+                cb.status==MTLCommandBufferStatusCompleted && actual[bgra?2:0]==0 && actual[bgra?0:2]==255
+                && abs((int)actual[1]-137)<=1 && abs((int)actual[3]-128)<=1,"");
+    }
+    mmm_device_release(device);
+}
+
 static void test_temporal_prototype(void) {
     printf("\n== temporal MetalFX prototype ABI v1 ==\n");
     check("temporal NULL capability denied", !mmm_fx_temporal_supported(NULL), "");
@@ -1372,6 +1461,119 @@ static void test_temporal_prototype(void) {
     mmm_device_release(device);
 }
 
+static void test_temporal_scene(void) {
+    printf("\n== complete temporal scene, camera/object motion and rejection ==\n");
+    void* device=mmm_device_create();
+    if(!device){check("temporal scene device",false,"");return;}
+    if(!mmm_fx_temporal_supported(device)){printf("[SKIP] temporal scene unsupported\n");mmm_device_release(device);return;}
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;
+    id<MTLCommandQueue> queue=[dev newCommandQueue];
+    const int W=40,H=32;
+    auto texture=[&](MTLPixelFormat format,int w,int h){
+        MTLTextureDescriptor* d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+        d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+        return [dev newTextureWithDescriptor:d];
+    };
+    id<MTLTexture> color=texture(MTLPixelFormatRGBA8Unorm,W,H),depth=texture(MTLPixelFormatDepth32Float,W,H);
+    id<MTLTexture> output=texture(MTLPixelFormatRGBA8Unorm,80,64);
+    void* frame=mmm_fx_temporal_frame_create(device,W,H,80,64,MTLPixelFormatRGBA8Unorm);
+    check("temporal scene generation created",frame!=NULL,"");
+    if(!frame){mmm_device_release(device);return;}
+    std::vector<uint8_t> clearCoverage(W*H,0);
+    id<MTLTexture> coverage=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(frame,5);
+    [coverage replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:clearCoverage.data() bytesPerRow:W];
+    float matrices[48]={};for(int m=0;m<3;m++)for(int i=0;i<4;i++)matrices[m*16+i*5]=1;
+    float object[12]={};std::vector<uint8_t> pixels(W*H*4);std::vector<float> depths(W*H,0.5f);
+    auto paint=[&](int x0){
+        for(int y=0;y<H;y++)for(int x=0;x<W;x++){
+            int i=(y*W+x)*4;bool entity=x>=x0&&x<x0+12&&y>=8&&y<24;
+            pixels[i]=entity?80+((x-x0)*37+y*13)%170:20;
+            pixels[i+1]=entity?30+((x-x0)*19+y*31)%180:100;
+            pixels[i+2]=entity?40+((x-x0)*43+y*7)%160:40;pixels[i+3]=255;
+        }
+        [color replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];
+        object[0]=2.0f*x0/W-1;object[1]=-0.5f;object[2]=0.4f;object[3]=1;
+        object[4]=2.0f*(x0+12)/W-1;object[5]=0.5f;object[6]=0.6f;object[8]=-4.0f/W;
+    };
+    auto encode=[&](bool reset){
+        id<MTLCommandBuffer> cb=[queue commandBuffer];
+        int rc=mmm_fx_temporal_frame_encode(frame,(__bridge void*)cb,(__bridge void*)color,(__bridge void*)depth,
+                (__bridge void*)output,matrices,object,1,0,0,reset);
+        check("complete temporal scene encoded",rc==0,"");
+        if(rc==0){[cb commit];[cb waitUntilCompleted];check("complete temporal scene GPU success",cb.status==MTLCommandBufferStatusCompleted,"");}
+    };
+    paint(10);encode(true);
+    paint(12);encode(false);
+    id<MTLTexture> flow=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(frame,0);
+    id<MTLTexture> reactive=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(frame,1);
+    __fp16 motion[2]={};uint8_t mask=255;
+    [flow getBytes:motion bytesPerRow:4 fromRegion:MTLRegionMake2D(17,16,1,1) mipmapLevel:0];
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(17,16,1,1) mipmapLevel:0];
+    check("independent object motion previous-minus-current pixels",std::abs((float)motion[0]+2)<0.02f&&std::abs((float)motion[1])<0.02f,"");
+    check("matched independent object retains history",mask<16,"");
+    // Root translation predicts two pixels; the rendered pose independently moves one more.
+    paint(15);encode(false);
+    [flow getBytes:motion bytesPerRow:4 fromRegion:MTLRegionMake2D(20,16,1,1) mipmapLevel:0];
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(20,16,1,1) mipmapLevel:0];
+    check("rendered pose correspondence refines rigid motion",std::abs((float)motion[0]+3)<0.02f&&mask<16,"");
+    uint8_t transient=255;
+    [coverage replaceRegion:MTLRegionMake2D(20,16,1,1) mipmapLevel:0 withBytes:&transient bytesPerRow:1];
+    encode(false);
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(20,16,1,1) mipmapLevel:0];
+    check("raster transient coverage rejects history",mask==255,"");
+    [coverage replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:clearCoverage.data() bytesPerRow:W];
+    object[3]=0;encode(false);
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(20,16,1,1) mipmapLevel:0];
+    check("new/unknown object rejects history",mask==255,"");
+    // A camera translation moves every static point by two pixels; jitter is excluded.
+    matrices[12]=-4.0f/W;encode(false);
+    [flow getBytes:motion bytesPerRow:4 fromRegion:MTLRegionMake2D(6,16,1,1) mipmapLevel:0];
+    check("camera reprojection previous-minus-current pixels",std::abs((float)motion[0]+2)<0.02f&&std::abs((float)motion[1])<0.02f,"");
+    matrices[12]=0;
+    object[3]=1;std::fill(depths.begin(),depths.end(),0.1f);
+    [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];
+    encode(false);
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(5,16,1,1) mipmapLevel:0];
+    check("disocclusion rejects incompatible old depth",mask==255,"");
+    std::fill(depths.begin(),depths.end(),0.0f);
+    [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];encode(false);
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(5,16,1,1) mipmapLevel:0];
+    check("sky/no geometry rejects history",mask==255,"");
+    // A newly visible far surface must not accept a previous sky sample through an absolute tolerance.
+    std::fill(depths.begin(),depths.end(),0.00002f);
+    [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];encode(false);
+    [reactive getBytes:&mask bytesPerRow:1 fromRegion:MTLRegionMake2D(5,16,1,1) mipmapLevel:0];
+    check("far disocclusion rejects previous sky with matching colour",mask==255,"");
+    // Static subpixel Gaussian: render at sample +jitter, then measure native-output centroid.
+    // A scaler which forwards jitter without reconstruction visibly oscillates by almost a pixel.
+    std::fill(depths.begin(),depths.end(),0.5f);
+    [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];
+    std::vector<uint8_t> result(80*64*4);double low=1e9,high=-1e9;
+    auto halton=[](int n,int base){float r=0,f=1.0f/base;while(n){r+=(n%base)*f;n/=base;f/=base;}return r-0.5f;};
+    for(int n=0;n<64;n++){
+        float jx=halton(n%16+1,2),jy=halton(n%16+1,3);
+        for(int y=0;y<H;y++)for(int x=0;x<W;x++){
+            float dx=x+0.5f+jx-20,dy=y+0.5f+jy-16;
+            uint8_t value=(uint8_t)std::round(220*std::exp(-(dx*dx+dy*dy)/18));
+            int i=(y*W+x)*4;pixels[i]=pixels[i+1]=pixels[i+2]=value;pixels[i+3]=255;
+        }
+        [color replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        id<MTLCommandBuffer> cb=[queue commandBuffer];
+        int rc=mmm_fx_temporal_frame_encode(frame,(__bridge void*)cb,(__bridge void*)color,(__bridge void*)depth,
+                (__bridge void*)output,matrices,NULL,0,jx,jy,n==0);
+        if(rc){check("jitter stability submission",false,"");break;}[cb commit];[cb waitUntilCompleted];
+        [output getBytes:result.data() bytesPerRow:80*4 fromRegion:MTLRegionMake2D(0,0,80,64) mipmapLevel:0];
+        if(n>=32){double weighted=0,total=0;for(int y=0;y<64;y++)for(int x=0;x<80;x++){
+            double value=result[(y*80+x)*4];weighted+=(x+0.5)*value;total+=value;
+        }double center=weighted/total;low=std::min(low,center);high=std::max(high,center);}
+    }
+    printf("Temporal static centroid range %.6f output pixels\n",high-low);
+    check("static temporal image removes projection shaking",high-low<0.20,"");
+    check("complete temporal generation healthy",mmm_fx_temporal_frame_healthy(frame),"");
+    mmm_fx_temporal_frame_release(frame);mmm_device_release(device);
+}
+
 int main(void) {
     printf("==================================================\n");
     printf("MetalMod native Metal smoke test\n");
@@ -1381,6 +1583,8 @@ int main(void) {
         test_spatial_antialias();
         test_metalfx();
         test_temporal_prototype();
+        test_temporal_color();
+        test_temporal_scene();
         test_clear_and_readback();
         test_resources();
         test_mip_filter();

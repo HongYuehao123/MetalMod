@@ -1,0 +1,138 @@
+PASS 01-native-off effective resolution SR Off strength 25% | Native | 2560x1440 -> 2560x1440 (100.0% pixels) | Off
+PASS 01-native-off exact dimensions Dimensions[width=2560, height=1440]
+PASS 01-native-off spatial health Stats[requested=false, strength=25, effective=Native, reason=Off, sceneWidth=2560, sceneHeight=1440, outputWidth=2560, outputHeight=1440, generation=0, creates=0, failures=0, encodes=0, recoveries=0, retirements=0, worldHooks=447, uiHooks=447, gpuDurationNs=-1]
+PASS 01-native-off jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 01-native-off no proof depth work copies=0
+PASS 01-native-off backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 01-native-off native one-pixel output marker ARGB=ffff00ff
+PASS 02-native-100 effective resolution SR On strength 0% | Native | 2560x1440 -> 2560x1440 (100.0% pixels) | 100% bypass
+PASS 02-native-100 exact dimensions Dimensions[width=2560, height=1440]
+PASS 02-native-100 spatial health Stats[requested=true, strength=0, effective=Native, reason=100% bypass, sceneWidth=2560, sceneHeight=1440, outputWidth=2560, outputHeight=1440, generation=0, creates=0, failures=0, encodes=0, recoveries=0, retirements=0, worldHooks=735, uiHooks=735, gpuDurationNs=-1]
+PASS 02-native-100 jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 02-native-100 no proof depth work copies=0
+PASS 02-native-100 backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 02-native-100 native one-pixel output marker ARGB=ffff00ff
+PASS 03-spatial-25 effective resolution SR On strength 25% | MetalFX spatial | 1920x1080 -> 2560x1440 (56.3% pixels) | 
+PASS 03-spatial-25 exact dimensions Dimensions[width=1920, height=1080]
+PASS 03-spatial-25 spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=1920, sceneHeight=1080, outputWidth=2560, outputHeight=1440, generation=1, creates=1, failures=0, encodes=290, recoveries=0, retirements=0, worldHooks=1025, uiHooks=1025, gpuDurationNs=2622541]
+PASS 03-spatial-25 jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 03-spatial-25 no proof depth work copies=0
+PASS 03-spatial-25 backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 03-spatial-25 native one-pixel output marker ARGB=ffff00ff
+PASS 04-jitter-25 effective resolution SR On strength 25% | MetalFX spatial | 1920x1080 -> 2560x1440 (56.3% pixels) | 
+PASS 04-jitter-25 exact dimensions Dimensions[width=1920, height=1080]
+PASS 04-jitter-25 spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=1920, sceneHeight=1080, outputWidth=2560, outputHeight=1440, generation=2, creates=2, failures=0, encodes=577, recoveries=0, retirements=1, worldHooks=1312, uiHooks=1312, gpuDurationNs=3345625]
+PASS 04-jitter-25 jitter state Stats[applied=true, generation=2, frames=287, width=1920, height=1080, jitterX=0.4375, jitterY=-0.24074075, worldUploads=287, handUploads=287]
+PASS 04-jitter-25 world/hand uploads Stats[applied=true, generation=2, frames=287, width=1920, height=1080, jitterX=0.4375, jitterY=-0.24074075, worldUploads=287, handUploads=287]
+PASS 04-jitter-25 world depth snapshots copies=287
+PASS 04-jitter-25 rendered world depth data nonzero=1831006/2073600 max=0.15836498
+PASS 04-jitter-25 proof closed before UI 
+PASS 04-jitter-25 backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 04-jitter-25 native one-pixel output marker ARGB=ffff00ff
+PASS 05-jitter-33 effective resolution SR On strength 33% | MetalFX spatial | 1715x964 -> 2560x1440 (44.8% pixels) | 
+PASS 05-jitter-33 exact dimensions Dimensions[width=1715, height=964]
+PASS 05-jitter-33 spatial health Stats[requested=true, strength=33, effective=MetalFX spatial, reason=, sceneWidth=1715, sceneHeight=964, outputWidth=2560, outputHeight=1440, generation=3, creates=3, failures=0, encodes=864, recoveries=0, retirements=2, worldHooks=1599, uiHooks=1599, gpuDurationNs=3727583]
+PASS 05-jitter-33 jitter state Stats[applied=true, generation=3, frames=287, width=1715, height=964, jitterX=0.4375, jitterY=-0.24074075, worldUploads=287, handUploads=287]
+PASS 05-jitter-33 world/hand uploads Stats[applied=true, generation=3, frames=287, width=1715, height=964, jitterX=0.4375, jitterY=-0.24074075, worldUploads=287, handUploads=287]
+PASS 05-jitter-33 world depth snapshots copies=287
+PASS 05-jitter-33 rendered world depth data nonzero=1459409/1653260 max=0.1583637
+PASS 05-jitter-33 proof closed before UI 
+PASS 05-jitter-33 backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 05-jitter-33 native one-pixel output marker ARGB=ffff00ff
+PASS 06-jitter-50 effective resolution SR On strength 50% | MetalFX spatial | 1280x720 -> 2560x1440 (25.0% pixels) | 
+PASS 06-jitter-50 exact dimensions Dimensions[width=1280, height=720]
+PASS 06-jitter-50 spatial health Stats[requested=true, strength=50, effective=MetalFX spatial, reason=, sceneWidth=1280, sceneHeight=720, outputWidth=2560, outputHeight=1440, generation=4, creates=4, failures=0, encodes=1150, recoveries=0, retirements=3, worldHooks=1885, uiHooks=1885, gpuDurationNs=2166708]
+PASS 06-jitter-50 jitter state Stats[applied=true, generation=4, frames=286, width=1280, height=720, jitterX=-0.0625, jitterY=0.3148148, worldUploads=286, handUploads=286]
+PASS 06-jitter-50 world/hand uploads Stats[applied=true, generation=4, frames=286, width=1280, height=720, jitterX=-0.0625, jitterY=0.3148148, worldUploads=286, handUploads=286]
+PASS 06-jitter-50 world depth snapshots copies=286
+PASS 06-jitter-50 rendered world depth data nonzero=813651/921600 max=0.1582894
+PASS 06-jitter-50 proof closed before UI 
+PASS 06-jitter-50 backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 06-jitter-50 native one-pixel output marker ARGB=ffff00ff
+PASS 07-jitter-resize effective resolution SR On strength 25% | MetalFX spatial | 2881x1621 -> 3842x2162 (56.2% pixels) | 
+PASS 07-jitter-resize exact dimensions Dimensions[width=2881, height=1621]
+PASS 07-jitter-resize spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=2881, sceneHeight=1621, outputWidth=3842, outputHeight=2162, generation=5, creates=5, failures=0, encodes=1435, recoveries=0, retirements=4, worldHooks=2170, uiHooks=2170, gpuDurationNs=3837291]
+PASS 07-jitter-resize jitter state Stats[applied=true, generation=5, frames=285, width=2881, height=1621, jitterX=0.1875, jitterY=-0.018518507, worldUploads=285, handUploads=285]
+PASS 07-jitter-resize world/hand uploads Stats[applied=true, generation=5, frames=285, width=2881, height=1621, jitterX=0.1875, jitterY=-0.018518507, worldUploads=285, handUploads=285]
+PASS 07-jitter-resize world depth snapshots copies=285
+PASS 07-jitter-resize rendered world depth data nonzero=4119358/4670101 max=0.15833037
+PASS 07-jitter-resize proof closed before UI 
+PASS 07-jitter-resize backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 07-jitter-resize native one-pixel output marker ARGB=ffff00ff
+PASS 08-jitter-inventory effective resolution SR On strength 25% | MetalFX spatial | 2881x1621 -> 3842x2162 (56.2% pixels) | 
+PASS 08-jitter-inventory exact dimensions Dimensions[width=2881, height=1621]
+PASS 08-jitter-inventory spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=2881, sceneHeight=1621, outputWidth=3842, outputHeight=2162, generation=6, creates=6, failures=0, encodes=1704, recoveries=0, retirements=5, worldHooks=2439, uiHooks=2439, gpuDurationNs=3091749]
+PASS 08-jitter-inventory jitter state Stats[applied=true, generation=6, frames=269, width=2881, height=1621, jitterX=0.1875, jitterY=-0.018518507, worldUploads=269, handUploads=269]
+PASS 08-jitter-inventory world/hand uploads Stats[applied=true, generation=6, frames=269, width=2881, height=1621, jitterX=0.1875, jitterY=-0.018518507, worldUploads=269, handUploads=269]
+PASS 08-jitter-inventory world depth snapshots copies=269
+PASS 08-jitter-inventory rendered world depth data nonzero=4117389/4670101 max=0.15833037
+PASS 08-jitter-inventory proof closed before UI 
+PASS 08-jitter-inventory backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 08-jitter-inventory native one-pixel output marker ARGB=ffff00ff
+PASS 09-jitter-pause effective resolution SR On strength 50% | MetalFX spatial | 1921x1081 -> 3842x2162 (25.0% pixels) | 
+PASS 09-jitter-pause exact dimensions Dimensions[width=1921, height=1081]
+PASS 09-jitter-pause spatial health Stats[requested=true, strength=50, effective=MetalFX spatial, reason=, sceneWidth=1921, sceneHeight=1081, outputWidth=3842, outputHeight=2162, generation=7, creates=7, failures=0, encodes=1978, recoveries=0, retirements=6, worldHooks=2713, uiHooks=2713, gpuDurationNs=3584624]
+PASS 09-jitter-pause jitter state Stats[applied=true, generation=7, frames=274, width=1921, height=1081, jitterX=-0.25, jitterY=0.16666669, worldUploads=274, handUploads=274]
+PASS 09-jitter-pause world/hand uploads Stats[applied=true, generation=7, frames=274, width=1921, height=1081, jitterX=-0.25, jitterY=0.16666669, worldUploads=274, handUploads=274]
+PASS 09-jitter-pause world depth snapshots copies=274
+PASS 09-jitter-pause rendered world depth data nonzero=1831047/2076601 max=0.15828727
+PASS 09-jitter-pause proof closed before UI 
+PASS 09-jitter-pause backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 09-jitter-pause native one-pixel output marker ARGB=ffff00ff
+PASS 09b-sr-settings temporal button callback 
+PASS 09b-sr-settings effective resolution SR On strength 25% | MetalFX spatial | 2881x1621 -> 3842x2162 (56.2% pixels) | 
+PASS 09b-sr-settings exact dimensions Dimensions[width=2881, height=1621]
+PASS 09b-sr-settings settings screen 
+PASS 09b-sr-settings saved temporal switch requested=true
+PASS 09b-sr-settings spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=2881, sceneHeight=1621, outputWidth=3842, outputHeight=2162, generation=8, creates=8, failures=0, encodes=2250, recoveries=0, retirements=7, worldHooks=2985, uiHooks=2985, gpuDurationNs=3877916]
+PASS 09b-sr-settings jitter state Stats[applied=true, generation=8, frames=272, width=2881, height=1621, jitterX=-0.46875, jitterY=0.0925926, worldUploads=272, handUploads=272]
+PASS 09b-sr-settings world/hand uploads Stats[applied=true, generation=8, frames=272, width=2881, height=1621, jitterX=-0.46875, jitterY=0.0925926, worldUploads=272, handUploads=272]
+PASS 09b-sr-settings world depth snapshots copies=272
+PASS 09b-sr-settings rendered world depth data nonzero=4117435/4670101 max=0.15830138
+PASS 09b-sr-settings proof closed before UI 
+PASS 09b-sr-settings backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 09b-sr-settings native one-pixel output marker ARGB=ffff00ff
+PASS 09c-test-off temporal button callback 
+PASS 09c-test-off effective resolution SR On strength 25% | MetalFX spatial | 2881x1621 -> 3842x2162 (56.2% pixels) | 
+PASS 09c-test-off exact dimensions Dimensions[width=2881, height=1621]
+PASS 09c-test-off settings screen 
+PASS 09c-test-off saved temporal switch requested=false
+PASS 09c-test-off spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=2881, sceneHeight=1621, outputWidth=3842, outputHeight=2162, generation=9, creates=9, failures=0, encodes=2523, recoveries=0, retirements=8, worldHooks=3258, uiHooks=3258, gpuDurationNs=3134833]
+PASS 09c-test-off jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 09c-test-off no proof depth work copies=1960
+PASS 09c-test-off backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 09c-test-off native one-pixel output marker ARGB=ffff00ff
+PASS 09d-test-native temporal button callback 
+PASS 09d-test-native effective resolution SR On strength 0% | Native | 3842x2162 -> 3842x2162 (100.0% pixels) | 100% bypass
+PASS 09d-test-native exact dimensions Dimensions[width=3842, height=2162]
+PASS 09d-test-native settings screen 
+PASS 09d-test-native saved temporal switch requested=true
+PASS 09d-test-native spatial health Stats[requested=true, strength=0, effective=Native, reason=100% bypass, sceneWidth=3842, sceneHeight=2162, outputWidth=3842, outputHeight=2162, generation=9, creates=9, failures=0, encodes=2523, recoveries=0, retirements=9, worldHooks=3530, uiHooks=3530, gpuDurationNs=-1]
+PASS 09d-test-native jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 09d-test-native no proof depth work copies=1960
+PASS 09d-test-native backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 09d-test-native native one-pixel output marker ARGB=ffff00ff
+PASS 10-proof-disabled effective resolution SR On strength 25% | MetalFX spatial | 2881x1621 -> 3842x2162 (56.2% pixels) | 
+PASS 10-proof-disabled exact dimensions Dimensions[width=2881, height=1621]
+PASS 10-proof-disabled spatial health Stats[requested=true, strength=25, effective=MetalFX spatial, reason=, sceneWidth=2881, sceneHeight=1621, outputWidth=3842, outputHeight=2162, generation=10, creates=10, failures=0, encodes=2796, recoveries=0, retirements=9, worldHooks=3803, uiHooks=3803, gpuDurationNs=5774958]
+PASS 10-proof-disabled jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 10-proof-disabled no proof depth work copies=1960
+PASS 10-proof-disabled backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 10-proof-disabled native one-pixel output marker ARGB=ffff00ff
+PASS 11-return-native effective resolution SR Off strength 25% | Native | 3842x2162 -> 3842x2162 (100.0% pixels) | Off
+PASS 11-return-native exact dimensions Dimensions[width=3842, height=2162]
+PASS 11-return-native spatial health Stats[requested=false, strength=25, effective=Native, reason=Off, sceneWidth=3842, sceneHeight=2162, outputWidth=3842, outputHeight=2162, generation=10, creates=10, failures=0, encodes=2796, recoveries=0, retirements=10, worldHooks=4075, uiHooks=4075, gpuDurationNs=-1]
+PASS 11-return-native jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 11-return-native no proof depth work copies=1960
+PASS 11-return-native backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 11-return-native native one-pixel output marker ARGB=ffff00ff
+PASS 12-menu-only effective resolution SR On strength 25% | Native | 3842x2162 -> 3842x2162 (100.0% pixels) | no world
+PASS 12-menu-only exact dimensions Dimensions[width=3842, height=2162]
+PASS 12-menu-only spatial health Stats[requested=true, strength=25, effective=Native, reason=no world, sceneWidth=3842, sceneHeight=2162, outputWidth=3842, outputHeight=2162, generation=10, creates=10, failures=0, encodes=2796, recoveries=0, retirements=10, worldHooks=4345, uiHooks=4345, gpuDurationNs=-1]
+PASS 12-menu-only jitter state Stats[applied=false, generation=0, frames=0, width=0, height=0, jitterX=0.0, jitterY=0.0, worldUploads=0, handUploads=0]
+PASS 12-menu-only no proof depth work copies=1960
+PASS 12-menu-only backend health resource/pipeline/unbound/attributes=0/0/0/0
+PASS 12-menu-only native one-pixel output marker ARGB=ffff00ff
+PASS live hook TemporalProof.worldProjection 
+PASS live hook TemporalProof.handProjection 
+PASS live hook TemporalProof.worldDepth 

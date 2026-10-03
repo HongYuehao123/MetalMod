@@ -1,0 +1,10 @@
+{
+  "installed_jar": "/Users/hongyuehao/Documents/.minecraft/versions/MetalMod_Test_26.2/mods/metalmod-1.0.0.jar",
+  "sha256": "2743066fc293952ff225cf64782d3ac128a01128bfd444ad5027df8bc9173567",
+  "previous_sha256": "a9f1e8b9ce8d02166de7742a3cd3613b38bef24758b00ae203079bafda8d90f5",
+  "backup": "/Users/hongyuehao/Projects/MetalMod/build/reports/verification-20261003-004341-976103/previous-installed-metalmod.jar.backup",
+  "config_sha256_unchanged": "13f3f38b5148f08bdaf57c859ddca70ba53065571c1540a448d528dee877f556",
+  "test_addon_installed": false,
+  "saved_temporal_preference": "legacy enableTemporalJitterProof=true migrates to enableTemporalUpscaling=true",
+  "restart_required": true
+}
