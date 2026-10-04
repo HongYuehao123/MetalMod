@@ -4,11 +4,14 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
 
+#include "metalmod/metalmod_display_link.h"
 #include "metalmod/metalmod_metal.h"
 
 #include <string.h>
 #include <chrono>
+#include <thread>
 
 // Capture stays on the render/calling thread: GPU completion handlers never touch these counters.
 // No clocks, allocations or atomics on the draw path, and no clocks at all when capture is off.
@@ -1480,6 +1483,7 @@ void mmm_layer_release(void* layer) {
 }
 
 int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool vsync) {
+    if (mmm_display_link_owns_layer(layer)) return -3;
     CAMetalLayer* metalLayer = mmm_layer(layer);
     if (metalLayer == nil || width <= 0 || height <= 0) return -1;
 
@@ -1487,6 +1491,7 @@ int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool vsync) 
         metalLayer.drawableSize = CGSizeMake(width, height);
         // Three drawables keeps the CPU one frame ahead without the latency of a deep queue.
         metalLayer.maximumDrawableCount = 3;
+        metalLayer.allowsNextDrawableTimeout = YES; // bound ordinary and additional display acquisition
         metalLayer.displaySyncEnabled = vsync ? YES : NO;
         metalLayer.presentsWithTransaction = NO;
     }
@@ -1494,6 +1499,11 @@ int mmm_layer_configure(void* layer, int32_t width, int32_t height, bool vsync) 
 }
 
 int mmm_layer_acquire(void* layer, void** outDrawable, void** outTexture) {
+    if (mmm_display_link_owns_layer(layer)) {
+        if (outDrawable) *outDrawable = NULL;
+        if (outTexture) *outTexture = NULL;
+        return -3;
+    }
     // A frame boundary: the previous frame's utility work is committed (its present already did
     // that) and its staging slot is retired for the ring to reuse MMM_STAGING_SLOTS frames later.
     mmm_utility_end_frame();
@@ -1687,7 +1697,58 @@ void mmm_layer_set_present_queue(void* queue) {
     g_PresentQueue = (__bridge id<MTLCommandQueue>)queue;
 }
 
-int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) {
+// Acquisition and world rendering stay on Minecraft's render owner. This queue only
+// presents completed immutable drawable copies; it never acquires or accesses game state.
+@interface MMMReadyPresentation : NSObject
+@property(nonatomic,strong) id<CAMetalDrawable> drawable;
+@property(nonatomic,assign) BOOL ready;
+@property(nonatomic,assign) double period;
+@end
+@implementation MMMReadyPresentation
+@end
+@interface MMMReadyPresentations : NSObject
+@property(nonatomic,strong) NSMutableArray<MMMReadyPresentation*>* pending;
+@property(nonatomic,strong) id<MTLCommandQueue> queue;
+@property(nonatomic,strong) dispatch_queue_t submissions;
+@property(nonatomic,assign) double nextSubmission;
+@end
+@implementation MMMReadyPresentations
+@end
+static char readyPresentationKey;
+static MMMReadyPresentations* readyPresentations(CAMetalLayer* layer,id<MTLDevice> device) {
+    @synchronized(layer) {
+        MMMReadyPresentations* state=objc_getAssociatedObject(layer,&readyPresentationKey);
+        if(!state) {
+            state=[MMMReadyPresentations new];state.pending=[NSMutableArray new];
+            state.queue=[device newCommandQueue];
+            state.submissions=dispatch_queue_create("net.metalmod.ready-presentation",DISPATCH_QUEUE_SERIAL);
+            objc_setAssociatedObject(layer,&readyPresentationKey,state,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return state;
+    }
+}
+static void copiedPresentation(MMMReadyPresentations* state,MMMReadyPresentation* entry) {
+    @synchronized(state) {
+        entry.ready=YES;
+        // Completion callbacks may arrive out of order. Drain only the ready FIFO prefix.
+        while(state.pending.count && state.pending.firstObject.ready) {
+            MMMReadyPresentation* first=state.pending.firstObject;[state.pending removeObjectAtIndex:0];
+            dispatch_async(state.submissions,^{ @autoreleasepool {
+                double now=CACurrentMediaTime(),target=state.nextSubmission;
+                if(target<=0||now>target+first.period)target=now;
+                double delay=target-now;
+                if(delay>0)std::this_thread::sleep_for(std::chrono::duration<double>(std::min(delay,0.05)));
+                id<MTLCommandBuffer> presentation=[state.queue commandBuffer];
+                [presentation presentDrawable:first.drawable];
+                [presentation addCompletedHandler:^(id<MTLCommandBuffer> completed){mmm_note_command_buffer_completion(completed);}];
+                [presentation commit];[presentation waitUntilScheduled];
+                state.nextSubmission=target+first.period;
+            }});
+        }
+    }
+}
+
+static int presentTexture(void* layer, void* drawable, void* sourceTexture, double duration, bool ordered, double asyncPeriod=0) {
     CAMetalLayer* metalLayer = mmm_layer(layer);
     id<CAMetalDrawable> metalDrawable = (__bridge id<CAMetalDrawable>)drawable;
     id<MTLTexture> source = mmm_texture(sourceTexture);
@@ -1718,16 +1779,46 @@ int mmm_layer_present_texture(void* layer, void* drawable, void* sourceTexture) 
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [encoder endEncoding];
 
-        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-            mmm_note_command_buffer_completion(completed);
-        }];
-        [commandBuffer presentDrawable:metalDrawable];
-        mmm_commit_command_buffer(commandBuffer);
+        if(asyncPeriod>0) {
+            MMMReadyPresentations* state=readyPresentations(metalLayer,commandBuffer.device);
+            MMMReadyPresentation* entry=[MMMReadyPresentation new];entry.drawable=metalDrawable;entry.period=asyncPeriod;
+            @synchronized(state){[state.pending addObject:entry];}
+            [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed){
+                mmm_note_command_buffer_completion(completed);copiedPresentation(state,entry);
+            }];
+            mmm_commit_command_buffer(commandBuffer);
+        } else {
+            [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed){mmm_note_command_buffer_completion(completed);}];
+            if(duration>0)[commandBuffer presentDrawable:metalDrawable afterMinimumDuration:duration];
+            else [commandBuffer presentDrawable:metalDrawable];
+            mmm_commit_command_buffer(commandBuffer);
+            if(ordered)[commandBuffer waitUntilScheduled];
+        }
 
         id<CAMetalDrawable> released = (__bridge_transfer id<CAMetalDrawable>)drawable;
         (void)released;
     }
     return 0;
+}
+
+int mmm_layer_present_texture_duration(void* layer,void* drawable,void* source,double duration) {
+    return presentTexture(layer,drawable,source,duration,duration>0);
+}
+int mmm_layer_present_texture_paced(void* layer,void* drawable,void* source,double period) {
+    return presentTexture(layer,drawable,source,0,false,period);
+}
+int mmm_layer_present_texture_ordered(void* layer,void* drawable,void* source) {
+    return presentTexture(layer,drawable,source,0,true);
+}
+int mmm_layer_present_texture(void* layer,void* drawable,void* source) {
+    return mmm_layer_present_texture_duration(layer,drawable,source,0);
+}
+/* Additional display acquisition is NOT a real-render/staging boundary. */
+void* mmm_layer_acquire_display(void* layer) {
+    MMMCaptureTimer timer(MMM_CAPTURE_DRAWABLE_WAIT_NS);
+    if(mmm_display_link_owns_layer(layer))return NULL;
+    CAMetalLayer* l=mmm_layer(layer);
+    @autoreleasepool { return (__bridge_retained void*)[l nextDrawable]; }
 }
 
 int mmm_layer_present_clear(void* layer, void* drawable,

@@ -8,6 +8,180 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-042 — FG active at a 30-FPS limit, but most displayed world pixels still repeat real frames
+
+**Status:** correction installed (2026-10-04), SHA-256 `dcca5566…`. Five offline gates,
+22/22 exact capped-30 delivery checks, both final-content/halfway-pose checks and 15/15 targeted
+fresh-JVM/menu checks pass. The user reports it looks usable for now (2026-10-04), providing
+provisional gameplay acceptance. Broader release quality remains open. The user's exact
+reproduction is max FPS 30, VSync On, FG reported active.
+
+Tracing confirms eligible generated output is copied to a separate drawable and presented before
+its real counterpart. Positive OS timestamps in the 30-FPS camera reproduction measure about
+60 display images per second. However, final composition used final-vs-pre-GUI colour difference
+to infer HUD coverage. The full-screen vanilla vignette changed those colours over most moving
+terrain and therefore replaced MetalFX midpoint pixels with real pixels. Matched-frame samples
+showed 95–97% changing raw interpolation but only 19–24% changing final SDR world output.
+Display callbacks/counters alone could not establish visible interpolation.
+
+Actual output-size R8 GUI coverage now records visible GUI fragments with original alpha/discard
+semantics. The vignette variant contributes zero coverage; its same-frame multiplicative
+attenuation modulates the generated SDR world instead of copying real world pixels. Exact hand,
+HUD, entity and beam protection remains. Native smoke applies a vignette to moving geometry
+and requires the genuine halfway centroid and exact HUD/hand pixels together.
+
+A second cause of periodic 30-FPS intervals was the adaptive headroom probe, which stopped
+generation every 120 iterations even under an explicit 30 cap. Deliberate caps at or below half
+the monitor refresh retain active interpolation after normal 24-frame cadence sampling; ordinary
+uncapped headroom probes remain. A standalone regression checks 360 uninterrupted capped calls.
+
+The new focused delivery test uses the ordinary adaptive path, explicit 30 cap, VSync, camera
+turning and native/spatial inputs. It separately requires displayed timestamps/order/rate, at
+least 70% changed final moving-world samples and a raw world pose closer to the halfway
+reprojection than either real-frame endpoint. Diagnostic pixel readback is test-only. Occluded
+runs remain failures even when their offscreen pixels pass. Broader visual/animated-entity quality
+remains open; exact protected content retains its real-frame cadence.
+
+---
+
+## BUG-041 — Unusable dragged motion, phantom trails, broken beams and orb terrain distortion
+
+**Status:** conservative interpolation rebuild installed (2026-10-04): 5/5 offline gates,
+171/171 copied-world checks and 11/11 visible fresh-JVM restart checks pass. User visual
+acceptance remains open. Package `754ca5ed…`; evidence/backup: `build/reports/frame-generation-rebuild/`.
+
+The prior `edbba8cb…` build passed display-cadence tests but the user reports unacceptable
+visual motion. Its enlarged entity boxes/patch matching could assign an orb or phantom's
+motion to nearby terrain; animated geometry and transparent beams do not have valid rigid-body
+motion. The forced half-flow fallback and additive world/screen residual could invent warped
+midpoints and doubled silhouettes. Full-rate native rendering was also always reduced to paired
+half-rate real rendering, even when interpolation provided no visible improvement.
+
+The rebuild uses camera-only geometric flow, exact fragment coverage instead of enclosing
+regions, and current AND prior raster footprints that preserve native pixels. It removes forced
+warping, additive screen residuals and simultaneous temporal history accumulation. An adaptive
+cadence policy retains native full-rate rendering when available. GPU scalar content validation
+rejects predominantly repeated moving world output and returns to native presentation.
+
+Native regression checks genuine stable-world midpoints, exact moving thin-beam/sprite
+current/prior footprints, surrounding-world motion, native hand/HUD, and rejection of the
+changing-illumination repeat case without a GPU fault. The gameplay fixture now samples after
+surface presentation, not before the current world capture, and includes a copied-world phantom,
+beacon and approaching XP-orb scene. Full entity deformation interpolation remains unsupported;
+protected content retains real-frame cadence, so broader visual quality is not declared fixed.
+
+---
+
+## BUG-040 — Continued uneven generated motion and dawn flashing
+
+**Status:** user rejected visual quality after the earlier 5/5 offline, 173/173 gameplay and
+11/11 restart passes. Superseded by BUG-041 (2026-10-04). The following describes that
+historical installation, including the fallback now removed.
+The user still sees uneven frame motion and flashing lighting around dawn. A native pixel
+regression now reproduces MetalFX returning current colour instead of a midpoint when background
+brightness changes, even after warmup. The generated SDR pass falls back to half-flow aligned
+current/previous world samples for repeated moving pixels. In that regression the eight-pixel
+real-frame advance now produces four-pixel midpoints under increasing illumination.
+
+The previous full-scene composited-UI inference also mixed world/postprocessing changes with
+foreground classification. Gameplay now supplies world only to MetalFX and captures native colour
+at the actual pre-GUI boundary. Changed GUI pixels and hand-depth coverage copy exact final native
+pixels. No lighting tick or simulation clock changes were made. This addresses measured rendering
+failure mechanisms; the precise source of the user's dawn flash remains subject to in-game retest.
+Native screen effects after world capture are carried into generated pixels via the pre-GUI/world
+colour contribution; a pixel regression verifies the contribution under rising illumination.
+An exposure-normalization attempt failed the motion regression and was discarded. Absolute
+presentation targets again dropped windowed generated images and were removed. Prior delivery
+measurements show roughly 60 displayed FPS at smaller outputs but inconsistent ordering and
+lower rates at 5K. The final ready-copy FIFO presentation service and deferred first-drawable
+reservation passed order/cadence checks at 59.997 displayed FPS in 5K windowed/fullscreen and
+camera motion. It never moves drawable acquisition/game state off the render thread or waits
+on display callbacks. Evidence: `build/reports/frame-generation-dawn/`.
+
+---
+
+## BUG-039 — Generated held items look transparent
+
+**Status:** native coverage corrected and installed; latest visible cadence and exact protected-hand
+checks pass, with user visual acceptance pending (2026-10-03).
+The user reports unexpectedly transparent items in hand and visibly uneven world motion with FG.
+The existing MetalFX composited-UI mode inferred foreground from final-vs-world colour. Two
+colour images do not uniquely determine foreground alpha; the earlier high-contrast cyan marker
+test did not cover low-contrast held geometry. After hand rendering and before the GUI depth
+clear, the native producer now captures an R8 hand-coverage texture. Covered generated pixels
+copy the native real SDR pixel exactly during output conversion, without inferred alpha or a
+second blend. Existing genuine item translucency, glint and HUD overlap retain native appearance.
+Missing coverage takes ordinary presentation. No CPU readback or altered vanilla hand render
+pipeline is added. Native smoke verifies low-contrast opaque hand bytes and moving world
+midpoints together. Packaged native, temporal and camera-motion checks passed exact protected
+hand-colour comparisons. All five mandatory offline gates pass; the latest clock-paced visible
+delivery and restart gate remain pending because the Mac was locked.
+
+Uneven delivery also has concrete evidence: the absolute-time prototype dropped many generated
+images in windowed mode (roughly 34–47 displayed FPS), while fullscreen approached 60. It was
+not installed. A bounded presentation-callback prototype preserved images but lowered displayed FPS
+(roughly 29–40) by serializing notification latency; it was not installed. The final render
+owner spaces submission requests by one refresh on a monotonic clock, with plain VSync
+and ordered scheduled handlers. Timer waits are capped at 50 ms; no callback wait, GPU
+completion fence or display-link/mailbox owner is introduced.
+
+---
+
+## BUG-038 — Frame Generation reports half the refresh rate and horizontal motion bands
+
+**Status:** final correction installed; on-screen order/cadence and restart checks pass
+(2026-10-03), user movement acceptance pending; see BUG-040.
+The user reports exactly 30 FPS with FG/VSync on a 60 Hz target, about 60 with VSync Off,
+and horizontal layers during horizontal camera movement. Vanilla FPS measures game renders;
+the native path presents two images per real render. A new OS-timestamp test confirmed about
+59.5 displayed / 29.75 paired real FPS, but also found genuine generated/real display-order
+errors that prior positive-count checks missed. Minimum-duration presentation and queue-ordered
+GPU blits did not establish drawable display order. Waiting for scheduled handlers alone did
+not eliminate the errors. The subsequent absolute-target prototype also dropped generated images in windowed mode.
+BUG-039 supersedes that prototype with clock-paced request separation.
+
+Interpolation also inherited temporal history rejection that zeroed camera flow on sky and
+newly exposed/colour-changing geometry despite having no reactive-mask input. Its independent
+producer now preserves geometric flow there; the temporal scaler's rejection remains intact.
+Interpolation jitter metadata uses the reconstruction sample-offset sign. Native smoke checks
+flow at sky, changed-depth/colour terrain and viewport edges. F3 and settings report measured
+display FPS independently of Minecraft's real-render FPS.
+
+The exact user-visible horizontal band has not been pixel/video captured, so these verified
+defects are not asserted to be its only cause. Copied-world cadence tests require distinct
+VSync times, alternating images, doubled display-vs-real rate and visible-window confirmation.
+See `docs/phase7/frame-generation/gameplay.md` for the contract and evidence limits.
+
+---
+
+## BUG-037 — Frame Generation toggle leaves the game unresponsive across restarts
+
+**Status:** **FIXED for gameplay; legacy display-link cause unverified** (2026-10-03).
+The final gameplay implementation uses ordinary render-thread drawable ownership, actual MetalFX
+midpoints and native hand/HUD composition. Packaged tests confirm responsive generated/real OS
+presentation across live controls/lifecycle and a fresh JVM saved-On restart. The toggle is restored;
+the display-link thread is never started by gameplay. See [gameplay verification](docs/phase7/frame-generation/gameplay.md).
+The intermediate mitigation and original evidence follow.
+The user reports an unresponsive game after enabling Frame Generation, including after restarting.
+The normal test instance has `enableFrameGeneration=true`; its latest log activates the experimental
+presenter at startup. Rendering continues through the menu census and 30-second telemetry (16.7 ms
+last frame, 253 draws), so this log does not prove a render-thread deadlock. There was no live game
+process available for a thread sample. Actual delivery/stall attribution remains unverified.
+
+The product defect is established: the gameplay control activated an unaccepted display-link path
+and persisted it, allowing restart to repeat the failure. Detached ownership/snapshot tests did not
+establish responsiveness or screen delivery. Gameplay availability now remains closed independently
+of saved preferences and both launch flags. The MetalFX page shows Frame Generation Off/Unavailable
+with a recovery tooltip; ordinary acquisition/presentation remains active. Native foundation APIs
+and tests remain available without a gameplay bypass. Generated gameplay frames are still pending.
+
+Regression tests put saved On and both true launch flags together, assert the effective setting is
+Off, then exercise ordinary surface acquisition/presentation under repeated On requests, FIFO,
+IMMEDIATE, odd resize and close. All five offline gates pass. Recovery resets only the installed
+instance's `enableFrameGeneration` key to false and installs a verified recovery JAR with backups.
+This mitigates activation/restart recurrence; it does not claim the native scheduler is fixed or
+that an on-screen gameplay rerun passed. Evidence: `build/reports/frame-generation-recovery/`.
+
 ## BUG-036 — Stationary foliage edges reported unstable with temporal
 
 **Status:** **OPEN; visual root cause unverified** (2026-10-03).

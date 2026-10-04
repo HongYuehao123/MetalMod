@@ -63,7 +63,7 @@ public abstract class SuperResolutionMixin {
     @Redirect(method = "renderLevel", at = @At(value = "INVOKE", target =
             "Lcom/mojang/blaze3d/systems/CommandEncoder;clearDepthTexture(Lcom/mojang/blaze3d/textures/GpuTexture;D)V"), require = 1)
     private void metalmod$preserveWorldDepth(CommandEncoder encoder, GpuTexture depth, double clear) {
-        if (this.metalmod$fx.temporalActive() && this.metalmod$output!=null) {
+        if ((this.metalmod$fx.temporalActive() || this.metalmod$fx.frameGenerationActive()) && this.metalmod$output!=null) {
             Diagnostics.hook("Temporal.worldReconstruction");
             RenderTarget output=this.metalmod$output;
             this.mainRenderTarget=output;this.metalmod$output=null;
@@ -73,6 +73,9 @@ public abstract class SuperResolutionMixin {
             this.metalmod$bindSkyTarget(output);
             encoder.clearDepthTexture(output.getDepthTexture(),clear);
             return;
+        }
+        if(this.metalmod$fx.frameGenerationActive()) {
+            this.metalmod$fx.captureFrameWorld(this.mainRenderTarget,this.mainRenderTarget);
         }
         encoder.clearDepthTexture(depth, clear);
     }
@@ -123,6 +126,7 @@ public abstract class SuperResolutionMixin {
                     this.metalmod$time, this.metalmod$delta, this.metalmod$blur, this.metalmod$camera, this.metalmod$rgss);
         } else if (!this.metalmod$earlyTemporal) this.metalmod$fx.finish(this.mainRenderTarget);
         this.metalmod$bindSkyTarget(this.mainRenderTarget);
+        this.metalmod$fx.captureFrameHand(this.mainRenderTarget);
         if (this.metalmod$deferredScreenshot) {
             this.metalmod$deferredScreenshot = false;
             this.tryTakeScreenshotIfNeeded();

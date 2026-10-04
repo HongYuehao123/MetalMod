@@ -5,19 +5,21 @@ import com.mojang.blaze3d.systems.GpuSurface;
 import com.mojang.blaze3d.systems.GpuSurfaceBackend;
 import com.mojang.blaze3d.systems.SurfaceException;
 import com.mojang.blaze3d.textures.GpuTextureView;
-import com.mojang.blaze3d.textures.GpuTexture;
 
 import java.lang.foreign.MemorySegment;
 import java.util.Collection;
 import java.util.List;
+import net.metalmod.upscaling.FrameGenerationSettings;
+import net.metalmod.upscaling.FrameGenerationCoordinator;
 
 /**
- * Phase 3 surface: owns the CAMetalLayer attached to the game window.
+ * Surface owner for ordinary presentation and interpolated frame pairs.
  *
  * <p>acquireNextTexture() takes a drawable; blitFromTexture() records the colour view the engine
  * wants shown; present() blits that texture into the drawable (or clears a fallback colour when the
- * engine handed us no source). Encoding the blit and the present in one command buffer on the same
- * queue as the engine's render passes is required for ordering.
+ * engine handed us no source). The default path encodes copy and present on the render queue.
+ * With Frame Generation and FIFO, the same render-thread owner presents an eligible midpoint
+ * followed by its real frame. The second display acquisition never rotates staging or light rings.
  */
 public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
@@ -28,6 +30,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     private final MemorySegment layer;
 
     private boolean configured;
+    private boolean fifo;
     private int width;
     private int height;
     private MemorySegment drawable = MemorySegment.NULL;
@@ -35,6 +38,8 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     private final float[] clearColor = FALLBACK_CLEAR.clone();
     private boolean closed;
     private boolean firstPresentLogged;
+    private boolean frameAcquired;
+    private long renderedFrameId;
 
     public MetalSurfaceBackend(MetalDevice device, MemorySegment layer) {
         this.device = device;
@@ -43,6 +48,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     @Override
     public void configure(GpuSurface.Configuration configuration) throws SurfaceException {
+        if (this.frameAcquired) throw new SurfaceException("Cannot reconfigure an acquired frame");
         this.width = configuration.width();
         this.height = configuration.height();
         boolean vsync = configuration.presentMode() == GpuSurface.PresentMode.FIFO
@@ -52,6 +58,8 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             throw new SurfaceException("CAMetalLayer.configure failed with status " + rc);
         }
         this.configured = true;
+        this.fifo=vsync;
+        FrameGenerationCoordinator.surfaceMode(vsync);
     }
 
     @Override
@@ -61,6 +69,14 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     @Override
     public void acquireNextTexture() throws SurfaceException {
+        if (!this.configured || this.closed) throw new SurfaceException("Surface is not configured");
+        if (this.frameAcquired) throw new SurfaceException("Previous frame has not been presented");
+        if(this.fifo&&FrameGenerationSettings.current().enabled()) {
+            // The engine renders offscreen. Reserve a drawable after world/FG work has
+            // entered the GPU queue, so a generated pair cannot stall the next world.
+            MetalNative.utilityEndFrame();
+            this.drawable=MemorySegment.NULL;this.frameAcquired=true;return;
+        }
         final MemorySegment[] result;
         // nextDrawable blocks until the GPU (or the display) frees a drawable, so the time spent
         // here is drawable acquisition time. Other GPU-related waits are captured separately by F8.
@@ -75,6 +91,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
             throw new SurfaceException("CAMetalLayer nextDrawable returned nil");
         }
         this.drawable = result[0];
+        this.frameAcquired = true;
     }
 
     @Override
@@ -91,7 +108,7 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
 
     @Override
     public void present() {
-        if (this.drawable == null || this.drawable.address() == 0) {
+        if (!this.frameAcquired) {
             return;
         }
         // Frame boundary: publishes the frame interval, the GPU time accumulated since the previous
@@ -102,8 +119,19 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
         this.device.applyPendingLightingSettings();
         this.device.endDynamicLightFrame();
         MetalDevice.endFrame();
+        this.frameAcquired = false;
+        ++this.renderedFrameId;
         float[] color = this.clearColor;
         int rc;
+        if (FrameGenerationCoordinator.present(this.layer,this.drawable,this.sourceTexture)) {
+            this.sourceTexture=MemorySegment.NULL;this.drawable=MemorySegment.NULL;
+            return;
+        }
+        if(this.drawable.address()==0) {
+            long waitStart=System.nanoTime();this.drawable=MetalNative.layerAcquireDisplay(this.layer);
+            MetalDevice.noteAcquireWait((System.nanoTime()-waitStart)/1_000_000.0);
+            if(this.drawable.address()==0)throw new IllegalStateException("CAMetalLayer deferred drawable acquisition failed");
+        }
         if (this.sourceTexture.address() != 0) {
             MetalDevice.countCommandBuffer();   // the present blit is a command buffer too
             rc = MetalNative.layerPresentTexture(this.layer, this.drawable, this.sourceTexture);
@@ -128,12 +156,15 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
         if (this.closed) {
             return;
         }
+        FrameGenerationCoordinator.surfaceMode(false);
+        FrameGenerationSettings.publish(false, "waiting for a Metal surface");
         this.closed = true;
         MetalNative.layerRelease(this.layer);
     }
 
-    @Override
-    public Collection<GpuSurface.PresentMode> supportedPresentModes() {
-        return List.of(GpuSurface.PresentMode.FIFO, GpuSurface.PresentMode.IMMEDIATE);
+    @Override public Collection<GpuSurface.PresentMode> supportedPresentModes() {
+        return List.of(GpuSurface.PresentMode.FIFO,GpuSurface.PresentMode.IMMEDIATE);
     }
+    public boolean displayLinkActive() { return false; }
+    public long[] displayLinkStats() { return new long[14]; }
 }

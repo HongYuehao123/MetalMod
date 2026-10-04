@@ -1,3 +1,7 @@
+> **2026-10-04:** user-rejected frame generation is rebuilt conservatively with camera motion,
+> exact raster protection, native-rate preservation and content rejection. See
+> [current contract and limits](phase7/frame-generation/rebuild.md); arbitrary-scene visual acceptance remains open.
+
 > 2026-10-03 implementation update: temporal gameplay inputs, reconstruction, reactive coverage
 > and history lifecycle are connected. The user explicitly requested a live temporal switch,
 > superseding this plan's earlier single-method UI restriction during testing. The switch selects
@@ -289,12 +293,28 @@ before implementation; do not copy jitter/motion signs from another renderer wit
 
 ### 7C — Frame generation and display pacing, independently gated
 
-Retain this roadmap milestone, but **upscaling On does not authorize automatic frame generation**.
-Develop it behind a developer-only flag, Off by default. A player-facing frame-generation control
-requires a later product decision; it must not turn the two-state upscaling switch into a mode cycle.
-If that decision is deferred, record 7C as deferred rather than declaring all Phase 7 complete.
+2026-10-03: implementation started at user request. The isolated native/Panama foundation and
+real GPU pixel tests are delivered; see [ABI v1](phase7/frame-generation/contract.md). This starts
+7C without enabling gameplay generated presentation. The experimental display-link scheduler
+is now implemented; final real-window verification is blocked by the locked Mac. Gameplay UI
+composition and latency acceptance remain pending; see [display-link contract](phase7/frame-generation/display-link.md).
 
-- [ ] Probe interpolation independently and verify its selected API works with the backend command
+Retain this roadmap milestone, but **upscaling On does not authorize automatic frame generation**.
+**Current gameplay update:** [actual interpolation](phase7/frame-generation/gameplay.md) and ordinary-owner
+pair presentation are implemented and packaged tested, including saved-On restart. CAMetalDisplayLink
+is not used by gameplay; quality/performance/latency release acceptance remains pending.
+
+**Historical BUG-037 recovery:** the gameplay control was disabled and effective Off regardless of saved
+preferences or launch flags; its native delivery/stall cause remains open. Restore activation only
+after actual screen-delivery and responsiveness acceptance.
+
+The user authorized a separate player-facing **Frame Generation: ON/OFF** control on
+2026-10-03. It lives on the renamed **MetalFX** settings page, defaults Off, persists independently
+of Super Resolution, and applies at the next real-frame acquisition. Its experimental caption
+explicitly states that gameplay generated frames are pending: On currently enables FIFO display-link
+pacing only. This control does not constitute 7C quality, delivery or latency acceptance.
+
+- [x] Probe interpolation independently and verify its selected API works with the backend command
       model. Apple exposes both ordinary and Metal 4-specific support queries; do not assume a full
       Metal 4 backend rewrite is required just because interpolation was introduced with Metal 4.
       [Apple interpolation descriptor](https://developer.apple.com/documentation/metalfx/mtlfxframeinterpolatordescriptor?language=objc)

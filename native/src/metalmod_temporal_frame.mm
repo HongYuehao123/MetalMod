@@ -34,7 +34,7 @@ kernel void motionInputs(texture2d<float> current [[texture(0)]], depth2d<float>
     float2 size=float2(dimensions), p=float2(pixel)+0.5f;
     float z=depth.read(pixel);
     float rejection=1; float2 vector=0;
-    if(params.meta.y!=0 && z>0 && isfinite(z)) {
+    if(params.meta.y!=0 && (z>0 || params.meta.z!=0) && isfinite(z)) {
         // Undo the current sample offset before reconstructing the camera-relative world point.
         float2 unjittered=p+params.jitter.xy;
         float4 clip=float4(unjittered.x*2/size.x-1,1-unjittered.y*2/size.y,z,1);
@@ -44,6 +44,13 @@ kernel void motionInputs(texture2d<float> current [[texture(0)]], depth2d<float>
         float4 world4=(*inverseCurrent)*clip;
         float3 world=world4.xyz/world4.w;
         float4 oldClip=params.previousFromCurrent*clip;
+        // Interpolation has no reactive mask. Retain geometric camera flow even on
+        // newly exposed pixels, colour changes and sky (reversed-Z infinity).
+        // Temporal reconstruction keeps its separate history-rejection policy.
+        if(params.meta.z!=0 && oldClip.w>0 && all(isfinite(oldClip))) {
+            float2 oldNdc=oldClip.xy/oldClip.w;
+            vector=float2((oldNdc.x+1)*size.x/2,(1-oldNdc.y)*size.y/2)-unjittered;
+        }
         bool objectNew=false;
         float3 rigidDelta=0;
         uint membership=0;
@@ -65,6 +72,7 @@ kernel void motionInputs(texture2d<float> current [[texture(0)]], depth2d<float>
                 float3 ndc=oldClip.xyz/oldClip.w;
                 float2 oldUnjittered=float2((ndc.x+1)*size.x/2,(1-ndc.y)*size.y/2);
                 float2 q=oldUnjittered-params.jitter.zw;
+                if(params.meta.z!=0)vector=oldUnjittered-unjittered;
                 if(all(q>=1.5f)&&all(q<size-1.5f)&&ndc.z>0&&ndc.z<=1) {
                     float observed=previousDepth.sample(historySampler,q/size);
                     // Reversed-Z agreement rejects newly uncovered/background and missing geometry.
@@ -134,36 +142,43 @@ static id<MTLTexture> frameTexture(id<MTLDevice> device,MTLPixelFormat format,in
     descriptor.usage=usage;
     return [device newTextureWithDescriptor:descriptor];
 }
-void* mmm_fx_temporal_frame_create(void* device,int32_t iw,int32_t ih,int32_t ow,int32_t oh,int64_t sdrFormat) {
+static void* createFrame(void* device,int32_t iw,int32_t ih,int32_t ow,int32_t oh,int64_t sdrFormat,bool scaling) {
     if(!device)return NULL;
     @autoreleasepool { @try {
         MMMTemporalFrame* state=[MMMTemporalFrame new];state.device=(__bridge id<MTLDevice>)device;state.sdrFormat=(MTLPixelFormat)sdrFormat;
         state->failed.store(false);state->duration.store(-1);state->history=false;
-        state.scaler=mmm_fx_temporal_create(device,iw,ih,ow,oh);
+        state.scaler=scaling?mmm_fx_temporal_create(device,iw,ih,ow,oh):NULL;
         state.converter=mmm_fx_temporal_color_create(device,sdrFormat);
-        if(!state.scaler||!state.converter)return NULL;
+        if((scaling&&!state.scaler)||!state.converter)return NULL;
         NSError* error=nil;
         id<MTLLibrary> library=[state.device newLibraryWithSource:[NSString stringWithUTF8String:frameSource] options:nil error:&error];
         if(!library){NSLog(@"[MetalMod] Temporal inputs: %@",error);return NULL;}
         state.inputs=[state.device newComputePipelineStateWithFunction:[library newFunctionWithName:@"motionInputs"] error:&error];
         if(!state.inputs){NSLog(@"[MetalMod] Temporal inputs pipeline: %@",error);return NULL;}
-        auto usage=[&](int role){return (MTLTextureUsage)mmm_fx_temporal_texture_usage(state.scaler,role);};
+        auto usage=[&](int role){return scaling?(MTLTextureUsage)mmm_fx_temporal_texture_usage(state.scaler,role):MTLTextureUsageShaderRead;};
         state.color=frameTexture(state.device,MTLPixelFormatRGBA16Float,iw,ih,usage(0)|MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead);
         state.colorHistory=frameTexture(state.device,MTLPixelFormatRGBA16Float,iw,ih,MTLTextureUsageShaderRead);
         state.depthHistory=frameTexture(state.device,MTLPixelFormatDepth32Float,iw,ih,MTLTextureUsageShaderRead);
         state.coverage=frameTexture(state.device,MTLPixelFormatR8Unorm,iw,ih,MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead);
         state.motion=frameTexture(state.device,MTLPixelFormatRG16Float,iw,ih,usage(2)|MTLTextureUsageShaderWrite);
         state.reactive=frameTexture(state.device,MTLPixelFormatR8Unorm,iw,ih,usage(3)|MTLTextureUsageShaderWrite);
-        state.output=frameTexture(state.device,MTLPixelFormatRGBA16Float,ow,oh,usage(4)|MTLTextureUsageShaderRead,true);
-        if(!state.color||!state.colorHistory||!state.depthHistory||!state.motion||!state.reactive||!state.coverage||!state.output)return NULL;
+        state.output=scaling?frameTexture(state.device,MTLPixelFormatRGBA16Float,ow,oh,usage(4)|MTLTextureUsageShaderRead,true):nil;
+        if(!state.color||!state.colorHistory||!state.depthHistory||!state.motion||!state.reactive||!state.coverage||(scaling&&!state.output))return NULL;
         return (__bridge_retained void*)state;
     } @catch(NSException* error){NSLog(@"[MetalMod] Temporal frame creation: %@",error.reason);return NULL;} }
+}
+void* mmm_fx_temporal_frame_create(void* device,int32_t iw,int32_t ih,int32_t ow,int32_t oh,int64_t format) {
+    return createFrame(device,iw,ih,ow,oh,format,true);
+}
+void* mmm_fx_motion_frame_create(void* device,int32_t iw,int32_t ih,int64_t format) {
+    if(iw<=0||ih<=0||iw>16384||ih>16384)return NULL;
+    return createFrame(device,iw,ih,iw,ih,format,false);
 }
 void mmm_fx_temporal_frame_release(void* frame){if(frame){MMMTemporalFrame* released=(__bridge_transfer MMMTemporalFrame*)frame;(void)released;}}
 bool mmm_fx_temporal_frame_healthy(void* frame){
     if(!frame)return false;
     MMMTemporalFrame* state=(__bridge MMMTemporalFrame*)frame;
-    return !state->failed.load()&&mmm_fx_temporal_healthy(state.scaler)&&mmm_fx_temporal_color_healthy(state.converter);
+    return !state->failed.load()&&(!state.scaler||mmm_fx_temporal_healthy(state.scaler))&&mmm_fx_temporal_color_healthy(state.converter);
 }
 void* mmm_fx_temporal_frame_texture(void* frame,int32_t role) {
     if(!frame)return NULL;
@@ -176,9 +191,9 @@ int64_t mmm_fx_temporal_frame_gpu_duration_ns(void* frame){return frame?((__brid
 
 // matrices = previousFromCurrent, inverseCurrentPV, previousPV; column-major float4x4.
 // objects = triples of float4: camera-relative lower.xyz / prior-valid.w, upper.xyz, previous-current delta.xyz.
-int32_t mmm_fx_temporal_frame_encode(void* frame,void* commandBuffer,void* sceneColor,void* sceneDepth,void* destination,
+static int32_t encodeFrame(void* frame,void* commandBuffer,void* sceneColor,void* sceneDepth,void* destination,
         const float* matrices,const float* objects,int32_t count,float jitterX,float jitterY,bool reset) {
-    if(!frame||!commandBuffer||!sceneColor||!sceneDepth||!destination||!matrices||count<0||count>1024||(count&&!objects))return -1;
+    if(!frame||!commandBuffer||!sceneColor||!sceneDepth||!matrices||count<0||count>1024||(count&&!objects))return -1;
     if(!mmm_fx_temporal_frame_healthy(frame))return -2;
     for(int i=0;i<48;i++)if(!std::isfinite(matrices[i]))return -4;
     for(int i=0;i<count*12;i++)if(!std::isfinite(objects[i]))return -4;
@@ -187,9 +202,9 @@ int32_t mmm_fx_temporal_frame_encode(void* frame,void* commandBuffer,void* scene
     id<MTLCommandBuffer> cb=(__bridge id<MTLCommandBuffer>)commandBuffer;
     id<MTLTexture> depth=(__bridge id<MTLTexture>)sceneDepth;
     id<MTLTexture> target=(__bridge id<MTLTexture>)destination;
-    if(target.device!=state.device||target.pixelFormat!=state.sdrFormat||target.width!=state.output.width
+    if(destination&&(target.device!=state.device||target.pixelFormat!=state.sdrFormat||target.width!=state.output.width
             ||target.height!=state.output.height||target.textureType!=MTLTextureType2D||target.sampleCount!=1
-            ||target.arrayLength!=1||!(target.usage&MTLTextureUsageRenderTarget))return -3;
+            ||target.arrayLength!=1||!(target.usage&MTLTextureUsageRenderTarget)))return -3;
     if(cb.status!=MTLCommandBufferStatusNotEnqueued||cb.device!=state.device||(state.queue&&state.queue!=cb.commandQueue)
             ||depth.device!=state.device||depth.pixelFormat!=MTLPixelFormatDepth32Float
             ||depth.width!=state.color.width||depth.height!=state.color.height||depth.sampleCount!=1||depth.textureType!=MTLTextureType2D||depth.arrayLength!=1
@@ -206,7 +221,7 @@ int32_t mmm_fx_temporal_frame_encode(void* frame,void* commandBuffer,void* scene
         struct alignas(16) Params {float matrix[16];float jitter[4];uint32_t meta[4];} params{};
         std::memcpy(params.matrix,matrices,64);
         params.jitter[0]=jitterX;params.jitter[1]=jitterY;params.jitter[2]=state->lastX;params.jitter[3]=state->lastY;
-        params.meta[0]=count;params.meta[1]=state->history&&!reset;
+        params.meta[0]=count;params.meta[1]=state->history&&!reset;params.meta[2]=state.scaler==NULL;
         id<MTLComputeCommandEncoder> encoder=[cb computeCommandEncoder];
         if(!encoder)return -6;
         [encoder setComputePipelineState:state.inputs];[encoder setBytes:&params length:sizeof(params) atIndex:0];
@@ -218,11 +233,13 @@ int32_t mmm_fx_temporal_frame_encode(void* frame,void* commandBuffer,void* scene
         [encoder endEncoding];
         // Our projection renders f(pixel+jitter); MetalFX samples the resulting texture at
         // pixel-jitter to return to the unjittered reference. Motion inputs remain unjittered.
+        if(destination) {
         rc=mmm_fx_temporal_encode(state.scaler,commandBuffer,(__bridge void*)state.color,sceneDepth,
                 (__bridge void*)state.motion,(__bridge void*)state.reactive,(__bridge void*)state.output,-jitterX,-jitterY,true,reset);
         if(rc){state->failed.store(true);return rc;}
         rc=mmm_fx_temporal_color_encode(state.converter,commandBuffer,(__bridge void*)state.output,destination,false);
         if(rc){state->failed.store(true);return rc;}
+        }
         id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];if(!blit){state->failed.store(true);return -6;}
         [blit copyFromTexture:state.color toTexture:state.colorHistory];[blit copyFromTexture:depth toTexture:state.depthHistory];[blit endEncoding];
         state.queue=cb.commandQueue;state->history=true;state->lastX=jitterX;state->lastY=jitterY;
@@ -233,4 +250,14 @@ int32_t mmm_fx_temporal_frame_encode(void* frame,void* commandBuffer,void* scene
         }];
         return 0;
     } @catch(NSException* error){state->failed.store(true);NSLog(@"[MetalMod] Temporal frame encode: %@",error.reason);return -5;} }
+}
+
+int32_t mmm_fx_temporal_frame_encode(void* frame,void* cb,void* color,void* depth,void* destination,
+        const float* matrices,const float* objects,int32_t count,float jx,float jy,bool reset) {
+    if(!destination)return -1;
+    return encodeFrame(frame,cb,color,depth,destination,matrices,objects,count,jx,jy,reset);
+}
+int32_t mmm_fx_motion_frame_prepare(void* frame,void* cb,void* color,void* depth,
+        const float* matrices,const float* objects,int32_t count,float jx,float jy,bool reset) {
+    return encodeFrame(frame,cb,color,depth,NULL,matrices,objects,count,jx,jy,reset);
 }

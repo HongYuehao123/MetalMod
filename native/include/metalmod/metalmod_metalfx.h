@@ -59,6 +59,12 @@ MMM_API int32_t mmm_fx_temporal_encode(void* scaler, void* commandBuffer, void* 
 /// matrices: three column-major float4x4 (previousFromCurrent, inverseCurrentPV, previousPV).
 /// objects: count triples of float4 (lower.xyz/prior-valid.w, upper.xyz, previous-current delta.xyz),
 /// all positions camera-relative to this frame. Unknown/ambiguous/deformed samples reject history.
+/* Camera/object motion producer, independent of temporal reconstruction capability/preferences.
+ * prepare updates linear input, RG16F motion and preserved world depth in command queue order.
+ */
+MMM_API void* mmm_fx_motion_frame_create(void* device,int32_t iw,int32_t ih,int64_t sdrFormat);
+MMM_API int32_t mmm_fx_motion_frame_prepare(void* frame,void* cb,void* color,void* depth,
+    const float* matrices,const float* objects,int32_t count,float jx,float jy,bool reset);
 MMM_API void* mmm_fx_temporal_frame_create(void* device, int32_t iw, int32_t ih, int32_t ow, int32_t oh, int64_t sdrFormat);
 MMM_API void mmm_fx_temporal_frame_release(void* frame);
 MMM_API bool mmm_fx_temporal_frame_healthy(void* frame);

@@ -36,6 +36,7 @@ public final class MetalFxCoordinator implements AutoCloseable {
     private static MetalFxCoordinator activeTemporal;
     /** Internal raster coverage attachment; never changes the engine's public attachment contract. */
     public static MemorySegment coverageFor(GpuTexture texture) {
+        var fg=FrameGenerationCoordinator.coverageFor(texture);if(fg.address()!=0)return fg;
         var owner=activeTemporal;
         return owner!=null && owner.scene!=null && texture==owner.scene.getColorTexture()
                 ? MetalNative.temporalFrameTexture(owner.temporalFrame,5):MemorySegment.NULL;
@@ -47,10 +48,13 @@ public final class MetalFxCoordinator implements AutoCloseable {
     private TextureTarget scene;
     private MemorySegment scaler = MemorySegment.NULL;
     private MemorySegment temporalFrame = MemorySegment.NULL;
+    private final FrameGenerationCoordinator frames=new FrameGenerationCoordinator();
+    private boolean frameWorldCaptured;
     private final TemporalSceneMotion motion = new TemporalSceneMotion();
     /** True only for a validated, actively reduced temporal scene. */
     public boolean temporalActive() { return rendering && temporalFrame.address()!=0; }
     public void captureTemporalProjection(org.joml.Matrix4fc projection, net.minecraft.client.renderer.state.level.LevelRenderState level) {
+        frames.projection(projection,level);
         if (!temporalActive()) return;
         if (motion.capture(projection,level,worldHooks)) {
             jitterProof.reset();jitterProof.begin(true,generation,scene.width,scene.height);
@@ -69,6 +73,8 @@ public final class MetalFxCoordinator implements AutoCloseable {
     /** Called at the initial target clear, before Globals upload, world passes and post chains. */
     public RenderTarget begin(RenderTarget output, boolean world, BiConsumer<Integer, Integer> resizeLevel) {
         worldHooks++;
+        frameWorldCaptured=false;
+        frames.begin(world,worldHooks);
         // Developer-only lifecycle stress: recreate real scene/scaler resources in a running world.
         int recreateEvery = Integer.getInteger("metalmod.fxRecreateEvery", 0);
         if (world && recreateEvery > 0 && worldHooks % recreateEvery == 0) invalidate();
@@ -77,7 +83,7 @@ public final class MetalFxCoordinator implements AutoCloseable {
         int ow = output.width, oh = output.height;
         UpscalingSettings.Dimensions size = UpscalingSettings.dimensions(ow, oh, settings);
         long format = output.getColorTexture() == null ? 0 : MetalFormat.mtlPixelFormat(output.getColorTexture().getFormat());
-        Key next = new Key(settings, ow, oh, active == null ? 0 : active.deviceHandle().address(), format, reload, TemporalJitterProof.requested());
+        Key next = new Key(settings, ow, oh, active == null ? 0 : active.deviceHandle().address(), format, reload, TemporalJitterProof.requested()&&!FrameGenerationSettings.current().enabled());
         if (!next.equals(key)) {
             retire();
             key = next;
@@ -163,9 +169,20 @@ public final class MetalFxCoordinator implements AutoCloseable {
                 publish(settings,ow,oh);return output;
             }
         } else if(activeTemporal==this)activeTemporal=null;
+        frames.prepare(output,rendering?scene:output);
         return rendering ? scene : output;
     }
 
+    /** Native and spatial modes also finish before the hand-depth clear when interpolation is On. */
+    public boolean frameGenerationActive() { return FrameGenerationSettings.current().enabled(); }
+    public void captureFrameWorld(RenderTarget output,RenderTarget input) {
+        if(frameWorldCaptured)return;
+        var jitter=TemporalJitterProof.stats();
+        frames.capture(output,input,temporalFrame.address()!=0?jitter.jitterX():0,
+                temporalFrame.address()!=0?jitter.jitterY():0);
+        frameWorldCaptured=true;
+    }
+    public void captureFrameHand(RenderTarget output) {frames.captureHand(output);}
     /** Reconstruct after outlines/post effects and before native-depth clear and GUI rendering. */
     public void finish(RenderTarget output) {
         jitterProof.end();if(activeTemporal==this)activeTemporal=null;
@@ -185,6 +202,7 @@ public final class MetalFxCoordinator implements AutoCloseable {
                 throw new IllegalStateException("MetalFX recovery unavailable; refusing incomplete frame");
             recoveries++;
         }
+        captureFrameWorld(output,scene);
         publish(key.settings, output.width, output.height, scene.width, scene.height);
     }
     private int encodeTemporal(RenderTarget output) {
@@ -218,13 +236,14 @@ public final class MetalFxCoordinator implements AutoCloseable {
     }
     private void publish(UpscalingSettings.Snapshot settings, int ow, int oh, int sw, int sh) {
         stats = new Stats(settings.enabled(), settings.strength(), sw != ow || sh != oh
-                ? failed ? "Plain recovery" : temporalFrame.address()!=0 ? "MetalFX temporal" : "MetalFX spatial" : "Native", reason,
+                ? failed ? "Plain recovery" : temporalFrame.address()!=0 ? "MetalFX temporal" : "MetalFX spatial" : "Native", FrameGenerationSettings.current().enabled()&&TemporalJitterProof.requested()
+                        ? "FG uses spatial input to avoid accumulating temporal history twice" : reason,
                 sw, sh, ow, oh, generation, creates, failures, encodes, recoveries, retirements, worldHooks, uiHooks,
                 !failed && (sw != ow || sh != oh) ? temporalFrame.address()!=0
                         ? MetalNative.temporalFrameDuration(temporalFrame) : MetalNative.fxGpuDuration(scaler) : -1);
     }
     /** A relevant resource change is an explicit retry event; no per-frame creation retries. */
-    public void invalidate() { reload++; levelWidth = levelHeight = 0; }
+    public void invalidate() { frames.invalidate();reload++; levelWidth = levelHeight = 0; }
     private void retire() {
         if(activeTemporal==this)activeTemporal=null;
         jitterProof.reset();motion.clear("resource generation");
@@ -237,5 +256,5 @@ public final class MetalFxCoordinator implements AutoCloseable {
         }
         scene = null; scaler = MemorySegment.NULL; temporalFrame=MemorySegment.NULL; device = null;
     }
-    @Override public void close() { retire(); key = null; rendering = false; }
+    @Override public void close() { frames.close();retire(); key = null; rendering = false; }
 }

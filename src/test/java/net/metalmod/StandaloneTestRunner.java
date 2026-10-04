@@ -24,6 +24,11 @@ public class StandaloneTestRunner {
         failures += net.metalmod.upscaling.UpscalingSettingsTest.runTests();
         testNativeBridgeLoading();
         failures += net.metalmod.upscaling.TemporalPrototypeTest.runTests();
+        failures += net.metalmod.upscaling.FrameInterpolationTest.runTests();
+        failures += net.metalmod.upscaling.DisplayLinkTest.runTests();
+        failures += net.metalmod.config.FrameGenerationConfigTest.runTests();
+        failures += net.metalmod.upscaling.FrameGenerationSurfaceTest.runTests();
+        failures += net.metalmod.upscaling.FrameGenerationCadenceTest.runTests();
         testUmaOwnershipRouting();
         failures += net.metalmod.backend.MetalRenderPassBackendTest.runTests();
         failures += net.metalmod.backend.MetalFormatTest.runTests();

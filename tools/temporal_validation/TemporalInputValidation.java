@@ -2,7 +2,7 @@ package net.metalmod.validation;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.metalmod.Diagnostics;
-import net.metalmod.client.gui.MetalModSuperResolutionScreen;
+import net.metalmod.client.gui.MetalModMetalFxScreen;
 import net.metalmod.backend.*;
 import net.metalmod.upscaling.*;
 import net.minecraft.client.Minecraft;
@@ -202,7 +202,7 @@ public final class TemporalInputValidation implements ClientModInitializer {
         check(stage.name()+" exact dimensions",sr.sceneWidth()==dimensions.width()
                 && sr.sceneHeight()==dimensions.height(),dimensions.toString());
         if (stage.screen().equals("settings")) {
-            check(stage.name()+" settings screen",mc.gui.screen() instanceof MetalModSuperResolutionScreen,"");
+            check(stage.name()+" settings screen",mc.gui.screen() instanceof MetalModMetalFxScreen,"");
             var saved=new net.metalmod.config.MetalConfig();saved.load();
             check(stage.name()+" saved temporal switch",saved.enableTemporalUpscaling==stage.jitter()
                     && TemporalJitterProof.requested()==stage.jitter(),"requested="+TemporalJitterProof.requested());
@@ -253,7 +253,7 @@ public final class TemporalInputValidation implements ClientModInitializer {
         if (stage.resize()) GLFW.glfwSetWindowSize(mc.getWindow().handle(),1921,1081);
         switch(stage.screen()) {
             case "inventory" -> mc.gui.setScreen(new InventoryScreen(mc.player));
-            case "settings" -> mc.gui.setScreen(new MetalModSuperResolutionScreen(null));
+            case "settings" -> mc.gui.setScreen(new MetalModMetalFxScreen(null));
             case "pause" -> mc.gui.setScreen(new PauseScreen(true));
             case "menu" -> mc.disconnect(new TitleScreen(),false);
             default -> mc.gui.setScreen(null);

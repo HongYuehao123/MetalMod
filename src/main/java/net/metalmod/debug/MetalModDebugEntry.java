@@ -75,6 +75,12 @@ public class MetalModDebugEntry implements DebugScreenEntry {
                         + history.resets() + " " + history.reason());
             }
             displayer.addLine("§6[MetalMod]§r " + sr.summary());
+            if(net.metalmod.upscaling.FrameGenerationSettings.current().enabled()) {
+                var fg=net.metalmod.upscaling.FrameGenerationCoordinator.stats();
+                displayer.addLine("§6[MetalMod]§r FG display " + oneDecimal((float)fg.displayedFps()) + " FPS (real + generated) | rendered/eligible " + fg.captures()+"/"+fg.eligible()
+                        + " | displayed generated/real " + fg.generatedDisplayed()+"/"+fg.realDisplayed()
+                        + " | " + net.metalmod.upscaling.FrameGenerationSettings.status().reason());
+            }
             if (sr.requested()) displayer.addLine("§6[MetalMod]§r SR gen " + sr.generation()
                     + " create/fail/encode " + sr.creates() + "/" + sr.failures() + "/" + sr.encodes()
                     + " recovery/retired " + sr.recoveries() + "/" + sr.retirements()

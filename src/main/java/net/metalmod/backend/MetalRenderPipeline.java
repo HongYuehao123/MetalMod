@@ -72,6 +72,11 @@ public final class MetalRenderPipeline {
     private boolean closed;
     private MemorySegment withoutDepth, withDepth;
     private String temporalFragmentSource;
+    private String generationFragmentSource,guiFragmentSource;
+    private MemorySegment guiFragmentLibrary=MemorySegment.NULL;
+    private final Map<Long,MemorySegment> guiPipelines=new java.util.HashMap<>();
+    private MemorySegment generationFragmentLibrary=MemorySegment.NULL;
+    private final Map<Long,MemorySegment> generationPipelines=new java.util.HashMap<>();
     private MemorySegment temporalFragmentLibrary=MemorySegment.NULL;
     private MemorySegment nativeDevice;
     private final Map<Long,MemorySegment> temporalPipelines=new java.util.HashMap<>();
@@ -286,7 +291,9 @@ public final class MetalRenderPipeline {
                         isDynamicVariant(variant),
                         isClusteredVariant(variant));
                 result.nativeDevice=device.deviceHandle();
-                result.temporalFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad);
+                result.temporalFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad,false);
+                result.generationFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad,true);
+                result.guiFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad,true,true);
                 return result;
             }
         } catch (Throwable t) {
@@ -490,7 +497,8 @@ public final class MetalRenderPipeline {
 
     /** Metal requires an exact depth-attachment format even when depth testing is disabled. */
     /** Same fragment discard/depth/colour semantics, plus exact raster reactive coverage. */
-    private static String reactiveFragment(String source,String name,boolean blended,boolean screenquad) {
+    private static String reactiveFragment(String source,String name,boolean blended,boolean screenquad,boolean generation) {return reactiveFragment(source,name,blended,screenquad,generation,false);}
+    private static String reactiveFragment(String source,String name,boolean blended,boolean screenquad,boolean generation,boolean gui) {
         if(!source.contains("struct main0_out"))return null;
         var color=java.util.regex.Pattern.compile("(?:float|half)4\\s+(\\w+)\\s*\\[\\[color\\(0\\)\\]\\]").matcher(source);
         if(!color.find())return null;
@@ -498,10 +506,27 @@ public final class MetalRenderPipeline {
         String result=source.replaceFirst("struct main0_out\\s*\\{","struct main0_out {\n    half mmmReactive [[color(1)]];");
         int start=result.indexOf("fragment ");if(start<0)return null;
         String family=name.toLowerCase(java.util.Locale.ROOT);
-        boolean transientContent=screenquad||blended||family.contains("sky")||family.contains("cloud")||family.contains("particle")
-                ||family.contains("weather")||family.contains("glint")||family.contains("portal")||family.contains("screenquad");
+        boolean transientContent=screenquad||blended||(!generation&&family.contains("sky"))||family.contains("cloud")||family.contains("particle")
+                ||(generation&&(family.contains("entity")||family.contains("beacon")||family.contains("eyes")))||family.contains("weather")||family.contains("glint")||family.contains("portal")||family.contains("screenquad");
+        if(gui)transientContent=!family.contains("vignette");
         String value=transientContent?blended?"(out."+field+".a>0.001f?1.0f:0.0f)":"1.0f":"0.0f";
         return result.substring(0,start)+result.substring(start).replace("return out;","out.mmmReactive=half("+value+"); return out;");
+    }
+    public MemorySegment handleForFrameGenerationGuiDepth(long format) {
+        return guiPipelines.computeIfAbsent(format,depth->{
+            if(guiFragmentSource==null)return MemorySegment.NULL;
+            if(guiFragmentLibrary.address()==0)guiFragmentLibrary=MetalNative.libraryCreate(nativeDevice,guiFragmentSource);
+            if(guiFragmentLibrary.address()==0)return MemorySegment.NULL;
+            return MetalNative.renderPipelineReactiveVariant(handle,guiFragmentLibrary,depth);
+        });
+    }
+    public MemorySegment handleForFrameGenerationDepth(long format) {
+        return generationPipelines.computeIfAbsent(format,depth->{
+            if(generationFragmentSource==null)return MemorySegment.NULL;
+            if(generationFragmentLibrary.address()==0)generationFragmentLibrary=MetalNative.libraryCreate(nativeDevice,generationFragmentSource);
+            if(generationFragmentLibrary.address()==0)return MemorySegment.NULL;
+            return MetalNative.renderPipelineReactiveVariant(handle,generationFragmentLibrary,depth);
+        });
     }
     public MemorySegment handleForTemporalDepth(long format) {
         return temporalPipelines.computeIfAbsent(format,depth->{
@@ -561,6 +586,10 @@ public final class MetalRenderPipeline {
             return;
         }
         this.closed = true;
+        for(var variant:guiPipelines.values())MetalNative.renderPipelineRelease(variant);
+        MetalNative.libraryRelease(guiFragmentLibrary);
+        for(var variant:generationPipelines.values())MetalNative.renderPipelineRelease(variant);
+        MetalNative.libraryRelease(generationFragmentLibrary);
         for(var variant:temporalPipelines.values())MetalNative.renderPipelineRelease(variant);
         MetalNative.libraryRelease(temporalFragmentLibrary);
         if (this.handle.address() != 0) {

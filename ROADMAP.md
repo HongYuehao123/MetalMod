@@ -451,6 +451,25 @@ camera and independent-object motion, reactive coverage, history resets and nati
 composition. The requested in-game switch selects it at reduced strengths. See the
 [contract](docs/phase7/temporal-contract.md); formal release quality/performance acceptance remains pending.
 
+**2026-10-04 7C quality rebuild:** the user rejected the prior interpolation quality.
+Camera-only motion, exact current/prior raster protection, adaptive native-rate preservation
+and content rejection replace influence-box motion and forced warping. Entity deformation
+interpolation and user visual acceptance remain open. See [current contract](docs/phase7/frame-generation/rebuild.md).
+
+**2026-10-03 7C started:** isolated native interpolation and optional Panama ABI use ordinary
+command buffers. Real GPU smoke verifies static colour and moving-object midpoints, reset/warmup
+eligibility and resource lifetime. A developer-only display-link owner now accepts bounded
+SDR snapshots; final on-screen verification is blocked by the locked Mac. Gameplay generated
+composition and latency remain pending. See [foundation](docs/phase7/frame-generation/contract.md)
+and [display-link implementation](docs/phase7/frame-generation/display-link.md).
+
+**2026-10-03 gameplay interpolation:** actual world snapshots, independent camera/object motion,
+current native hand/HUD composition and generated/real pair presentation are implemented. Gameplay
+uses ordinary render-thread drawable ownership after BUG-037, not CAMetalDisplayLink. The separate
+MetalFX page toggle remains experimental and defaults Off. Actual packaged delivery/control tests
+and fresh JVM saved-On restart are recorded in [gameplay evidence](docs/phase7/frame-generation/gameplay.md).
+Quality/performance/latency release acceptance remains pending.
+
 **2026-10-03 default decision:** use **spatial by default**; **Temporal Upscaling defaults to Off**
 and stays available through the existing in-game switch as an experimental opt-in. Spatial is
 user-confirmed usable. Temporal promotion is blocked by reproduced dense-forest FPS drops

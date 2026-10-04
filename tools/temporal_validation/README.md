@@ -47,3 +47,41 @@ screenshots occur during timing. The separate `focus.dylib` only activates the c
 at run boundaries; it is excluded from both JARs. Each timing record includes focus-loss count,
 mean/p95 CPU frame interval and latest completed scaler-batch GPU samples. Unfocused samples
 are not release evidence. Short static samples do not establish motion-route or tail acceptance.
+
+## Frame-generation gameplay and saved-On restart
+
+Add `--frame-generation` to the launcher command for the independent interpolation test. It saves
+On in the disposable copy before startup, drives the actual MetalFX page button, verifies native/
+spatial/temporal generated and real OS presentation, captures real/generated images, and exercises
+UI, resize, 5120-wide output, camera motion, minimize/restore, VSync fallback and menu. It then starts
+a fresh JVM in the same copy with saved On and requires actual generated/real delivery again.
+Results are `validation/` and `validation-restart/`; source world/config remain unchanged.
+
+The FG suite also measures actual OS display intervals and generated/real order, verifies that
+displayed FPS doubles paired-real FPS and meets a 60 Hz cadence, and compares protected hand
+interior pixels to their native source composite. Process-scoped caffeinate assertions keep the
+display awake only during the test; the suite never unlocks the Mac or changes lock settings.
+
+## Quality-rebuild fixture (2026-10-04)
+
+FG sampling runs at the completed surface boundary. The fixture tests full native-rate rendering
+with FG On, a copied-world phantom/beacon/XP-orb scene, exact raster-sized coverage and absence
+of object-region motion. A 30-FPS limited stage exercises adaptive activation. Content rejection
+is reported as safe native fallback, separately from successful interpolated display checks.
+The test-only force flag exercises delivery paths; normal gameplay uses adaptive cadence.
+Fresh-JVM restart additionally checks preservation of full-rate real rendering.
+
+## Capped-30 final-image delivery regression
+
+Add `--frame-generation --delivery-check` for native/spatial camera turning with the user's
+30-FPS/VSync reproduction. It requires positive, ordered generated/real OS display timestamps
+and automatically runs `analyze_delivery.py` (NumPy/Pillow), checking actual final midpoint
+pixel preservation and a halfway world pose against both endpoints. Diagnostic texture copies
+and readbacks are test-only. Final-vs-pre-GUI colour difference is no longer a HUD mask;
+exact GUI fragments exclude full-screen vignette modulation.
+
+The comprehensive fixture isolates its timed settings assertion from additional physical input
+only after checking and pressing the real active button. The test-only GUI mixin is not included
+in normal MetalMod. Menu return explicitly restores the owned test window so a hidden title
+screen cannot be mistaken for an interpolation failure. Visible test windows may join Spaces
+alongside the normal full-screen client; no user window preferences are changed.

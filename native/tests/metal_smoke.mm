@@ -15,8 +15,12 @@
 #include <unistd.h>
 #include "metalmod/metalmod_metal.h"
 #include "metalmod/metalmod_metalfx.h"
+#include "metalmod/metalmod_interpolation.h"
+#include "metalmod/metalmod_frame_generation.h"
+#include "metalmod/metalmod_display_link.h"
 #include "../src/metalmod_spatial_aa.h"
 #include <vector>
+#include <algorithm>
 
 // MTLPixelFormat / MTLTextureUsage raw values, passed through the C API so the mapping table lives
 // on the Java side in one place.
@@ -1342,6 +1346,333 @@ static void test_temporal_color(void) {
     mmm_device_release(device);
 }
 
+static void test_display_link_ownership(void) {
+    printf("\n== display-link ownership and bounded snapshots (no onscreen claim) ==\n");
+    check("display link NULL create denied",!mmm_display_link_create(NULL,NULL,64,48),"");
+    check("display link NULL unhealthy",!mmm_display_link_healthy(NULL),"");
+    check("display link NULL stop safe",mmm_display_link_stop(NULL)==0,"");
+    void* device=mmm_device_create();
+    if(!device){check("display-link Metal device",false,"no device");return;}
+    void* layer=mmm_layer_create(NULL);
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;
+    id<MTLCommandQueue> queue=[dev newCommandQueue];
+    for(int generation=0;generation<3;generation++) {
+        const int w=64+generation,h=48+generation;
+        check("display-link FIFO configure",mmm_layer_configure(layer,w,h,true)==0,"");
+        void* link=mmm_display_link_create(layer,(__bridge void*)queue,w,h);
+        check("display-link owner created",link!=NULL,"");
+        if(!link)break;
+        check("display-link single owner enforced",!mmm_display_link_create(layer,(__bridge void*)queue,w,h),"");
+        check("display-link owner healthy",mmm_display_link_healthy(link),"");
+        void* drawable=NULL;void* texture=NULL;
+        check("display-link blocks ordinary acquire",mmm_layer_acquire(layer,&drawable,&texture)==-3,"");
+        check("display-link blocks live resize",mmm_layer_configure(layer,w+1,h,true)==-3,"");
+        auto wrong=[[dev newCommandQueue] commandBuffer];
+        check("display-link snapshot wrong queue denied",mmm_display_link_submit(link,(__bridge void*)wrong,NULL,NULL,1,0,0,0,1)==-3,"");
+        id<MTLCommandBuffer> copies[3];
+        for(int i=0;i<3;i++) {
+            copies[i]=[queue commandBuffer];
+            check("display-link pending snapshot accepted",mmm_display_link_submit(link,(__bridge void*)copies[i],NULL,NULL,i+1,0.2,0.4,0.6,1)==0,"");
+        }
+        auto full=[queue commandBuffer];
+        check("display-link fourth copy drops",mmm_display_link_submit(link,(__bridge void*)full,NULL,NULL,4,0,0,0,1)==1,"");
+        check("display-link repeated ID denied",mmm_display_link_submit(link,(__bridge void*)full,NULL,NULL,3,0,0,0,1)==-4,"");
+        uint64_t stats[14]={};
+        check("display-link stats ABI",mmm_display_link_stats(link,stats,14)==0&&stats[1]==3&&stats[7]==1&&stats[12]==3,"");
+        check("display-link short stats buffer denied",mmm_display_link_stats(link,stats,13)==-1,"");
+        check("display-link stop relinquishes layer",mmm_display_link_stop(link)==0&&!mmm_display_link_owns_layer(layer),"");
+        check("display-link stopped unhealthy",!mmm_display_link_healthy(link),"");
+        mmm_display_link_release(link);
+        for(auto cb:copies) {
+            [cb commit];[cb waitUntilCompleted];
+            check("display-link released snapshots finish on GPU",cb.status==MTLCommandBufferStatusCompleted,"");
+        }
+    }
+    check("display-link IMMEDIATE configure",mmm_layer_configure(layer,64,48,false)==0,"");
+    check("display-link IMMEDIATE uses ordinary owner",!mmm_display_link_create(layer,(__bridge void*)queue,64,48),"");
+    mmm_layer_release(layer);mmm_device_release(device);
+}
+
+static void test_gameplay_interpolation(void) {
+    printf("\n== gameplay world/motion/composited native UI interpolation ==\n");
+    void* device=mmm_device_create();if(!device){check("gameplay device",false,"");return;}
+    if(!mmm_fx_interpolation_supported(device)){mmm_device_release(device);return;}
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;auto queue=[dev newCommandQueue];
+    const int W=256,H=192;
+    auto texture=[&](MTLPixelFormat format){
+        auto td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:W height:H mipmapped:NO];
+        td.storageMode=MTLStorageModeShared;td.usage=MTLTextureUsageShaderRead|MTLTextureUsageRenderTarget;
+        return [dev newTextureWithDescriptor:td];
+    };
+    auto world=texture(MTLPixelFormatRGBA8Unorm),ui=texture(MTLPixelFormatRGBA8Unorm),depth=texture(MTLPixelFormatDepth32Float);
+    auto beforeGui=texture(MTLPixelFormatRGBA8Unorm);
+    auto readback=texture(MTLPixelFormatRGBA8Unorm),handDepth=texture(MTLPixelFormatDepth32Float);
+    void* fg=mmm_fg_create(device,(__bridge void*)queue,W,H,W,H,MTLPixelFormatRGBA8Unorm);
+    check("gameplay independent producer/interpolator created",fg!=NULL,"");
+    if(!fg){mmm_device_release(device);return;}
+    std::vector<uint8_t> pixels(W*H*4),result(W*H*4);std::vector<float> z(W*H,0.5f);
+    [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:z.data() bytesPerRow:W*4];
+    float matrices[48]={};for(int m=0;m<3;m++)for(int d=0;d<4;d++)matrices[m*16+d*5]=1;
+    matrices[0]=NAN;
+    auto invalid=[queue commandBuffer];
+    check("gameplay transient invalid camera rejected without latching generation",
+        mmm_fg_capture(fg,(__bridge void*)invalid,(__bridge void*)world,(__bridge void*)world,(__bridge void*)depth,
+            matrices,NULL,0,1,1.f/30,0.05f,1000,70,0,0,true)==-4,"");
+    matrices[0]=1;
+    matrices[12]=-16.f/W; // exact camera flow: previous lookup is eight pixels left
+    for(int frame=0;frame<8;frame++) {
+        for(int y=0;y<H;y++)for(int x=0;x<W;x++) {
+            int i=(y*W+x)*4;bool rectangle=x>=32+frame*8&&x<96+frame*8&&y>=64&&y<128;
+            pixels[i]=rectangle?230:50;pixels[i+1]=pixels[i+2]=50;pixels[i+3]=255;
+        }
+        std::vector<uint8_t> coverage(W*H,0);
+        // Tiny emissive sprite and thin beam: exact visible pixels, never an influence box.
+        for(int y=8;y<36;y++)for(int x=188+frame*3;x<190+frame*3;x++) {
+            int i=(y*W+x)*4;pixels[i]=20;pixels[i+1]=210;pixels[i+2]=90;coverage[y*W+x]=255;
+        }
+        [(__bridge id<MTLTexture>)mmm_fg_coverage(fg) replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:coverage.data() bytesPerRow:W];
+        [world replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        // Simulate a native screen colour effect after pre-hand world capture.
+        for(int y=35;y<45;y++)for(int x=170;x<180;x++)pixels[(y*W+x)*4+1]+=8;
+        [beforeGui replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        // A native HUD marker is composited after the world snapshot and stays at its current pose.
+        for(int y=8;y<32;y++)for(int x=208;x<240;x++){
+            int i=(y*W+x)*4;pixels[i]=0;pixels[i+1]=pixels[i+2]=255;
+        }
+        std::vector<float> handZ(W*H,0.f);
+        // Cyan GUI marker has no hand depth: verify the actual GUI-boundary mask separately.
+        // Low-contrast opaque hand over moving world: colour differencing cannot infer alpha.
+        for(int y=130;y<160;y++)for(int x=120;x<168;x++){
+            int i=(y*W+x)*4;pixels[i]=55;pixels[i+1]=70;pixels[i+2]=50;handZ[y*W+x]=0.8f;
+        }
+        // Full-screen-style multiplicative vignette across the moving-world test band.
+        // It must modulate a midpoint, never classify the whole world as GUI.
+        for(int y=64;y<128;y++)for(int x=0;x<W;x++)for(int c=0;c<3;c++)pixels[(y*W+x)*4+c]=(uint8_t)std::lround(pixels[(y*W+x)*4+c]*0.8);
+        [ui replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        [handDepth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:handZ.data() bytesPerRow:W*4];
+        auto cb=[queue commandBuffer];
+        int rc=mmm_fg_capture(fg,(__bridge void*)cb,(__bridge void*)world,(__bridge void*)world,(__bridge void*)depth,
+            matrices,NULL,0,frame+1,1.f/30,0.05f,1000,70,0,0,frame==0);
+        check("gameplay capture preserves world/depth before UI",rc==0,"");if(rc<0)break;
+        check("gameplay refuses generated hand without native coverage boundary",
+            mmm_fg_encode(fg,(__bridge void*)cb,(__bridge void*)ui)==-7,"");
+        check("gameplay preserves native hand coverage before GUI clear",
+            mmm_fg_capture_hand(fg,(__bridge void*)cb,(__bridge void*)handDepth,(__bridge void*)beforeGui)==0,"");
+        [cb commit];[cb waitUntilCompleted];
+        std::vector<uint8_t> guiCoverage(W*H,0);
+        for(int y=8;y<32;y++)for(int x=208;x<240;x++)guiCoverage[y*W+x]=255;
+        [(__bridge id<MTLTexture>)mmm_fg_gui_coverage(fg) replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:guiCoverage.data() bytesPerRow:W];
+        cb=[queue commandBuffer];
+        rc=mmm_fg_encode(fg,(__bridge void*)cb,(__bridge void*)ui);
+        check("gameplay warmup/eligibility",rc==(frame<3?1:0),"");if(rc<0)break;
+        auto blit=[cb blitCommandEncoder];[blit copyFromTexture:(__bridge id<MTLTexture>)mmm_fg_texture(fg) toTexture:readback];[blit endEncoding];
+        [cb commit];[cb waitUntilCompleted];
+        check("gameplay composed GPU work completes",cb.status==MTLCommandBufferStatusCompleted,"");
+        if(rc==0) {
+            [readback getBytes:result.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+            int dawnPixel=(40*W+175)*4;
+            check("dawn illumination stays inside adjacent real-frame brightness",
+                result[dawnPixel]>=50-2&&result[dawnPixel]<=50+2,"");
+            check("screen effects retain the exact native result without additive silhouettes",
+                result[dawnPixel+1]>=58-2&&result[dawnPixel+1]<=58+2,"");
+            int handPixel=(140*W+140)*4;
+            check("generated opaque low-contrast hand is byte-exact, never inferred translucent",
+                result[handPixel]==55&&result[handPixel+1]==70&&result[handPixel+2]==50&&result[handPixel+3]==255,"");
+            int marker=(20*W+224)*4;
+            check("generated frame preserves native HUD colour/position",result[marker]<8&&result[marker+1]>245&&result[marker+2]>245,"");
+            bool protectedExact=true;
+            for(int y=12;y<32;y++)for(int x=188+std::max(0,frame-1)*3;x<190+frame*3;x++) {
+                int i=(y*W+x)*4;
+                for(int channel=0;channel<4;channel++)protectedExact&=result[i+channel]==pixels[i+channel];
+            }
+            check("thin beam/sprite and previous footprint stay exact without background warping",protectedExact,"");
+            double sum=0,weighted=0;
+            for(int y=80;y<112;y++)for(int x=16;x<W-16;x++) {
+                double red=std::max(0,(int)result[(y*W+x)*4]-(50));sum+=red;weighted+=red*x;
+            }
+            double centroid=weighted/std::max(sum,0.001),expected=59.5+frame*8;
+            printf("     gameplay generated centroid %.3f, expected midpoint %.3f\n",centroid,expected);
+            check("vignette-modulated gameplay producer preserves midpoint, not repeated real/UI frame",sum>10000&&std::abs(centroid-expected)<2,"");
+        }
+    }
+    uint64_t stats[8]={};mmm_fg_stats(fg,stats,8);
+    check("gameplay tracks rendered/eligible separately without fabricated display counts",stats[0]==8&&stats[1]==8&&stats[2]==5&&stats[3]==0&&stats[4]==0&&stats[6]==0,"");
+    mmm_fg_release(fg);
+    // Changing brightness caused current-frame repetition in the former force-warp path.
+    // Verify content rejection and a native image instead of manufacturing warped midpoints.
+    fg=mmm_fg_create(device,(__bridge void*)queue,W,H,W,H,MTLPixelFormatRGBA8Unorm);
+    std::fill(z.begin(),z.end(),0.f);
+    [handDepth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:z.data() bytesPerRow:W*4];
+    for(int frame=0;frame<8;frame++) {
+        for(int y=0;y<H;y++)for(int x=0;x<W;x++) {
+            int i=(y*W+x)*4;bool object=x>=32+frame*8&&x<96+frame*8&&y>=64&&y<128;
+            pixels[i]=object?230:50+frame*3;pixels[i+1]=pixels[i+2]=50+frame*3;pixels[i+3]=255;
+        }
+        [world replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        auto cb=[queue commandBuffer];
+        mmm_fg_capture(fg,(__bridge void*)cb,(__bridge void*)world,(__bridge void*)world,(__bridge void*)depth,
+            matrices,NULL,0,frame+1,1.f/30,0.05f,1000,70,0,0,frame==0);
+        mmm_fg_capture_hand(fg,(__bridge void*)cb,(__bridge void*)handDepth,(__bridge void*)world);
+        mmm_fg_encode(fg,(__bridge void*)cb,(__bridge void*)world);
+        auto blit=[cb blitCommandEncoder];[blit copyFromTexture:(__bridge id<MTLTexture>)mmm_fg_texture(fg) toTexture:readback];[blit endEncoding];
+        [cb commit];[cb waitUntilCompleted];
+        if(frame>=3) {
+            [readback getBytes:result.data() bytesPerRow:W*4 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+            check("unreliable changing-light interpolation uses exact real pixels, no forced warp",result==pixels,"");
+        }
+    }
+    mmm_fg_stats(fg,stats,8);
+    check("content quality rejection is distinct from GPU failure",(stats[6]&2)!=0&&(stats[6]&1)==0,"");
+    mmm_fg_release(fg);
+    // Interpolation cannot reject history with a reactive mask like TAA can.
+    // Verify camera flow stays continuous across sky, disocclusion, colour change and edges.
+    void* producer=mmm_fx_motion_frame_create(device,W,H,MTLPixelFormatRGBA8Unorm);
+    check("interpolation camera-motion producer created",producer!=NULL,"");
+    if(producer) {
+        auto coverage=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(producer,5);
+        std::vector<uint8_t> empty(W*H,0);
+        [coverage replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:empty.data() bytesPerRow:W];
+        for(int pass=0;pass<2;pass++) {
+            for(int y=0;y<H;y++)for(int x=0;x<W;x++) {
+                z[y*W+x]=y<H/2?0.f:(pass?0.8f:0.5f);
+                pixels[(y*W+x)*4]=pass?230:20;
+            }
+            [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:z.data() bytesPerRow:W*4];
+            [world replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+            auto cb=[queue commandBuffer];
+            int rc=mmm_fx_motion_frame_prepare(producer,(__bridge void*)cb,(__bridge void*)world,(__bridge void*)depth,
+                matrices,NULL,0,0,0,pass==0);
+            check("interpolation camera-motion encode",rc==0,"");[cb commit];[cb waitUntilCompleted];
+        }
+        auto flow=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(producer,0);
+        for(auto point:std::vector<std::pair<int,int>>{{128,32},{128,128},{1,128}}) {
+            __fp16 value[2]={};[flow getBytes:value bytesPerRow:4 fromRegion:MTLRegionMake2D(point.first,point.second,1,1) mipmapLevel:0];
+            check("interpolation preserves eight-pixel camera flow across sky/disocclusion/screen edge",
+                std::abs((float)value[0]+8)<0.02f&&std::abs((float)value[1])<0.02f,"");
+        }
+        mmm_fx_temporal_frame_release(producer);
+    }
+    mmm_device_release(device);
+}
+
+static void test_interpolation(void) {
+    printf("\n== frame interpolation ABI v1 (ordinary Metal command buffer) ==\n");
+    check("interpolation NULL support denied", !mmm_fx_interpolation_supported(NULL), "");
+    check("interpolation NULL health denied", !mmm_fx_interpolation_healthy(NULL), "");
+    void* device = mmm_device_create();
+    if (!device) { check("interpolation device",false,"no Metal device"); return; }
+    if (!mmm_fx_interpolation_supported(device)) {
+        printf("[SKIP] interpolation device unsupported\n");
+        check("unsupported interpolation creation denied", !mmm_fx_interpolation_create(device,64,48,64,48), "");
+        mmm_device_release(device); return;
+    }
+    check("interpolation zero size denied", !mmm_fx_interpolation_create(device,0,48,64,48), "");
+    check("interpolation aspect mismatch denied", !mmm_fx_interpolation_create(device,32,32,64,48), "");
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
+    id<MTLCommandQueue> queue = [dev newCommandQueue];
+    for (int generation=0;generation<3;generation++) {
+        const int W=generation==2?256:64,H=generation==2?192:48;
+        // Test native and reduced depth/motion dimensions independently of temporal upscaling.
+        const int IW=generation ? W/2 : W, IH=generation ? H/2 : H;
+        void* fx=mmm_fx_interpolation_create(device,IW,IH,W,H);
+        check("real interpolator created",fx!=NULL,"");
+        if (!fx) break;
+        auto texture = [&](MTLPixelFormat format,int w,int h,int role,MTLStorageMode storage) {
+            auto td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+            td.storageMode=storage;
+            td.usage=(MTLTextureUsage)mmm_fx_interpolation_texture_usage(fx,role);
+            return [dev newTextureWithDescriptor:td];
+        };
+        id<MTLTexture> colors[2]={texture(MTLPixelFormatRGBA16Float,W,H,0,MTLStorageModeShared),
+            texture(MTLPixelFormatRGBA16Float,W,H,0,MTLStorageModeShared)};
+        id<MTLTexture> depth=texture(MTLPixelFormatDepth32Float,IW,IH,1,MTLStorageModeShared);
+        id<MTLTexture> motion=texture(MTLPixelFormatRG16Float,IW,IH,2,MTLStorageModeShared);
+        id<MTLTexture> output=texture(MTLPixelFormatRGBA16Float,W,H,4,MTLStorageModePrivate);
+        id<MTLTexture> readback=texture(MTLPixelFormatRGBA16Float,W,H,4,MTLStorageModeShared);
+        if(!colors[0]||!colors[1]||!depth||!motion||!output||!readback) {
+            check("interpolation resources",false,"");mmm_fx_interpolation_release(fx);break;
+        }
+        std::vector<__fp16> color(W*H*4), zero(IW*IH*2,0), pixels(W*H*4);
+        std::vector<float> z(IW*IH,0.5f);
+        [depth replaceRegion:MTLRegionMake2D(0,0,IW,IH) mipmapLevel:0 withBytes:z.data() bytesPerRow:IW*4];
+        [motion replaceRegion:MTLRegionMake2D(0,0,IW,IH) mipmapLevel:0 withBytes:zero.data() bytesPerRow:IW*4];
+        for(int y=0;y<H;y++)for(int x=0;x<W;x++) {
+            int i=(y*W+x)*4;
+            color[i]=x<W/2?0.25f:0.75f; color[i+1]=y<H/2?0.125f:0.625f;
+            color[i+2]=0.375f;color[i+3]=1;
+        }
+        for(auto c:colors) [c replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0
+            withBytes:color.data() bytesPerRow:W*8];
+        auto encode=[&](id<MTLCommandBuffer> cb,int frame,uint64_t prev,uint64_t curr,float dt,bool reset,void* out) {
+            return mmm_fx_interpolation_encode(fx,(__bridge void*)cb,(__bridge void*)colors[frame%2],
+                (__bridge void*)colors[(frame+1)%2],(__bridge void*)depth,(__bridge void*)motion,NULL,out,
+                prev,curr,dt,0.05f,1000,70,0,0,generation!=0,reset);
+        };
+        auto invalid=[queue commandBuffer];
+        check("interpolation invalid delta denied",encode(invalid,0,0,1,NAN,false,(__bridge void*)output)==-4,"");
+        check("interpolation shared output denied",encode(invalid,0,0,1,1.f/60,false,(__bridge void*)readback)==-3,"");
+        check("interpolation invalid frame IDs denied",encode(invalid,0,1,1,1.f/60,false,(__bridge void*)output)==-6,"");
+        for(int frame=0;frame<9;frame++) {
+            bool reset=frame==4;
+            if(generation==2) {
+                // A red rectangle advances eight output pixels per rendered frame.
+                // Preserve the previous snapshot and supply independently scaled object motion.
+                for(int y=0;y<H;y++)for(int x=0;x<W;x++) {
+                    int i=(y*W+x)*4;
+                    bool object=x>=32+frame*8 && x<96+frame*8 && y>=64 && y<128;
+                    color[i]=object?0.8f:0.1f;color[i+1]=color[i+2]=0.1f;color[i+3]=1;
+                }
+                [colors[frame%2] replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0
+                    withBytes:color.data() bytesPerRow:W*8];
+                for(int i=0;i<IW*IH;i++)zero[i*2]=-4;
+                [motion replaceRegion:MTLRegionMake2D(0,0,IW,IH) mipmapLevel:0 withBytes:zero.data() bytesPerRow:IW*4];
+            }
+            auto cb=[queue commandBuffer];
+            int rc=encode(cb,frame,frame,frame+1,1.f/60,reset,(__bridge void*)output);
+            check("interpolation prime/reset vs display eligibility",rc==((frame<=2||(frame>=4&&frame<=6))?1:0),"");
+            if(rc<0)break;
+            auto blit=[cb blitCommandEncoder];
+            [blit copyFromTexture:output sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+                sourceSize:MTLSizeMake(W,H,1) toTexture:readback destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+            [blit endEncoding];
+            if(frame==8){mmm_fx_interpolation_release(fx);fx=NULL;}
+            [cb commit];[cb waitUntilCompleted];
+            check("interpolation GPU completed including in-flight release",cb.status==MTLCommandBufferStatusCompleted,"");
+            if(rc==0 && cb.status==MTLCommandBufferStatusCompleted) {
+                [readback getBytes:pixels.data() bytesPerRow:W*8 fromRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0];
+                if(generation==2) {
+                    double weightedX=0,weight=0;
+                    for(int y=80;y<112;y++)for(int x=16;x<W-16;x++) {
+                        double red=std::max(0.0,(double)pixels[(y*W+x)*4]-0.1);
+                        weight+=red;weightedX+=red*x;
+                    }
+                    double centroid=weightedX/std::max(weight,0.001),expected=59.5+frame*8;
+                    printf("     generated object centroid %.3f, midpoint %.3f\n",centroid,expected);
+                    check("interpolation produces moving midpoint instead of repeated real frame",
+                        weight>500 && std::abs(centroid-expected)<2,"");
+                    // Outside this moving case, verify static transfer/orientation below.
+                }
+                bool correct=true;
+                for(int y:{H/4,3*H/4})for(int x:{W/4,3*W/4})for(int channel=0;channel<3;channel++) {
+                    int i=(y*W+x)*4+channel;
+                    correct &= std::isfinite((float)pixels[i]) && std::abs((float)pixels[i]-(float)color[i])<0.04f;
+                }
+                if(generation!=2)check("interpolation static linear colour and orientation",correct,"");
+            }
+            if(fx) {
+                check("interpolation generation healthy",mmm_fx_interpolation_healthy(fx),"");
+                auto stale=[queue commandBuffer];
+                check("interpolation repeated rendered frame rejected",encode(stale,frame,frame,frame+1,1.f/60,false,(__bridge void*)output)==-6,"");
+                check("interpolation wrong previous frame rejected",encode(stale,frame+1,0,frame+2,1.f/60,false,(__bridge void*)output)==-6,"");
+                auto wrongQueue=[[dev newCommandQueue] commandBuffer];
+                check("interpolation unordered queue denied",encode(wrongQueue,frame+1,frame+1,frame+2,1.f/60,false,(__bridge void*)output)==-3,"");
+            }
+        }
+        mmm_fx_interpolation_release(fx);
+    }
+    mmm_device_release(device);
+}
+
 static void test_temporal_prototype(void) {
     printf("\n== temporal MetalFX prototype ABI v1 ==\n");
     check("temporal NULL capability denied", !mmm_fx_temporal_supported(NULL), "");
@@ -1582,6 +1913,9 @@ int main(void) {
         test_device();
         test_spatial_antialias();
         test_metalfx();
+        test_display_link_ownership();
+        test_interpolation();
+        test_gameplay_interpolation();
         test_temporal_prototype();
         test_temporal_color();
         test_temporal_scene();

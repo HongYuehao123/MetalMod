@@ -1,1 +1,1 @@
-{"required":true,"minVersion":"0.8","package":"net.metalmod.validation.mixin","compatibilityLevel":"JAVA_22","client":["RuntimeMixin"],"injectors":{"defaultRequire":1}}
+{"required":true,"minVersion":"0.8","package":"net.metalmod.validation.mixin","compatibilityLevel":"JAVA_22","client":["RuntimeMixin","SurfaceValidationMixin","GuiValidationMixin"],"injectors":{"defaultRequire":1}}

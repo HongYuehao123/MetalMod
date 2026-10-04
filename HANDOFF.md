@@ -51,10 +51,181 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 4 — shaders (87/87, post 9/9) | done |
 | 5 — vanilla render parity | **done**; final check in `docs/phase6-plan.md` |
 | 6 — dynamic lighting | **done (2026-09-25)**; occlusion and linear composition handed to 8B, consumer/ownership to 8, two evidence items carried forward |
-| 7 — MetalFX | spatial + temporal gameplay implemented (2026-10-03); release quality/performance selection pending; 7C deferred |
+| 7 — MetalFX | spatial + temporal gameplay implemented (2026-10-03); release quality/performance selection pending; experimental 7C gameplay interpolation implemented |
 | 8 — native material and lighting foundations | not started |
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
+
+## Frame Generation final-image correction (2026-10-04)
+
+The user reports the installed build looks usable for now (2026-10-04) and requested a commit.
+This is provisional gameplay acceptance; broader release quality and articulated-entity
+interpolation remain open.
+
+The user's max-FPS-30 + VSync test exposed a gap in the previous verification: separate
+positive drawable timestamps can still show repeated real world content. The colour-inferred
+GUI mask treated the full-screen vignette as HUD, replacing roughly three quarters of moving
+world midpoint samples. Exact GUI fragment coverage now excludes vignette modulation, which
+is applied multiplicatively to generated colour. Protected hand/HUD/entity/beam pixels stay
+native. The explicit 30 cap no longer triggers periodic native-headroom probes that cannot
+succeed under that cap. Normal adaptive behavior and quality rejection remain.
+
+See BUG-042 and `docs/phase7/frame-generation/delivery.md`. Native vignette/midpoint/HUD
+pixels and all five offline gates pass. Installed SHA-256
+`dcca5566b605ebdf49811281d66895ebe97f1e0c7c3db7a58747622338be221d`.
+The exact capped-30 test passes **22/22 visible delivery checks** plus both mandatory
+post-composition content/halfway-pose checks. Native/spatial final moving-world samples change
+84.81%/82.80%; midpoint pose errors are substantially below either endpoint. Generated/real
+positive OS callbacks are separated by refresh intervals, with approximately 60 displayed FPS.
+The broad sequence passes 188/189; its end-menu visibility failure is preserved. An isolated
+restored-window fresh-JVM/menu retry passes **15/15**, covering that case and saved-On startup.
+The settings fixture protects its timed assertion from subsequent physical button input after
+exercising the actual button; this control exists only in the disposable test add-on.
+Previous JAR `754ca5ed…` is backed up; normal config hashes before/after match, and source world
+is unchanged. Evidence: `build/reports/frame-generation-delivery/installation.json` and logs.
+Prior quality rebuild/cadence passes below do not establish this corrected final-image behavior.
+
+## Frame Generation quality rebuild (2026-10-04)
+
+The user rejected the previous installed `edbba8cb…` build: stuck motion, phantom trails,
+broken beams and experience-orb distortion. Its earlier cadence/test passes **did not establish
+acceptable visual quality**. The previous half-flow fallback and inferred screen-colour residual
+are removed. This supersedes the historical motion/dawn installation notes below.
+
+The new path publishes camera motion only; entity bounding boxes and light influence regions
+cannot assign motion to terrain. Exact visible-fragment R8 coverage is produced by actual
+entity/particle/beam/translucency draws before capture. Current and previous silhouettes retain
+native real pixels, as do hand/HUD and unreconstructible screen effects. Temporal upscaling
+preferences remain saved, but FG uses spatial input to avoid interpolating accumulated history.
+
+An adaptive real-frame cadence policy avoids forcing an already 60-FPS renderer down to 30.
+It measures 24 real frames, enables interpolation only for sustained rendering slower than
+1.5 display periods, and periodically probes native headroom. GPU content checks reject a
+mostly repeated current image on changing, camera-moving textured world pixels. A rejected
+pair retains native output and subsequent frames use ordinary real presentation until a
+resource/preference change. No forced warp is manufactured to pass midpoint checks.
+
+**Scope:** this is conservative camera/world interpolation. Animated entities, particles and
+beams remain at the real-render rate. It does not synthesize correct articulated phantom wing
+poses. Reliable arbitrary-scene generation and the user's visual retest remain pending.
+Normal gameplay does not use the test-only `metalmod.frameGenerationForce` override.
+
+Final verification and installation evidence: `build/reports/frame-generation-rebuild/`.
+Installed JAR SHA-256: `754ca5edcbdaa8c903d50e13f1ffb2a52f28433090c3ba070372f3ecef32d736`.
+The prior user-rejected build is backed up; normal saved configuration is byte-for-byte preserved
+and the source world is unchanged. All **5/5 offline gates**, **171/171 copied-world checks**
+and **11/11 visible fresh-JVM restart checks** pass. Native/phantom-beacon-orb scenes measured
+60.06/59.91 real FPS with FG On; restart measured 60.02. Sustained limited-30 rendering enabled
+interpolation and paired presentation approached 60 Hz. Dawn/camera runs also exercised content
+rejection: these are native fallback passes, not evidence of successful interpolation. A first
+restart attempt lost foreground visibility and is preserved as unaccepted; the visible retry
+passed. See `installation.json`, `verification.json` and archived gate/game/restart logs.
+
+## Historical Frame Generation motion/dawn correction (2026-10-03)
+
+The user reported continued uneven motion and flashing near dawn in the prior installed build.
+Native pixels reproduced MetalFX repeating current colour when world brightness changes. The
+SDR composition pass now falls back to aligned half-flow current/previous world samples on
+repeated moving pixels. Moving geometry advances four pixels between real frames eight pixels
+apart while illumination rises; protected hand pixels and a depth-free GUI marker stay exact.
+
+MetalFX now receives world only. A native pre-GUI SDR snapshot identifies actual GUI writes;
+hand coverage and GUI writes preserve the final native pixels. A same-frame pre-GUI/world
+colour contribution preserves native screen effects on generated world pixels as well. No inferred full-scene UI alpha
+is used. Translucent GUI retains its final native background; arbitrary disocclusion/flow quality
+still requires gameplay coverage. The user's specific dawn flash awaits visual confirmation.
+
+Visible testing traced actual real/generated inversions with scheduling-only presentation.
+The final per-layer FIFO service presents completed immutable drawable copies asynchronously,
+one per refresh, on an independent presentation queue. The render thread remains the sole
+owner of acquisition, world rendering and lighting/upload boundaries. First-drawable reservation
+is deferred until after world/interpolation work enters the GPU queue, avoiding pool stalls.
+No GPU-completion or display-callback wait blocks the render owner.
+
+Installed JAR SHA-256: `edbba8cb71a3fdbbd3e59025f6445ff78f7e8ab1d44408b81116d778e71a107b`.
+The previous installed JAR is backed up under `build/reports/frame-generation-dawn/`; normal
+settings are preserved byte-for-byte. All five offline gates pass. The visible disposable-world
+run passed **173/173**, including accelerated dawn/camera motion, native/spatial/temporal,
+UI toggles, resize, 5K/fullscreen, minimize/restore and VSync transitions. Fresh-JVM saved-On
+restart passed **11/11**. At 5K, windowed/fullscreen/camera-motion display measurements are
+**59.997 FPS**, with correct generated/real ordering and separate VSync timestamps. Native,
+temporal, dawn and camera-motion protected hand comparisons retain exact native colour.
+
+The user should restart Minecraft and visually retest the reported dawn flash and movement.
+Automated acceptance proves these tested cases; general interpolation/release quality remains
+pending. Evidence: `build/reports/frame-generation-dawn/installation.json` and its gate/game logs.
+See BUG-040 and `docs/phase7/frame-generation/gameplay.md`.
+
+## Gameplay Frame Generation ready for testing (2026-10-03)
+
+The MetalFX page's independent Frame Generation On/Off now supplies actual MetalFX midpoints,
+with native/spatial/temporal world snapshots, camera/object motion and current native hand/HUD
+composition. It requires VSync and a loaded world; unsupported/failing generations and menus retain
+ordinary frames. Gameplay uses the existing render-thread drawable owner, not CAMetalDisplayLink,
+removing the activation path behind BUG-037. Captured/eligible and actual generated/real display
+counts are separate in the settings page and F3. No extra game tick/light publication/staging rotation
+or steady CPU readback/GPU wait is added. Reset/warmup and lifecycle handling are connected.
+
+All five offline gates pass, including moving-midpoint plus native HUD pixels. Packaged copied-world
+verification passes actual generated/real presentation, UI clicks/persistence, native/spatial/temporal,
+inventory/pause, resize, 5120-wide output, camera motion, minimize/restore, VSync Off/return, FG
+Off/return, menu and fresh JVM saved-On startup. The final JAR is installed with a prior-JAR backup;
+normal saved FG remains Off for the user to enable. Final packaged verification is 107/107 gameplay
+checks plus 7/7 fresh-JVM saved-On restart checks, including visible 5120×2880 fullscreen output.
+BUG-038 supersedes the minimum-duration pacing described by this earlier test: OS-timestamp
+checks found presentation ordering errors despite positive display counts. Measured display FPS and continuous interpolation camera flow are implemented. BUG-039 adds
+native hand-depth coverage to preserve opaque item pixels exactly; it supersedes absolute
+display targets, which dropped generated images in windowed mode. Clock-paced submission
+slots now sequence real/generated delivery; presentation-callback waits were rejected for
+slower delivery. Packaged native/temporal/camera-motion hand pixel checks pass; final visible
+cadence verification is pending the Mac remaining unlocked. Prototype quality/performance/latency release
+acceptance remains pending. See [implementation and test limits](docs/phase7/frame-generation/gameplay.md)
+and `build/reports/frame-generation-gameplay/`.
+
+## Historical Frame Generation recovery — BUG-037 (2026-10-03)
+
+User reports an unresponsive game after enabling Frame Generation, recurring on restart. The
+installed saved preference was On and the log confirms startup activation, while game rendering
+continued; native stall/delivery root cause remains open. The previous UI shipped before actual
+screen-delivery acceptance. Gameplay activation is now disabled independently of saved On and both
+launch flags. The MetalFX page retains the control as **Frame Generation: OFF (Unavailable)**;
+ordinary presentation is used. Native foundation code remains available for isolated investigation.
+The instance's saved key is reset Off and the recovery JAR installed with backups. All five offline
+gates pass, including saved-On/flag-On and ordinary-surface regressions. No on-screen gameplay
+recovery run or restored frame-generation claim is made. See BUG-037 and
+`build/reports/frame-generation-recovery/` for logs and artifact hashes.
+
+## Phase 7C display-link implementation (2026-10-03; gameplay disabled by BUG-037)
+
+Added an experimental FIFO presenter, now controlled by **Options → MetalMod → MetalFX →
+Frame Generation: ON/OFF** at user request. The preference defaults Off, persists as
+`enableFrameGeneration`, and applies before the next real-frame acquisition independently of
+Super Resolution. UI choices override `-Dmetalmod.frameGeneration` (legacy `metalmod.displayLink`
+is retained) and the saved preference. The page replaces the former Super Resolution page.
+The visible experimental status says generated gameplay frames are pending. Native display-link callbacks
+own drawables; the game render thread submits completed SDR snapshots through three bounded slots.
+Lighting/staging boundaries remain once per real render. Native ownership guards, ordered prepared
+generated/real pairs, stale/deadline dropping, actual presented-time counters and synchronous stop
+are implemented. Gameplay currently submits real frames only; interpolation world/motion/hand/UI
+producers are still pending. IMMEDIATE and the toggle-Off path use ordinary presentation.
+All five offline gates pass, including GPU snapshot/ownership lifetime tests, isolated settings
+persistence tests and live Off/On/coalesced-toggle/VSync surface transitions. The additional
+real-window delivery gate remains blocked by the locked Mac; an unlocked rerun is required.
+No installed JAR/config/commit changed. See [contract and verification](docs/phase7/frame-generation/display-link.md).
+
+## Phase 7C frame-generation foundation (2026-10-03)
+
+Started at user request. Added an isolated native MetalFX frame-interpolation ABI and optional
+Panama bindings using the existing command-buffer model, independent of temporal upscaling.
+Texture/queue/scalar validation, ordered rendered-frame IDs, explicit reset/warmup eligibility,
+GPU failure latching and completion-retained resource lifetime are implemented. Real GPU tests
+include native/reduced depth and motion, static SDR/orientation and moving-object midpoint pixels.
+The gameplay switch is now unavailable after BUG-037; generated presentation is not connected. The next increment
+needs independent world snapshots/motion and native hand/UI composition, followed by
+pacing/delivery/latency acceptance. The display-link owner is now implemented as recorded above.
+See [ABI and next increment](docs/phase7/frame-generation/contract.md) and
+[verification](docs/phase7/frame-generation/results.md). All five offline gates pass;
+this does not claim gameplay delivery, performance improvement or Phase 7 completion.
 
 ## User-controlled temporal performance investigation (2026-10-03)
 

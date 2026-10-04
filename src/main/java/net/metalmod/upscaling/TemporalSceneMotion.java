@@ -17,10 +17,13 @@ public final class TemporalSceneMotion {
     public record Stats(long resets, String reason, int objects, long frames, int lightRegions) {}
     private static volatile Stats stats=new Stats(0,"first frame",0,0,0);
     public static Stats stats() { return stats; }
-    private static TemporalSceneMotion active;
+    private static final java.util.Set<TemporalSceneMotion> active=new java.util.HashSet<>();
     private record Position(double x,double y,double z) {}
     private record MovingId(long block, Object type) {}
     private static final int CAPACITY=1024;
+    private final boolean trackObjects;
+    public TemporalSceneMotion(){this(true);}
+    public TemporalSceneMotion(boolean trackObjects){this.trackObjects=trackObjects;}
     private final float[] objects=new float[CAPACITY*12];
     private final Matrix4f currentPV=new Matrix4f(), previousPV=new Matrix4f(), inverse=new Matrix4f();
     private final Matrix4f reprojection=new Matrix4f(), lastProjection=new Matrix4f(), lastView=new Matrix4f();
@@ -35,7 +38,7 @@ public final class TemporalSceneMotion {
 
     public void clear(String why) {
         valid=false;previous.clear();current.clear();previousLights=currentLights=java.util.Set.of();count=0;
-        reason=why;reset=true;if(active==this)active=null;
+        reason=why;reset=true;active.remove(this);
     }
     /** Called before choosing this frame's jitter. True means restart the sample sequence. */
     public boolean capture(Matrix4fc projection, LevelRenderState level, long frameSerial) {
@@ -54,15 +57,15 @@ public final class TemporalSceneMotion {
         if(reset)reprojection.identity();
         else reprojection.set(previousPV).translate((float)(origin.x-previousOrigin.x),
                 (float)(origin.y-previousOrigin.y),(float)(origin.z-previousOrigin.z)).mul(inverse);
-        current.clear();count=0;active=this;
-        for(var entity:level.entityRenderStates) {
+        current.clear();count=0;active.add(this);
+        if(trackObjects)for(var entity:level.entityRenderStates) {
             Object id=entity instanceof TemporalEntityIdentity identity?identity.metalmod$temporalIdentity():null;
             if(id!=null)net.metalmod.Diagnostics.hook("Temporal.entityIdentity");
             // Unknown states remain rejectable rather than inheriting another entity's transform.
             double radius=Math.max(0.25,entity.boundingBoxWidth*0.75+0.25);
             add(id,entity.x,entity.y,entity.z,radius,Math.max(0.5,entity.boundingBoxHeight)+0.5);
         }
-        currentLights=net.metalmod.lighting.LightingSettings.active()
+        currentLights=trackObjects&&net.metalmod.lighting.LightingSettings.active()
                 ? new java.util.HashSet<>(net.metalmod.lighting.LightCollector.current().lights()):java.util.Set.of();
         // New, moving, recoloured and removed lights reject history over both influence regions.
         // This observes Phase 6's published world-space snapshot without changing its ABI/cadence.
@@ -95,11 +98,13 @@ public final class TemporalSceneMotion {
     }
     /** Actual submitted piston/moving-block pose, not a simulation-tick position. */
     public static void movingBlock(Matrix4fc pose, net.minecraft.client.renderer.block.MovingBlockRenderState state) {
-        var motion=active;if(motion==null)return;
+        for(var motion:active) {
+        if(!motion.trackObjects)continue;
         net.metalmod.Diagnostics.hook("Temporal.movingBlock");
         Vector3f center=pose.transformPosition(0.5f,0,0.5f,new Vector3f());
         motion.add(new MovingId((state.randomSeedPos!=null?state.randomSeedPos:state.blockPos).asLong(),state.blockState),
                 center.x+motion.origin.x,center.y+motion.origin.y,center.z+motion.origin.z,1,1.5);
+        }
     }
     public MemorySegment matrices(Arena arena) {
         float[] values=new float[48];reprojection.get(values,0);inverse.get(values,16);
@@ -111,6 +116,11 @@ public final class TemporalSceneMotion {
         for(int i=0;i<count*12;i++)memory.setAtIndex(ValueLayout.JAVA_FLOAT,i,objects[i]);
         return memory;
     }
+    public boolean validInputs() {
+        if(!inverse.isFinite()||!currentPV.isFinite()||!reprojection.isFinite())return false;
+        for(int i=0;i<count*12;i++)if(!Float.isFinite(objects[i]))return false;
+        return true;
+    }
     public int count(){return count;}
     public boolean reset(){return reset;}
     /** Advance only after the complete temporal command buffer was committed successfully. */
@@ -118,6 +128,6 @@ public final class TemporalSceneMotion {
         previousLights=currentLights;
         previousPV.set(currentPV);previousOrigin=origin;lastSerial=serial;valid=true;
         Map<Object,Position> swap=previous;previous=current;current=swap;current.clear();frames++;
-        stats=new Stats(resets,reason,count,frames,lightRegions);if(active==this)active=null;
+        stats=new Stats(resets,reason,count,frames,lightRegions);active.remove(this);
     }
 }

@@ -39,6 +39,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final int height;
     private final long depthFormat;
     private final boolean temporalCoverage;
+    private final boolean generationCoverage,guiCoverage;
 
     private final Map<String, GpuBufferSlice> uniforms = new HashMap<>();
     private final Map<String, GpuTextureView> textures = new HashMap<>();
@@ -70,6 +71,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     public MetalRenderPassBackend(MetalCommandEncoderBackend owner, MemorySegment encoder,
                                   int width, int height, boolean temporalCoverage, long depthFormat) {
         this.temporalCoverage=temporalCoverage;
+        this.guiCoverage=temporalCoverage&&net.metalmod.upscaling.FrameGenerationCoordinator.guiRasterActive();
+        this.generationCoverage=temporalCoverage&&net.metalmod.upscaling.FrameGenerationCoordinator.rasterActive();
         this.depthFormat = depthFormat;
         this.owner = owner;
         this.encoder = encoder;
@@ -123,7 +126,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         this.pipelineName = resolved.name();
         this.topology = resolved.topology();
-        MemorySegment compatible = temporalCoverage ? resolved.handleForTemporalDepth(this.depthFormat)
+        MemorySegment compatible = temporalCoverage ? guiCoverage?resolved.handleForFrameGenerationGuiDepth(this.depthFormat):generationCoverage?resolved.handleForFrameGenerationDepth(this.depthFormat):resolved.handleForTemporalDepth(this.depthFormat)
                 : resolved.handleForDepth(this.depthFormat);
         if (compatible.address() == 0) {
             this.pipeline = null;

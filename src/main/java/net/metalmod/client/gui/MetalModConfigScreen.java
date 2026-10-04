@@ -5,7 +5,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
-/** Metal backend selection, UMA telemetry, lighting and world-only Super Resolution settings. */
+/** Metal backend selection, UMA telemetry, lighting and MetalFX settings. */
 public class MetalModConfigScreen extends Screen {
 
     private final Screen parent;
@@ -47,8 +47,8 @@ public class MetalModConfigScreen extends Screen {
                 .bounds(centerX - buttonWidth / 2, startY + 48, buttonWidth, buttonHeight).build();
         this.addRenderableWidget(lightingButton);
 
-        this.addRenderableWidget(Button.builder(Component.literal("Super Resolution..."), btn ->
-                this.minecraft.setScreenAndShow(new MetalModSuperResolutionScreen(this)))
+        this.addRenderableWidget(Button.builder(Component.literal("MetalFX..."), btn ->
+                this.minecraft.setScreenAndShow(new MetalModMetalFxScreen(this)))
                 .bounds(centerX - buttonWidth / 2, startY + 72, buttonWidth, buttonHeight).build());
 
         // Capture closes the menu and allows five seconds to resume before recording.

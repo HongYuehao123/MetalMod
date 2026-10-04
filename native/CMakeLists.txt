@@ -22,6 +22,9 @@ set(SOURCES
     src/metalmod_memory.mm
     src/metalmod_metal.mm
     src/metalmod_metalfx.mm
+    src/metalmod_display_link.mm
+    src/metalmod_interpolation.mm
+    src/metalmod_frame_generation.mm
     src/metalmod_temporal.mm
     src/metalmod_temporal_frame.mm
     src/metalmod_temporal_color.mm
@@ -51,6 +54,10 @@ target_compile_options(metalmod PRIVATE
 # Built by default so the native layer is verifiable without launching Minecraft.
 option(METALMOD_BUILD_TESTS "Build the native smoke tests" ON)
 if(METALMOD_BUILD_TESTS)
+    add_executable(metalmod_display_link_check tests/display_link.mm)
+    target_link_libraries(metalmod_display_link_check PRIVATE metalmod
+        ${METAL_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COCOA_FRAMEWORK})
+    target_compile_options(metalmod_display_link_check PRIVATE -fobjc-arc)
     add_executable(metalmod_smoke tests/metal_smoke.mm)
     target_link_libraries(metalmod_smoke PRIVATE metalmod
         ${METAL_FRAMEWORK} ${QUARTZCORE_FRAMEWORK} ${COCOA_FRAMEWORK})

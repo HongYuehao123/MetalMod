@@ -9,6 +9,10 @@ public class MetalConfig {
 
     private static final File CONFIG_FILE = new File("config/metalmod.properties");
     public static final MetalConfig INSTANCE = new MetalConfig();
+    private final File configFile;
+
+    public MetalConfig() { this(CONFIG_FILE); }
+    MetalConfig(File configFile) { this.configFile = configFile; }
 
     // These fields are written by the config GUI thread and read by the render thread, so they
     // must be volatile for changes to be visible without tearing or stale reads.
@@ -41,20 +45,24 @@ public class MetalConfig {
     /** Temporal reconstruction preference; bypassed at native resolution. */
     public volatile boolean enableTemporalUpscaling = false;
 
-    // The MetalFX scaling mode, quality preset, frame generation, sharpness, HDR and target-refresh
+    /** Experimental Phase 7C interpolation; requires supported Metal, VSync and a rendered world. */
+    public volatile boolean enableFrameGeneration = false;
+
+    // The MetalFX scaling mode, quality preset, sharpness, HDR and target-refresh
     // settings that used to live here drove the retired MoltenVK-interop frame pipeline
     // (ROADMAP.md §4). Nothing read them once that pipeline went away, so they were removed rather
     // than left as controls that do nothing.
 
     public void load() {
-        if (!CONFIG_FILE.exists()) {
+        if (!this.configFile.exists()) {
             save();
             return;
         }
-        try (FileReader reader = new FileReader(CONFIG_FILE)) {
+        try (FileReader reader = new FileReader(this.configFile)) {
             Properties props = new Properties();
             props.load(reader);
 
+            this.enableFrameGeneration = Boolean.parseBoolean(props.getProperty("enableFrameGeneration", "false"));
             this.enableTemporalUpscaling = Boolean.parseBoolean(props.getProperty("enableTemporalUpscaling",
                     props.getProperty("enableTemporalJitterProof", "false")));
             this.enableSuperResolution = Boolean.parseBoolean(props.getProperty("enableSuperResolution", "false"));
@@ -72,12 +80,13 @@ public class MetalConfig {
 
     public void save() {
         try {
-            File parent = CONFIG_FILE.getParentFile();
+            File parent = this.configFile.getParentFile();
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();
             }
-            try (FileWriter writer = new FileWriter(CONFIG_FILE)) {
+            try (FileWriter writer = new FileWriter(this.configFile)) {
                 Properties props = new Properties();
+                props.setProperty("enableFrameGeneration", Boolean.toString(this.enableFrameGeneration));
                 props.setProperty("enableTemporalUpscaling", Boolean.toString(this.enableTemporalUpscaling));
                 props.setProperty("enableSuperResolution", Boolean.toString(this.enableSuperResolution));
                 props.setProperty("superResolutionStrength", Integer.toString(this.superResolutionStrength));

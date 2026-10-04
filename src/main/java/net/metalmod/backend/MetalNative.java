@@ -18,8 +18,15 @@ public final class MetalNative {
     private static MethodHandle mhPipelineDepthVariant, mhPipelineReactiveVariant;
     private static MethodHandle mhFxSupported, mhFxCreate, mhFxRelease, mhFxEncode, mhFxHealthy, mhFxSetAntialias, mhFxGpuDuration;
     private static MethodHandle mhTemporalSupported, mhTemporalCreate, mhTemporalRelease, mhTemporalHealthy, mhTemporalEncode, mhTemporalTextureUsage;
+    private static MethodHandle mhFgCreate, mhFgRelease, mhFgCapture, mhFgCaptureHand, mhFgCoverage, mhFgGuiCoverage, mhFgPresent, mhFgStats;
     private static MethodHandle mhTemporalFrameCreate, mhTemporalFrameRelease, mhTemporalFrameHealthy, mhTemporalFrameEncode, mhTemporalFrameDuration, mhTemporalFrameTexture;
     private static MethodHandle mhTemporalColorCreate, mhTemporalColorRelease, mhTemporalColorHealthy, mhTemporalColorEncode;
+
+    private static MethodHandle mhInterpolationSupported, mhInterpolationCreate, mhInterpolationRelease,
+            mhInterpolationHealthy, mhInterpolationUsage, mhInterpolationEncode;
+
+    private static MethodHandle mhDisplayLinkCreate, mhDisplayLinkHealthy, mhDisplayLinkSubmit,
+            mhDisplayLinkStop, mhDisplayLinkRelease, mhDisplayLinkStats, mhUtilityEndFrame;
 
     private static boolean available = false;
     private static String loadError = null;
@@ -41,7 +48,7 @@ public final class MetalNative {
             mhDeviceMaxTextureSize, mhDeviceMaxBufferSize, mhDeviceRecommendedWorkingSet;
     private static MethodHandle mhQueueCreate, mhQueueRelease;
     private static MethodHandle mhLayerCreateForNsWindow, mhLayerRelease, mhLayerConfigure,
-            mhLayerAcquire, mhLayerPresentClear, mhLayerPresentTexture, mhLayerSetPresentQueue;
+            mhLayerAcquire, mhLayerAcquireDisplay, mhLayerPresentClear, mhLayerPresentTexture, mhLayerSetPresentQueue;
     private static MethodHandle mhTextureCreateFull, mhTextureCreateView, mhTextureReplaceRegion,
             mhTextureReadRegion, mhTextureRelease, mhCopyTextureToTexture, mhCopyBufferToBuffer;
     private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease,
@@ -101,6 +108,7 @@ public final class MetalNative {
         mhLayerCreateForNsWindow = linker.downcallHandle(symbol(lookup, "mmm_layer_create_for_ns_window"), FunctionDescriptor.of(A, A));
         mhLayerRelease = linker.downcallHandle(symbol(lookup, "mmm_layer_release"), FunctionDescriptor.ofVoid(A));
         mhLayerConfigure = linker.downcallHandle(symbol(lookup, "mmm_layer_configure"), FunctionDescriptor.of(I, A, I, I, B));
+        mhLayerAcquireDisplay = linker.downcallHandle(symbol(lookup,"mmm_layer_acquire_display"),FunctionDescriptor.of(A,A));
         mhLayerAcquire = linker.downcallHandle(symbol(lookup, "mmm_layer_acquire"), FunctionDescriptor.of(I, A, A, A));
         mhLayerPresentClear = linker.downcallHandle(symbol(lookup, "mmm_layer_present_clear"), FunctionDescriptor.of(I, A, A, F, F, F, F));
         mhLayerPresentTexture = linker.downcallHandle(symbol(lookup, "mmm_layer_present_texture"), FunctionDescriptor.of(I, A, A, A));
@@ -154,6 +162,42 @@ public final class MetalNative {
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
         mhPipelineReactiveVariant=lookup.find("mmm_render_pipeline_reactive_variant")
                 .map(h->linker.downcallHandle(h,FunctionDescriptor.of(A,A,A,A,L))).orElse(null);
+        mhUtilityEndFrame = lookup.find("mmm_utility_end_frame")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid())).orElse(null);
+        mhFgCreate = lookup.find("mmm_fg_create").map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A,A,A,I,I,I,I,L))).orElse(null);
+        mhFgRelease = lookup.find("mmm_fg_release").map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhFgCapture = lookup.find("mmm_fg_capture").map(h -> linker.downcallHandle(h,
+                FunctionDescriptor.of(I,A,A,A,A,A,A,A,I,L,F,F,F,F,F,F,B))).orElse(null);
+        mhFgGuiCoverage=lookup.find("mmm_fg_gui_coverage").map(h->linker.downcallHandle(h,FunctionDescriptor.of(A,A))).orElse(null);
+        mhFgCoverage=lookup.find("mmm_fg_coverage").map(h->linker.downcallHandle(h,FunctionDescriptor.of(A,A))).orElse(null);
+        mhFgCaptureHand = lookup.find("mmm_fg_capture_hand").map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I,A,A,A,A))).orElse(null);
+        mhFgPresent = lookup.find("mmm_fg_present_paced").map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I,A,A,A,A,F))).orElse(null);
+        mhFgStats = lookup.find("mmm_fg_stats").map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I,A,A,I))).orElse(null);
+        mhDisplayLinkCreate = lookup.find("mmm_display_link_create")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, A, I, I))).orElse(null);
+        mhDisplayLinkHealthy = lookup.find("mmm_display_link_healthy")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhDisplayLinkSubmit = lookup.find("mmm_display_link_submit")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, L, F, F, F, F))).orElse(null);
+        mhDisplayLinkStop = lookup.find("mmm_display_link_stop")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A))).orElse(null);
+        mhDisplayLinkRelease = lookup.find("mmm_display_link_release")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhDisplayLinkStats = lookup.find("mmm_display_link_stats")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, I))).orElse(null);
+        mhInterpolationSupported = lookup.find("mmm_fx_interpolation_supported")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhInterpolationCreate = lookup.find("mmm_fx_interpolation_create")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(A, A, I, I, I, I))).orElse(null);
+        mhInterpolationRelease = lookup.find("mmm_fx_interpolation_release")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhInterpolationHealthy = lookup.find("mmm_fx_interpolation_healthy")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
+        mhInterpolationUsage = lookup.find("mmm_fx_interpolation_texture_usage")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(L, A, I))).orElse(null);
+        mhInterpolationEncode = lookup.find("mmm_fx_interpolation_encode")
+                .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I,
+                        A, A, A, A, A, A, A, A, L, L, F, F, F, F, F, F, B, B))).orElse(null);
         mhTemporalSupported = lookup.find("mmm_fx_temporal_supported")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
         mhTemporalCreate = lookup.find("mmm_fx_temporal_create")
@@ -307,6 +351,8 @@ public final class MetalNative {
     }
     public static void layerRelease(MemorySegment layer) { v(mhLayerRelease, layer); }
     public static int layerConfigure(MemorySegment layer, int w, int h, boolean vsync) { return i(mhLayerConfigure, layer, w, h, vsync); }
+    /** Display-only reservation; the render owner has already closed the utility frame. */
+    public static MemorySegment layerAcquireDisplay(MemorySegment layer) {return addr(mhLayerAcquireDisplay,layer);}
     public static MemorySegment[] layerAcquire(MemorySegment layer) {
         try (Arena a = Arena.ofConfined()) {
             MemorySegment d = a.allocate(ValueLayout.ADDRESS), t = a.allocate(ValueLayout.ADDRESS);
@@ -494,6 +540,117 @@ public final class MetalNative {
         if (mhFxEncode == null) return -1;
         try { return (int) mhFxEncode.invokeExact(scaler, cb, input, output, plain); }
         catch (Throwable t) { return -1; }
+    }
+
+    /** Developer-only presenter; old libraries leave ordinary presentation available. */
+    public static MemorySegment frameGenerationCreate(MemorySegment device,MemorySegment queue,int iw,int ih,int ow,int oh,long format) {
+        if(mhFgCreate==null||mhFgCapture==null||mhFgCaptureHand==null||mhFgCoverage==null||mhFgGuiCoverage==null||mhFgPresent==null||mhFgRelease==null||mhFgStats==null)return MemorySegment.NULL;
+        return addr(mhFgCreate,device,queue,iw,ih,ow,oh,format);
+    }
+    public static void frameGenerationRelease(MemorySegment h) { if(h.address()!=0)v(mhFgRelease,h); }
+    public static int frameGenerationCapture(MemorySegment h,MemorySegment cb,MemorySegment world,MemorySegment scene,MemorySegment depth,
+            MemorySegment matrices,MemorySegment objects,int count,long id,float dt,float near,float far,float fov,float jx,float jy,boolean reset) {
+        return i(mhFgCapture,h,cb,world,scene,depth,matrices,objects,count,id,dt,near,far,fov,jx,jy,reset);
+    }
+    public static MemorySegment frameGenerationGuiCoverage(MemorySegment h){return addr(mhFgGuiCoverage,h);}
+    public static MemorySegment frameGenerationCoverage(MemorySegment h){return addr(mhFgCoverage,h);}
+    public static int frameGenerationCaptureHand(MemorySegment h,MemorySegment cb,MemorySegment depth,MemorySegment color) {
+        return i(mhFgCaptureHand,h,cb,depth,color);
+    }
+    public static int frameGenerationPresent(MemorySegment h,MemorySegment layer,MemorySegment drawable,MemorySegment real,float interval) {
+        return i(mhFgPresent,h,layer,drawable,real,interval);
+    }
+    public static long[] frameGenerationStats(MemorySegment h) {
+        long[] values=new long[17];if(h.address()==0||mhFgStats==null)return values;
+        try(var arena=Arena.ofConfined()) {
+            var memory=arena.allocate(136,8);
+            if(i(mhFgStats,h,memory,17)==0)for(int j=0;j<17;j++)values[j]=memory.getAtIndex(ValueLayout.JAVA_LONG,j);
+        }
+        return values;
+    }
+
+    public static MemorySegment displayLinkCreate(MemorySegment layer, MemorySegment queue, int w, int h) {
+        if (mhDisplayLinkCreate == null || mhDisplayLinkHealthy == null || mhDisplayLinkSubmit == null
+                || mhDisplayLinkStop == null || mhDisplayLinkRelease == null || mhDisplayLinkStats == null
+                || mhUtilityEndFrame == null) return MemorySegment.NULL;
+        try { return (MemorySegment)mhDisplayLinkCreate.invokeExact(layer, queue, w, h); }
+        catch (Throwable error) { throw ffiFailure(error); }
+    }
+    public static boolean displayLinkHealthy(MemorySegment handle) {
+        if (mhDisplayLinkHealthy == null) return false;
+        try { return (boolean)mhDisplayLinkHealthy.invokeExact(handle); }
+        catch (Throwable error) { throw ffiFailure(error); }
+    }
+    public static int displayLinkSubmit(MemorySegment handle, MemorySegment cb, MemorySegment real,
+            MemorySegment generated, long renderedId, float r, float g, float b, float a) {
+        if (mhDisplayLinkSubmit == null) return -1;
+        try { return (int)mhDisplayLinkSubmit.invokeExact(handle, cb, real, generated, renderedId, r, g, b, a); }
+        catch (Throwable error) { throw ffiFailure(error); }
+    }
+    public static int displayLinkStop(MemorySegment handle) {
+        if (handle.address() == 0) return 0;
+        if (mhDisplayLinkStop == null) return -1;
+        try { return (int)mhDisplayLinkStop.invokeExact(handle); }
+        catch (Throwable error) { throw ffiFailure(error); }
+    }
+    public static void displayLinkRelease(MemorySegment handle) {
+        if (handle.address() == 0 || mhDisplayLinkRelease == null) return;
+        try { mhDisplayLinkRelease.invokeExact(handle); }
+        catch (Throwable error) { throw ffiFailure(error); }
+    }
+    public static long[] displayLinkStats(MemorySegment handle) {
+        long[] values = new long[14];
+        if (mhDisplayLinkStats == null || handle.address() == 0) return values;
+        try (var arena = Arena.ofConfined()) {
+            var buffer = arena.allocate(ValueLayout.JAVA_LONG, values.length);
+            int rc = (int)mhDisplayLinkStats.invokeExact(handle, buffer, values.length);
+            if (rc != 0) throw new IllegalStateException("Display-link statistics failed: " + rc);
+            return buffer.toArray(ValueLayout.JAVA_LONG);
+        } catch (Throwable error) { throw ffiFailure(error); }
+    }
+    /** A real render boundary even when the display-link owns drawable acquisition. */
+    public static void utilityEndFrame() {
+        if (mhUtilityEndFrame == null) throw new IllegalStateException("Missing utility frame boundary");
+        try { mhUtilityEndFrame.invokeExact(); }
+        catch (Throwable error) { throw ffiFailure(error); }
+    }
+
+    /** Independent Phase 7C capability; querying it does not enable generated presentation. */
+    public static boolean interpolationSupported(MemorySegment device) {
+        if (mhInterpolationSupported == null || mhInterpolationCreate == null || mhInterpolationRelease == null
+                || mhInterpolationHealthy == null || mhInterpolationUsage == null || mhInterpolationEncode == null) return false;
+        try { return (boolean)mhInterpolationSupported.invokeExact(device); }
+        catch (Throwable error) { throw new RuntimeException("Interpolation capability", error); }
+    }
+    public static MemorySegment interpolationCreate(MemorySegment device, int iw, int ih, int ow, int oh) {
+        if (mhInterpolationCreate == null) return MemorySegment.NULL;
+        try { return (MemorySegment)mhInterpolationCreate.invokeExact(device, iw, ih, ow, oh); }
+        catch (Throwable error) { throw new RuntimeException("Interpolation creation", error); }
+    }
+    public static void interpolationRelease(MemorySegment handle) {
+        if (handle.address() == 0 || mhInterpolationRelease == null) return;
+        try { mhInterpolationRelease.invokeExact(handle); }
+        catch (Throwable error) { throw new RuntimeException("Interpolation release", error); }
+    }
+    public static boolean interpolationHealthy(MemorySegment handle) {
+        if (mhInterpolationHealthy == null) return false;
+        try { return (boolean)mhInterpolationHealthy.invokeExact(handle); }
+        catch (Throwable error) { throw new RuntimeException("Interpolation health", error); }
+    }
+    public static long interpolationTextureUsage(MemorySegment handle, int role) {
+        if (mhInterpolationUsage == null) return -1;
+        try { return (long)mhInterpolationUsage.invokeExact(handle, role); }
+        catch (Throwable error) { throw new RuntimeException("Interpolation usage", error); }
+    }
+    /** ABI v1: 1 primes/resets/warms history; only 0 permits generated display. */
+    public static int interpolationEncode(MemorySegment handle, MemorySegment cb, MemorySegment current,
+            MemorySegment previous, MemorySegment depth, MemorySegment motion, MemorySegment ui,
+            MemorySegment output, long previousId, long currentId, float dt, float nearPlane,
+            float farPlane, float fovDegrees, float jitterX, float jitterY, boolean reversed, boolean reset) {
+        if (mhInterpolationEncode == null) return -1;
+        try { return (int)mhInterpolationEncode.invokeExact(handle, cb, current, previous, depth, motion,
+                ui, output, previousId, currentId, dt, nearPlane, farPlane, fovDegrees, jitterX, jitterY, reversed, reset); }
+        catch (Throwable error) { throw new RuntimeException("Interpolation encode", error); }
     }
 
     /** Prototype capability; never selects temporal for the active spatial coordinator. */
