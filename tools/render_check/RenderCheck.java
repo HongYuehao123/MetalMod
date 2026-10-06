@@ -299,7 +299,131 @@ public final class RenderCheck {
             device.close();
         }
         metalFxCheck();
+        String sodiumJar = System.getProperty("metalmod.sodiumJar");
+        if (sodiumJar != null) sodiumTerrainCheck(Paths.get(sodiumJar));
         report();
+    }
+
+    /** Optional release-pinned Sodium fixtures: real compressed vertices, region/fade ABI and lights. */
+    private static void sodiumTerrainCheck(Path jar) throws Exception {
+        String[] keys={"metalmod.sodiumAdapter","metalmod.pointLightProof","metalmod.dynamicLights","metalmod.clusteredLights"};
+        String[] old=new String[keys.length];
+        for(int i=0;i<keys.length;i++) old[i]=System.getProperty(keys[i]);
+        try(ZipFile zip=new ZipFile(jar.toFile())) {
+            System.setProperty(keys[0],"true");
+            ShaderSource source=(id,type)->preprocess(zip,shaderPath(id.toString(),type));
+            try {
+                net.metalmod.lighting.SodiumTerrainVariant.adapt(
+                    source.get(Identifier.parse("sodium:blocks/block_layer_opaque"),ShaderType.VERTEX),
+                    source.get(Identifier.parse("sodium:blocks/block_layer_opaque"),ShaderType.FRAGMENT)
+                        .replace("color *= v_Color;","color *= v_Color * 0.5;"),false,false,false);
+                check("Sodium rejects altered shader semantics",false,"");
+            } catch(IllegalArgumentException expected) {check("Sodium rejects altered shader semantics",true,"");}
+            for(int mode=0;mode<4;mode++) {
+                System.setProperty(keys[1],Boolean.toString(mode==1));
+                System.setProperty(keys[2],Boolean.toString(mode>=2));
+                System.setProperty(keys[3],Boolean.toString(mode==3));
+                MetalDevice device=MetalDevice.create();
+                try {
+                    var format=VertexFormat.builder(0).addAttribute("a_Position",GpuFormat.RG32_UINT)
+                        .addAttribute("a_Color",GpuFormat.RGBA8_UNORM).addAttribute("a_TexCoord",GpuFormat.RG16_UINT)
+                        .addAttribute("a_LightAndData",GpuFormat.RGBA8_UINT).build();
+                    var group=com.mojang.blaze3d.pipeline.BindGroupLayout.builder()
+                        .withSampler("u_LightTex").withSampler("u_BlockTex")
+                        .withUniform("u_Globals",com.mojang.blaze3d.shaders.UniformType.UNIFORM_BUFFER)
+                        .withUniform("u_SectionTimeInfo",com.mojang.blaze3d.shaders.UniformType.TEXEL_BUFFER,GpuFormat.R32_SINT).build();
+                    for(int layer=0;layer<3;layer++) {
+                        var builder=RenderPipeline.builder().withLocation(Identifier.parse("sodium:pipeline/fixture_"+mode+"_"+layer))
+                            .withVertexShader(Identifier.parse("sodium:blocks/block_layer_opaque"))
+                            .withFragmentShader(Identifier.parse("sodium:blocks/block_layer_opaque"))
+                            .withBindGroupLayout(group).withVertexBinding(0,format).withCull(true)
+                            .withPrimitiveTopology(PrimitiveTopology.QUADS).withDepthStencilState(DepthStencilState.DEFAULT)
+                            .withColorTargetState(ColorTargetState.DEFAULT).withShaderDefine("USE_VERTEX_COMPRESSION").withShaderDefine("USE_FOG");
+                        if(layer>0) builder.withShaderDefine("ALPHA_CUTOUT",layer==1?0.5f:0.01f);
+                        if(layer==2) builder.withColorTargetState(new ColorTargetState(Optional.of(BlendFunction.TRANSLUCENT),GpuFormat.RGBA8_UNORM,0xFFFFFFFF));
+                        var pipeline=builder.build();device.precompilePipeline(pipeline,source);
+                        var compiled=device.pipelineFor(pipeline);
+                        check("Sodium mode "+mode+" layer "+layer+" compiles region block",compiled!=null
+                            &&compiled.vertexBuffer(net.metalmod.lighting.SodiumTerrainVariant.REGION)>=0,"");
+                        if(compiled==null) continue;
+                        GpuTexture albedo=device.createTexture("Sodium albedo",GpuTexture.USAGE_TEXTURE_BINDING|GpuTexture.USAGE_COPY_DST,GpuFormat.RGBA8_UNORM,1,1,1,1);
+                        GpuTexture baked=device.createTexture("Sodium baked",GpuTexture.USAGE_TEXTURE_BINDING|GpuTexture.USAGE_COPY_DST,GpuFormat.RGBA8_UNORM,1,1,1,1);
+                        solid(albedo,128,128,128,255);solid(baked,64,64,64,255);
+                        var av=device.createTextureView(albedo);var bv=device.createTextureView(baked);
+                        var vertices=device.createBuffer(()->"Sodium compact mesh",GpuBuffer.USAGE_VERTEX,sodiumVertexBytes());
+                        ByteBuffer index=ByteBuffer.allocateDirect(36).order(ByteOrder.nativeOrder());
+                        for(int v:new int[]{999,999,999,0,1,2,0,2,3}) index.putInt(v);index.flip();
+                        var indices=device.createBuffer(()->"Sodium offset indices",GpuBuffer.USAGE_INDEX,index);
+                        Map<String,GpuBuffer> uniforms=new LinkedHashMap<>();
+                        ByteBuffer globals=ByteBuffer.allocateDirect(192).order(ByteOrder.nativeOrder());
+                        globals.put(identityMat4()).put(identityMat4());
+                        globals.putFloat(0).putFloat(1).putFloat(0).putFloat(1);
+                        globals.putFloat(100).putFloat(200).putFloat(100).putFloat(200);
+                        globals.putFloat(1).putFloat(1).putFloat(0).putFloat(0).putFloat(1).putInt(0);globals.position(0);
+                        putProofUniform(device,uniforms,"u_Globals",globals);
+                        ByteBuffer region=ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder());
+                        region.putFloat(-16).putFloat(0).putFloat(0).putInt(0).putInt(1);region.position(0);
+                        putProofUniform(device,uniforms,net.metalmod.lighting.SodiumTerrainVariant.REGION,region);
+                        ByteBuffer times=ByteBuffer.allocateDirect(512*4).order(ByteOrder.nativeOrder());times.putInt(288*4,-1);
+                        putProofUniform(device,uniforms,"u_SectionTimeInfo",times);
+                        if(mode==1) putProofUniform(device,uniforms,net.metalmod.lighting.PointLight.UNIFORM,
+                            new net.metalmod.lighting.PointLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,0).relativeTo(0,0,0));
+                        net.metalmod.lighting.LightCollector.clear();
+                        var textures=Map.of("u_BlockTex",av,"u_LightTex",bv);
+                        int[] base=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                        check("Sodium compact/base-vertex/index-offset/region/fade baked pixels "+mode+"/"+layer,
+                            base[0]==32&&base[1]==32&&base[2]==32&&base[3]==255,java.util.Arrays.toString(base));
+                        if(mode>0) {
+                            if(mode==1) putProofUniform(device,uniforms,net.metalmod.lighting.PointLight.UNIFORM,
+                                new net.metalmod.lighting.PointLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1).relativeTo(0,0,0));
+                            else publishLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1);
+                            int[] lit=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                            check("Sodium light raises red and preserves baked green/blue "+mode+"/"+layer,
+                                lit[0]>base[0]+20&&lit[1]==32&&lit[2]==32&&lit[3]==255,java.util.Arrays.toString(lit));
+                        }
+                        if(layer==2) {
+                            solid(albedo,128,128,128,128);
+                            int[] blended=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                            check("Sodium translucent blend preserves alpha coverage "+mode,
+                                Math.abs(blended[0]-(mode==0?16:64))<=1&&Math.abs(blended[1]-143)<=1
+                                    &&Math.abs(blended[2]-16)<=1&&blended[3]==255,java.util.Arrays.toString(blended));
+                            solid(albedo,128,128,128,255);
+                        }
+                        var regionData=((MetalBuffer)uniforms.get(net.metalmod.lighting.SodiumTerrainVariant.REGION)).data().asByteBuffer().order(ByteOrder.nativeOrder());
+                        regionData.putFloat(0,-14);
+                        int[] moved=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                        check("Sodium updated region origin moves geometry out of the centre "+mode+"/"+layer,
+                            moved[0]==0&&moved[1]==255&&moved[2]==0,java.util.Arrays.toString(moved));
+                        regionData.putFloat(0,-16);
+                        times.putInt(288*4,0);
+                        putProofUniform(device,uniforms,"u_SectionTimeInfo",times);
+                        int[] faded=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                        check("Sodium updated section fade reaches full fog "+mode+"/"+layer,
+                            faded[0]==0&&faded[1]==255&&faded[2]==0,java.util.Arrays.toString(faded));
+                        if(layer==1) {
+                            times.putInt(288*4,-1);
+                            putProofUniform(device,uniforms,"u_SectionTimeInfo",times);
+                            solid(albedo,128,128,128,64);
+                            int[] cutout=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                            check("Sodium alpha cutout remains discarded "+mode,cutout[0]==0&&cutout[1]==255&&cutout[2]==0,java.util.Arrays.toString(cutout));
+                        }
+                        for(var b:uniforms.values())b.close();vertices.close();indices.close();av.close();bv.close();albedo.close();baked.close();
+                    }
+                } finally {device.close();net.metalmod.lighting.LightCollector.clear();}
+            }
+        } finally {for(int i=0;i<keys.length;i++) {if(old[i]==null)System.clearProperty(keys[i]);else System.setProperty(keys[i],old[i]);}}
+    }
+
+    private static ByteBuffer sodiumVertexBytes() {
+        ByteBuffer bytes=ByteBuffer.allocateDirect(100).order(ByteOrder.nativeOrder());bytes.position(20); // nonzero base vertex
+        for(float[] p:new float[][]{{-1,-1},{1,-1},{1,1},{-1,1}}) {
+            int x=(int)((p[0]+8)/32*(1<<20)),y=(int)((p[1]+8)/32*(1<<20)),z=9*(1<<15);
+            bytes.putInt((x>>>10)|((y>>>10)<<10)|((z>>>10)<<20));
+            bytes.putInt((x&1023)|((y&1023)<<10)|((z&1023)<<20));
+            bytes.putInt(-1).putShort((short)16384).putShort((short)16384);
+            bytes.put((byte)128).put((byte)128).put((byte)0).put((byte)32);
+        }
+        return bytes.flip();
     }
 
     /** Real coordinator + engine targets: reduced attachments, reuse, native UI pixels and fallback. */
@@ -4212,6 +4336,8 @@ public final class RenderCheck {
     }
 
     /** Render the quad over black and return the whole colour buffer. */
+    private static boolean bindingCacheChecked;
+
     private static ByteBuffer renderQuadPixels(MetalDevice device, RenderPipeline pipeline,
                                                GpuBuffer vertices, GpuBuffer indices,
                                                Map<String, GpuBuffer> uniforms,
@@ -4247,6 +4373,18 @@ public final class RenderCheck {
         pass.setVertexBuffer(0, vertices.slice());
         pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
         pass.drawIndexed(6, 1, 0, 0, 0);
+        if (!bindingCacheChecked && !textures.isEmpty()) {
+            long before = MetalNative.ffiCallCount();
+            for (var uniform : uniforms.entrySet()) pass.setUniform(uniform.getKey(), uniform.getValue().slice());
+            for (var texture : textures.entrySet()) pass.bindTexture(texture.getKey(), texture.getValue(), sampler);
+            // Applies pending bindings without another fragment/blend operation.
+            pass.drawIndexed(0, 1, 0, 0, 0);
+            long redundantCalls = MetalNative.ffiCallCount() - before;
+            boolean cached = !"false".equalsIgnoreCase(System.getProperty("metalmod.drawStateCache", "true"));
+            check("redundant uniform/texture bindings: " + redundantCalls + " native calls",
+                    cached ? redundantCalls == 0 : redundantCalls > 0, "");
+            bindingCacheChecked = true;
+        }
         encoder.submitRenderPass();
         encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
         sampler.close();
@@ -4285,7 +4423,9 @@ public final class RenderCheck {
         RenderPassBackend pass = encoder.createRenderPass(descriptor);
         pass.setPipeline(pipeline);
         for (Map.Entry<String, GpuBuffer> uniform : uniforms.entrySet()) {
-            pass.setUniform(uniform.getKey(), uniform.getValue().slice());
+            if (label.startsWith("Sodium") && uniform.getKey().equals(net.metalmod.lighting.SodiumTerrainVariant.REGION))
+                ((net.metalmod.backend.MetalRenderPassBackend)pass).setUniformBytes(uniform.getKey(),((MetalBuffer)uniform.getValue()).data().asByteBuffer());
+            else pass.setUniform(uniform.getKey(), uniform.getValue().slice());
         }
         GpuSampler sampler = device.createSampler(AddressMode.CLAMP_TO_EDGE, AddressMode.CLAMP_TO_EDGE,
                 FilterMode.NEAREST, FilterMode.NEAREST, 1, OptionalDouble.empty());
@@ -4294,7 +4434,24 @@ public final class RenderCheck {
         }
         pass.setVertexBuffer(0, vertices.slice());
         pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
-        pass.drawIndexed(6, 1, 0, 0, 0);
+        GpuBuffer changedUniform = null;
+        if (label.equals("gui") && MetalNative.fusedDrawsEnabled()) {
+            // Prime the ordinary binding path without producing pixels, then change exactly one
+            // binding to a nonzero slice. Existing colour assertions verify the fused draw's pixels.
+            ByteBuffer original = ((MetalBuffer) uniforms.get("DynamicTransforms")).data().asByteBuffer();
+            int length = original.remaining();
+            ByteBuffer padded = ByteBuffer.allocateDirect(256 + length).order(ByteOrder.nativeOrder());
+            padded.position(256); padded.put(original); padded.flip();
+            changedUniform = device.createBuffer(() -> "fused uniform offset", GpuBuffer.USAGE_UNIFORM, padded);
+            pass.drawIndexed(0, 1, 0, 0, 0);
+            pass.setUniform("DynamicTransforms", changedUniform.slice(256, length));
+            long before = MetalNative.ffiCallCount();
+            pass.drawIndexed(6, 1, 0, 0, 0);
+            check("single changed uniform + indexed draw uses one native call",
+                    MetalNative.ffiCallCount() - before == 1, "");
+        } else {
+            pass.drawIndexed(6, 1, label.startsWith("Sodium") ? 3 : 0, label.startsWith("Sodium") ? 1 : 0, 0);
+        }
         encoder.submitRenderPass();
 
         encoder.copyTextureToBuffer(color, readback, 0L, null, 0, 0, 0, WIDTH, HEIGHT);
@@ -4303,6 +4460,7 @@ public final class RenderCheck {
         int[] rgb = {pixels.get(centre) & 0xFF, pixels.get(centre + 1) & 0xFF,
                 pixels.get(centre + 2) & 0xFF, pixels.get(centre + 3) & 0xFF};
         readback.close();
+        if (changedUniform != null) changedUniform.close();
         sampler.close();
         if (depthView != null) depthView.close();
         if (depth != null) depth.close();

@@ -29,6 +29,14 @@ def analyze(folder,stage=None):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('root',type=Path)
     parser.add_argument('--stage',type=int);args=parser.parse_args();result={}
+    comparison=args.root.parents[1]/'comparison.json'
+    if comparison.exists():
+        metadata=json.loads(comparison.read_text())
+        if metadata.get('diagnostic_only') or metadata.get('gpu_stage_timing'):
+            raise ValueError('diagnostic GPU profiling is not a clean CPU stall comparison')
     for line in (args.root/'benchmark-index.tsv').read_text().splitlines():
-        name,folder,_=line.split('\t',2);result[name]=analyze(args.root/folder,args.stage)
+        name,folder,_=line.split('\t',2)
+        capture=args.root/folder
+        if (capture/'REJECTED.txt').exists() or (capture/'INSTRUMENTED.txt').exists():continue
+        result[name]=analyze(capture,args.stage)
     print(json.dumps(result,indent=2))

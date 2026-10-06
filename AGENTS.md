@@ -13,7 +13,7 @@ Instead of translating Vulkan through MoltenVK, it plugs into Minecraft's Blaze3
 ### What MetalMod Is NOT
 - **NOT a MoltenVK wrapper or patch.** The retired "MetalFX on top of MoltenVK / `VK_EXT_metal_objects`" architecture has been completely removed. Do not attempt to hook into Vulkan or MoltenVK.
 - **NOT a reimplementation of Minecraft rendering.** Unlike VulkanMod (which had to rewrite rendering when Blaze3D had no backend abstraction), MetalMod is a clean driver implementation (~134 interface members across 12 Blaze3D backend classes).
-- **NOT dependent on Sodium or Iris.** Sodium compatibility is explicitly not pursued (it targets Blaze3D's internal abstraction and does not ease shaderpack or ray tracing work).
+- **NOT dependent on Sodium or Iris.** Sodium compatibility was reopened by the user on 2026-10-04 as an optional performance goal. An optional native adapter for official Sodium 0.9.2+mc26.2 now renders in copied-world tests; temporal/FG checks pass and scoped ABBA measures 65–66% lower render-thread CPU time. Fluid Culling = Default restores the observed lava surfaces (BUG-046 resolved); broader quality/stress and frame-time tails keep the adapter experimental. See `docs/performance/sodium-compatibility.md`. Vanilla rendering remains the core RT foundation.
 
 ### Dual-Language Stack
 1. **Java 22+ (Panama FFI):** Implements Blaze3D interfaces (`net.metalmod.backend.*`), Mixin hooks (`net.metalmod.mixin.*`), configuration GUI, F3 telemetry, and Phase 6 dynamic lighting management (`net.metalmod.lighting.*`).
@@ -48,6 +48,8 @@ Always build the mod using:
 3. **Compiles Java sources with `javac --release 22`:** Compiles against the **REAL Minecraft client JAR** (not API stubs!). `javac` validates every Minecraft API call.
 4. **Packages mod JAR:** Copies `fabric.mod.json`, `metalmod.mixins.json`, and embeds `libmetalmod.dylib` under `natives/` into `build/libs/metalmod-1.0.0.jar`.
 5. **Compiles standalone tests:** Compiles `src/test/java` (skipping JUnit-only files) into `build/test-classes`.
+
+Optional separate adapter: set `METALMOD_SODIUM_JAR` to the actual Sodium 0.9.2+mc26.2 release JAR to also build `build/libs/metalmod-sodium-0.1.1.jar`. Core-only builds/runs require no Sodium. Official 0.9.3-alpha.1 targets Minecraft 26.3; current compatibility remains scoped to 26.2 until a port is authorized and verified.
 
 #### Environment Configuration:
 - `JAVA_HOME`: Default is `/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home` (JDK 22+ required).

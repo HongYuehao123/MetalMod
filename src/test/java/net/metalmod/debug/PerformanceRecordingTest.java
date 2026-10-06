@@ -84,6 +84,11 @@ public final class PerformanceRecordingTest {
                     MetalNative.captureReadReset(sample);
                     check(sample.getAtIndex(ValueLayout.JAVA_LONG,
                             MetalNative.CAPTURE_METRICS.indexOf("submissions")) == 1, "native snapshot ABI order");
+                    var gpu = arena.allocate(ValueLayout.JAVA_LONG, MetalNative.GPU_PROFILE_METRICS.size());
+                    MetalNative.gpuProfileReadReset(gpu);
+                    check(gpu.getAtIndex(ValueLayout.JAVA_LONG, 1) == -1
+                            && gpu.getAtIndex(ValueLayout.JAVA_LONG, 2) == -1,
+                            "GPU stage timings stay unavailable without completed render samples");
                     MetalNative.captureReadReset(sample);
                     for (int i = 0; i < MetalNative.CAPTURE_METRICS.size(); i++) {
                         check(sample.getAtIndex(ValueLayout.JAVA_LONG, i) == 0, "native frame reset");

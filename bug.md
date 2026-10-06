@@ -8,6 +8,124 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-047 — Sodium version error in Mixin plugin allowed unsafe startup
+
+**Status:** **FIXED during unified-JAR packaging (2026-10-05).**
+
+A negative test changed only the tested Sodium JAR's declared version to `0.9.3+mc26.2`
+(a synthetic fixture, not the actual 0.9.3 release). Throwing from the adapter plugin's
+`onLoad` logged the compatibility error, but Mixin continued initialization. Without the native
+factory mixins, Sodium reached `GLDrawContext` and cast `MetalRenderPassBackend` to
+`GlRenderPassAccessor`, reproducing the original incompatibility.
+
+The plugin now registers no unsupported targets and publishes an explanatory message. A separate
+Fabric `PreLaunchEntrypoint` checks the exact supported version and throws fatally before Minecraft
+starts rendering. This entrypoint has no Sodium class references and is harmless when Sodium is
+absent. The existing native factory/device selection is preserved for the supported release.
+
+Verification: the initial failed guard and corrected rejection are retained under
+`build/reports/sodium-autodetect-20261005/`. The final unsupported-version fixture exits 1 with
+Fabric's error GUI suppressed for automation, reports the actionable pre-launch error, and never
+creates the Metal device or enters world rendering. The final unified artifact also runs the
+five offline gates and copied-world tests with and without Sodium; see
+`docs/performance/sodium-autodetect-20261005.md`.
+
+---
+
+## BUG-046 — Sodium cave lava surfaces differ from vanilla Metal
+
+**Status:** **RESOLVED: upstream Sodium quality setting, not a demonstrated Metal adapter defect**
+(2026-10-04). For vanilla-like fluid surfaces use **Quality → Fluid Culling → Default**
+(`quality.hidden_fluid_culling=false`). No production shader/draw-path change was needed.
+
+The tested Sodium 0.9.2+mc26.2 configuration used Fluid Culling = Optimized, which is enabled in
+that release's defaults. `DefaultFluidRenderer` performs a connected-fluid exposure heuristic
+and can omit fluid faces while constructing the CPU mesh, before Metal receives it. Its own
+option tooltip explicitly acknowledges surface interruptions at shallow viewing angles.
+
+Controlled test: same core/adapter/release JARs, copied world, waypoint 13, camera, resolution,
+lighting and other Sodium settings; only `hidden_fluid_culling` changed true→false. Both native
+and spatial captures passed the strict capture gates. Missing orange patches returned. In the
+fixed native ROI (1030,590)–(1240,720), orange pixels are **5173 vanilla / 200 Optimized / 5173 Default**.
+This establishes the cause of the observed difference without a reference-backend change.
+
+Control timing: native **3.595 ms render-thread CPU / 59.93 FPS**, spatial strength 25
+**3.707 ms / 59.76 FPS**. Those remain near the earlier Optimized results, so the large CPU
+headroom gain is not explained by suppressing these lava faces. This is one clean control per
+mode, not a new ABBA performance selection; broader quality/stress and frame tails still need work.
+
+Evidence: [vanilla](docs/bugs/sodium-fluid-vanilla-2026-10-04.png),
+[Optimized](docs/bugs/sodium-fluid-sodium-2026-10-04.png),
+[Default, restored](docs/bugs/sodium-fluid-default-2026-10-04.png), plus
+`build/reports/sodium-fluid/{finding.json,control-summary.json,control/}`.
+The normal instance remains unchanged; the optional adapter's recommended profile now uses Default.
+
+## BUG-045 — Transient FG verification visibility/order/cadence failures
+
+**Status:** **OPEN** (2026-10-04); exact cause unresolved. Final unchanged retry passes.
+
+During buffer-offset reverification, the first enabled FG suite failed 10/186 checks. Startup
+reported visibility bits=10 (inactive/occluded), and later stages failed presentation order and
+60-Hz cadence assertions despite no interpolation GPU failure. A disabled control passed
+158/158 plus 15 restart checks, but quality protection skipped some cadence assertions, so the
+control does not establish whether buffer offsets caused the earlier failures. The unchanged
+enabled retry passed the full 191/191 plus 15/15 restart checks. No production presentation code,
+test thresholds or assertions were altered between these runs.
+
+Reproducer: `JAVA_TOOL_OPTIONS=-Dmetalmod.bufferOffsets=true python3 tools/temporal_validation/run.py
+--source-game "$HOME/Documents/.minecraft/versions/MetalMod_Test_26.2" --world '新的世界'
+--output <new-disposable-directory> --frame-generation`.
+
+All outcomes are retained in `build/reports/buffer-offsets/reverification/fg-{initial,control,final}/`.
+See [verification and selection limits](docs/performance/buffer-offsets.md). The passing retry
+establishes scoped compatibility; it does not close broader experimental FG delivery risks.
+
+## BUG-044 — Official Sodium selects OpenGL for the native Metal backend
+
+**Status:** **FIXED for official Sodium 0.9.2+mc26.2 with the optional Metal adapter**
+(2026-10-04). Sodium alone with the core mod remains unsupported; the normal instance has not
+been changed. Broader compatibility/performance selection remains experimental.
+
+Original cause: first world rendering threw `ClassCastException` in `GLDrawContext.setContext`.
+Sodium recognizes the concrete vanilla `VulkanDevice`, otherwise selects OpenGL and casts the
+Metal pass to `GlRenderPassAccessor`. Vulkan contexts likewise issue raw Vulkan commands;
+changing an enum or indirect capability cannot provide those objects.
+
+`compat/sodium/` now selects native Metal draw contexts/batches only for `MetalDevice`, sends
+region origin/time/id through copied std140 inline uniforms, preserves direct indexed offsets,
+base vertices and ordering, and adapts the exact tested terrain shader pair to the existing
+lighting ABI. Ordinary implementation classes were moved outside the Mixin package after a
+first-launch `IllegalClassLoadError`; that failed launch is retained.
+
+Verification: all five offline gates pass (921 native, 87+9 shaders, 204 vanilla + 66 Sodium
+pixel checks, standalone); copied-world temporal run passes 385 checks with zero backend health
+errors and visible terrain through dimension/reconnect/resize. Final guarded-adapter foreground
+FG passes 186 checks plus 15 saved-On restart checks; the earlier locked attempt is archived as
+interrupted. Matched performance ABBA passes eight accepted captures and shows 65–66% lower render-thread
+CPU time. Lava-surface difference BUG-046 is resolved as Sodium optimized fluid culling;
+Default restores the observed patches. See [full evidence and scope](docs/performance/sodium-compatibility.md).
+
+## BUG-043 — FG object-coverage fixture counts clouds and measures occluded startup
+
+**Status:** **FIXED in disposable validation add-on** (2026-10-04); production behavior unchanged.
+The submission-batching comparison exposed the same coverage failure on both rendering paths:
+33.94% with batching and 33.89% without exceeded a one-third threshold. The mask legitimately
+includes cloud fragments, while the fixture intended to bound phantom/orb/beam coverage. Visible
+clouds account for ~16% of this scene. Raising the threshold would hide the mismatch.
+
+The fixture now disables clouds only for its object scene, checks that isolation and restores/
+checks the copied cloud preference immediately afterward. With the original threshold, coverage
+is 18.4%. All other stages retain clouds. [Original scene](docs/bugs/fg-fixture-clouds-2026-10-04.png).
+A separate retry started with visibility bits=10 (visible window on a screen, but occluded and
+inactive), producing zero presentation callbacks in its opening stages. Startup now waits for
+one second of active/unoccluded visibility before starting; per-stage visibility/cadence checks
+are unchanged.
+
+Final default-batched gameplay passes **191/191** plus **15/15** saved-On fresh-JVM restart checks.
+The initial 183/184 on/off results and 172/181 occluded retry remain unaccepted evidence.
+Reproducer, logs and accepted final results: [submission batching](docs/performance/submission-batching.md),
+`build/reports/submission-batching/framegen-{initial,baseline,occluded,final}/`.
+
 ## BUG-042 — FG active at a 30-FPS limit, but most displayed world pixels still repeat real frames
 
 **Status:** correction installed (2026-10-04), SHA-256 `dcca5566…`. Five offline gates,
@@ -264,6 +382,22 @@ Reproduce with the saved 32-chunk route and F8 dense waypoint; analyze raw CSVs 
 `tools/metalfx_benchmark/profile_stalls.py ROOT --stage 13`. No queue-depth or submission change
 was made. The lighter smooth forest/river check does not reproduce this tail regression. Evidence:
 [stall and motion results](docs/phase7/motion-check/results.md), `prior-dense-stalls.json` alongside it.
+
+2026-10-04: ordinary native submission batching now reduces command-buffer creation overhead
+and improves measured native/spatial frame intervals in a different smooth-camera scene; see
+[submission batching](docs/performance/submission-batching.md). That test has ~7470 draws/frame,
+not this dense 19,000-draw waypoint. The original regression and driver cause remain unverified;
+this entry stays open.
+
+Later 2026-10-04: waypoint 13 is retested at ~19,200 draws/frame on the current backend.
+Clean native off/on/off captures average 56.00/56.83/55.36 FPS. The old creation stall does
+not reproduce even with batching off: slowest-5% creation averages 0.048–0.533 ms, while
+drawable waits average ~20–21 ms. A separate instrumented Metal trace identifies substantial
+associated terrain vertex workload. The new 5120×2664 windowed fixture/current renderer
+differs from the historical 5120×2880 run, so neither the original driver cause nor a fix is
+established. One sampled throughput capture is excluded; this is not complete ABBA.
+See [dense retest and profiling limits](docs/performance/dense-profiling.md). Status remains open.
+
 
 ## BUG-030 — Unbounded terrain samplers incorrectly disable mipmaps
 

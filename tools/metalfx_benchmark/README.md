@@ -1,5 +1,13 @@
 # Spatial MetalFX comparison harness
 
+Performance baseline policy (2026-10-05): `run_manual.py` now defaults to **external display,
+Vsync Off, Unlimited FPS, native-only rendering**, with spatial/temporal upscaling and frame
+generation off in the disposable instance. Native submission ABBA has four captures; fixed-renderer
+mode has one native capture. `--compare-spatial` explicitly restores spatial comparisons described
+below. Historical feature-validation tools and archived results remain separate. Option 260 is
+the real client's Unlimited sentinel, not a 260-FPS cap. `--render-distance` records the distance;
+32 retains the dense stress fixture, while mcopt's linked demo labels distance 16.
+
 This optional Fabric test add-on drives the existing F7 route and F8 capture APIs. It is **not
 included in the production mod**. Build the normal mod first, then run `./tools/metalfx_benchmark/build_addon.sh`.
 Install `build/metalfx-benchmark/spatial-benchmark.jar` and the built MetalMod JAR only in a
@@ -94,3 +102,86 @@ F8 five-second countdown and 60-second capture run while the human demonstrates 
 host Minecraft/GPU access. Analyze with `analyze_manual.py CAPTURE_FOLDER`; the analysis requires
 exact pose/frame telemetry alignment. See `docs/phase7/manual-motion-check/results.md` for the
 first human-controlled recording and its limitations.
+
+## Dense waypoint profiling
+
+`run_manual.py --submission-benchmark --source-world PATH --world COPY_NAME
+--anchor-route ROUTE_JSON --anchor-waypoint 13 --static-camera --output NEW_DIRECTORY`
+copies the specified source world and holds a selected Overworld waypoint. The source is
+read-only; configurations/libraries still come from the normal test instance. Without the
+overrides, the saved player and smooth camera remain the default. Comparison metadata records
+the exact position, camera mode and packaged JAR hash.
+
+`--diagnostic-only --gpu-stage-timing --compare-spatial` runs two enabled native/SR25 captures for profiling.
+These are diagnostic measurements, not the six-capture throughput comparison. External CPU/Metal
+tracing must run separately from throughput measurements. Mark any accidentally instrumented
+throughput capture with `INSTRUMENTED.txt`; `analyze_submission.py` excludes it and reports the
+remaining comparison counts rather than claiming a complete ABBA.
+The add-on automatically marks declared diagnostic/counter captures with `INSTRUMENTED.txt`.
+The display probe logs the game window's hosting screen, display ID, maximum refresh rate,
+window/screen bounds and backing scale when activating outside timed captures. Screen capability
+and observed `presentedTime` cadence are separate measurements; neither establishes input latency.
+
+Export the `metal-gpu-intervals` table from a saved Instruments Metal System Trace, then run
+`python3 tools/metalfx_benchmark/analyze_metal_trace.py EXPORT_XML --pid PID`. It filters to
+the chosen process and top-level execution intervals, excludes unassigned work and boundary
+frames, and reports both overlapping interval union and first-to-last span. Instruments GPU
+frame IDs are not F8 CPU frame IDs. Stages and separate frames can overlap; instrumented
+results are workload diagnostics, not release throughput or input latency measurements.
+
+
+### Optional Sodium renderer comparison
+
+`run_manual.py --submission-benchmark --renderer-comparison vanilla` captures native using one
+fixed renderer in a fresh JVM; it does not toggle the submission property. Add `--compare-spatial`
+only for an explicit native/spatial-strength-25 feature comparison.
+For Sodium, select `--renderer-comparison sodium` and supply the tested Sodium and optional
+MetalMod adapter JARs with two `--extra-mod` arguments. Use the same `--source-world`,
+`--anchor-route`, `--anchor-waypoint`, `--static-camera` and core JAR for all runs.
+Launch in vanilla/Sodium/Sodium/vanilla order, each in a new output directory, then run:
+
+```sh
+python3 tools/metalfx_benchmark/analyze_renderer.py /path/to/a1 /path/to/b1 /path/to/b2 /path/to/a2
+```
+
+The analyzer enforces clean captures and matching camera, source, resolution and core JAR,
+rejects instrumentation/compile/recovery/menu/focus changes, and reports both CPU and frame-time
+percentiles. A terrain image is captured only after each timed export. Images and quality
+fixtures must be reviewed independently; lower CPU usage does not establish rendering parity.
+See `docs/performance/sodium-compatibility.md` for accepted evidence and current parity limits.
+
+`--sodium-options /path/to/sodium-options.json` copies an explicit options override into the
+new diagnostic instance and records its SHA-256. Use this to isolate a quality option while
+keeping the same adapter/backend; the normal installation is never written. Lava parity
+investigation: `quality.hidden_fluid_culling=false` (Fluid Culling = Default).
+
+### Internal/external display check
+
+`--display internal` moves only the disposable game window to the built-in screen and fits
+its visible frame before the 60-second warmup. `--display external` selects the first external
+screen and preserves the requested window size. Missing requested screens stop the test.
+`--window-width W --window-height H` sets initial logical content dimensions (default 2560×1440);
+the window manager can constrain them, so compare the actual F8 pixel dimensions. All screen
+placement happens outside timed captures. The screen log includes a `builtIn` flag.
+
+To isolate refresh/presentation from resolution, run the internal test first, then choose an
+external window size yielding the same actual output dimensions. Analyze with:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 tools/metalfx_benchmark/analyze_display_comparison.py INTERNAL_COPY EXTERNAL_COPY
+```
+
+This requires matching renderer/core/mod/options hashes, camera/source and actual dimensions,
+plus consistent correct hosting-screen snapshots. One launch per screen is an exploratory
+comparison, not ABBA. Run `analyze_display.py` separately and disclose zero timestamps;
+rendered FPS and unique observed presentation updates are different measurements.
+
+## Bounded offscreen completion comparison
+
+Add `--offscreen-comparison` to the native-only fixed Sodium submission command. This optional
+add-on runs present/offscreen/offscreen/present without changing core production code or submission
+properties. Both conditions enforce at most two pending rendered frames and insert completion
+fences. Offscreen retains frame resource lifecycles and omits drawable/blit/presentation.
+Use `analyze_offscreen.py <copied-game-directory>`; general analyzers reject its instrumented captures.
+Completed FPS is not displayed FPS. The offscreen window retains its last displayed image.
+See `docs/performance/offscreen-completion-20261005.md` for measured results and limitations.

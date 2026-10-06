@@ -25,6 +25,9 @@ public final class FrameGenerationValidation {
     private static int stage=-1,frames,failures;
     private static long started=System.nanoTime(),stageStart,initialGenerated,initialCaptures,initialIntervals,initialIntervalSum,initialShort,initialOrdering,initialReal,initialDisplayTime;
     private static boolean restored,done,drainSampled;
+    private static net.minecraft.client.CloudStatus qualitySceneClouds;
+    private static long bootstrapVisibleSince;
+    private static boolean bootstrapPrepared;
     private static Path root;
     private static final List<String> checks=new ArrayList<>();
     private static MethodHandle activate,visibility;
@@ -46,9 +49,20 @@ public final class FrameGenerationValidation {
         if(now-started>300_000_000_000L){check("bounded runtime",false,"timeout");finish(mc);return;}
         if(stage<0){
             if(mc.level==null||mc.player==null||!mc.isGameLoadFinished())return;
-            mc.options.pauseOnLostFocus=false;mc.options.inactivityFpsLimit().set(InactivityFpsLimit.MINIMIZED);
-            mc.options.framerateLimit().set(60);mc.options.enableVsync().set(true);
-            focus(mc);next(mc);return;
+            if(!bootstrapPrepared) {
+                mc.options.pauseOnLostFocus=false;mc.options.inactivityFpsLimit().set(InactivityFpsLimit.MINIMIZED);
+                mc.options.framerateLimit().set(60);mc.options.enableVsync().set(true);
+                GLFW.glfwShowWindow(mc.getWindow().handle());GLFW.glfwRestoreWindow(mc.getWindow().handle());
+                bootstrapPrepared=true;
+            }
+            focus(mc);
+            // Cocoa activation is asynchronous. An occluded startup cannot measure display
+            // delivery; start the fixture only after the owned test window is stably visible.
+            long visible=(long)visibility.invokeExact();
+            if((visible&7)!=7) {bootstrapVisibleSince=0;return;}
+            if(bootstrapVisibleSince==0)bootstrapVisibleSince=now;
+            if(now-bootstrapVisibleSince<1_000_000_000L)return;
+            next(mc);return;
         }
         if(!STAGES[stage].equals("menu-on")&&(mc.level==null||mc.player==null||!mc.isGameLoadFinished()))return;
         frames++;
@@ -123,6 +137,8 @@ public final class FrameGenerationValidation {
         next(mc);
     }
     private static void checkRasterCoverage(Minecraft mc) throws Throwable {
+        check("entity coverage fixture excludes cloud raster coverage",
+                mc.options.getCloudStatus()==net.minecraft.client.CloudStatus.OFF, "");
         var owner=presentedOwner;check("quality scene has world capture",owner!=null,"");if(owner==null)return;
         var field=FrameGenerationCoordinator.class.getDeclaredField("handle");field.setAccessible(true);
         var coverage=net.metalmod.backend.MetalNative.frameGenerationCoverage((MemorySegment)field.get(owner));
@@ -224,6 +240,11 @@ public final class FrameGenerationValidation {
         }
     }
     private static void next(Minecraft mc) throws Throwable {
+        if(qualitySceneClouds!=null) {
+            mc.options.cloudStatus().set(qualitySceneClouds);
+            check("entity coverage fixture restores cloud setting",mc.options.cloudStatus().get()==qualitySceneClouds, "");
+            qualitySceneClouds=null;
+        }
         if(++stage==STAGES.length){finish(mc);return;}
         String name=STAGES[stage];controlledSettings=false;mc.gui.setScreen(null);
         if(name.equals("startup-on"))check("saved On active at fresh JVM startup",FrameGenerationSettings.current().enabled(),"");
@@ -241,6 +262,11 @@ public final class FrameGenerationValidation {
             FrameGenerationSettings.chooseEnabled(false);FrameGenerationSettings.chooseEnabled(true);
         }
         if(name.equals("quality-scene")) {
+            // This check bounds phantom/orb/beam coverage. Clouds legitimately write the same
+            // reactive mask and can exceed its area limit; isolate the fixture, then restore
+            // the user's copied cloud setting for all subsequent presentation stages.
+            qualitySceneClouds=mc.options.cloudStatus().get();
+            mc.options.cloudStatus().set(net.minecraft.client.CloudStatus.OFF);
             double x=mc.player.getX(),y=mc.player.getY(),z=mc.player.getZ();
             mc.player.setYRot(180);mc.player.setXRot(-10);
             var server=mc.getSingleplayerServer();

@@ -33,6 +33,11 @@ enum MMMCaptureMetric {
     MMM_CAPTURE_DRAWS, MMM_CAPTURE_DRAWABLE_WAIT_NS, MMM_CAPTURE_METRIC_COUNT
 };
 MMM_API void mmm_capture_set_enabled(bool enabled);
+/// Copy <=4096 caller bytes into encoder-owned uniform state. -1/-2 reject invalid arguments.
+/// Binding inline bytes invalidates the corresponding cached buffer identity. No caller storage
+/// survives this call; encode on the same thread as the render pass.
+MMM_API int32_t mmm_render_pass_set_uniform_bytes(void* encoder, const void* bytes,
+                                                 int32_t length, int32_t vertexSlot, int32_t fragmentSlot);
 /// Returns the metric count, or -1 if the destination is too small. Does not reset on error.
 MMM_API int32_t mmm_capture_read_reset(uint64_t* out, int32_t count);
 
@@ -269,6 +274,10 @@ MMM_API void* mmm_render_pass_begin(
     void* depthTexture, int32_t depthLoadClear, double depthValue,
     int32_t width, int32_t height);
 MMM_API void mmm_render_pass_end(void* encoder);
+/// Opt in to offset-only updates for previously bound buffers in this encoder. Resets its cache.
+/// Buffer mutations must use the mmm setters; call this again after any direct Metal buffer bind.
+/// Encoding and cache use stay on the calling thread. Ending the pass discards all identities.
+MMM_API void mmm_render_pass_enable_buffer_offsets(void* encoder);
 MMM_API void mmm_render_pass_set_pipeline(void* encoder, void* pipeline);
 MMM_API void mmm_render_pass_set_vertex_buffer(void* encoder, void* buffer, int64_t offset, int32_t index);
 MMM_API void mmm_render_pass_set_fragment_buffer(void* encoder, void* buffer, int64_t offset, int32_t index);
@@ -286,6 +295,12 @@ MMM_API void mmm_render_pass_draw(void* encoder, int32_t topology, int32_t verte
 /// list from a cached, prefix-stable index buffer; `vertexStart` becomes Metal's baseVertex.
 MMM_API void mmm_render_pass_draw_fan(void* encoder, int32_t vertexStart, int32_t vertexCount,
                                       int32_t instanceCount, int32_t firstInstance);
+/// Bind one changed uniform in both shader stages, then issue the ordinary indexed draw.
+/// Matches the separate setters/draw exactly; no deferred records or indirect commands.
+MMM_API void mmm_render_pass_draw_indexed_uniform(void* encoder, int32_t topology, void* indexBuffer,
+    int64_t indexBufferOffset, int32_t indexType, int32_t indexCount, int32_t instanceCount,
+    int32_t firstIndex, int32_t baseVertex, int32_t firstInstance, void* uniformBuffer,
+    int64_t uniformOffset, int32_t vertexSlot, int32_t fragmentSlot);
 MMM_API void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBuffer,
                                           int64_t indexBufferOffset, int32_t indexType,
                                           int32_t indexCount, int32_t instanceCount,
@@ -345,6 +360,9 @@ MMM_API void mmm_layer_set_present_queue(void* queue);
 // ---------------------------------------------------------------------------------------------
 
 MMM_API void* mmm_command_buffer_create(void* queue);
+/// Render-thread-only ordinary-pass lease. Commit closes the lease; explicit create, wait,
+/// frame retirement and queue release flush the shared buffer. Bounded to 64 render encoders.
+MMM_API void* mmm_command_buffer_batch_create(void* queue);
 MMM_API void  mmm_command_buffer_commit(void* commandBuffer);
 MMM_API void  mmm_command_buffer_wait(void* commandBuffer);
 MMM_API void  mmm_command_buffer_release(void* commandBuffer);

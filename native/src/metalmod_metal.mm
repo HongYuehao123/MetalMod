@@ -8,6 +8,7 @@
 
 #include "metalmod/metalmod_display_link.h"
 #include "metalmod/metalmod_metal.h"
+#include "metalmod/metalmod_gpu_profile.h"
 
 #include <string.h>
 #include <chrono>
@@ -55,6 +56,7 @@ static id<MTLCommandBuffer> mmm_raw_command_buffer(id<MTLCommandQueue> queue) {
 }
 
 static void mmm_commit_command_buffer(id<MTLCommandBuffer> buffer) {
+    mmm_gpu_profile_commit(buffer);
     MMMCaptureTimer timer(MMM_CAPTURE_COMMIT_NS);
     [buffer commit];
     if (buffer != nil) mmm_capture_count(MMM_CAPTURE_SUBMISSIONS);
@@ -94,6 +96,44 @@ static id<MTLCommandBuffer> g_StagingReaders[MMM_STAGING_SLOTS] = {};
 static size_t g_StagingCursor = 0;
 static int g_StagingSlot = 0;
 
+// Ordinary Blaze3D passes lease this render-thread-owned buffer. Explicit command buffers
+// (MetalFX, motion, readback, fences and presentation) always flush it before creation.
+// Keep real encoders separate: no attachment load/store or shader-state contracts change.
+static id<MTLCommandQueue> g_BatchQueue = nil;
+static id<MTLCommandBuffer> g_BatchBuffer = nil;
+static id<MTLBlitCommandEncoder> g_BatchBlit = nil;
+static id<MTLRenderCommandEncoder> g_BatchEncoder = nil;
+static unsigned g_BatchPasses = 0;
+static bool g_BatchStaged = false;
+static void mmm_note_command_buffer_completion(id<MTLCommandBuffer> completed);
+
+static void mmm_batch_end_blit(void) {
+    if (g_BatchBlit) { [g_BatchBlit endEncoding]; g_BatchBlit = nil; }
+}
+
+static void mmm_batch_flush(void) {
+    // A caller cannot submit while a render encoder is open. Mid-pass utility writes use
+    // the old separate utility buffer and are submitted after this pass at the next boundary.
+    if (!g_BatchBuffer || g_BatchEncoder) return;
+    mmm_batch_end_blit();
+    if (g_BatchStaged) g_StagingReaders[g_StagingSlot] = g_BatchBuffer;
+    [g_BatchBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        mmm_note_command_buffer_completion(completed);
+    }];
+    mmm_commit_command_buffer(g_BatchBuffer);
+    g_BatchBuffer = nil;
+    g_BatchPasses = 0;
+    g_BatchStaged = false;
+}
+
+static id<MTLCommandBuffer> mmm_batch_buffer(void) {
+    if (!g_BatchBuffer) {
+        g_BatchBuffer = mmm_raw_command_buffer(g_BatchQueue);
+        g_BatchBuffer.label = @"MetalMod ordinary render batch";
+    }
+    return g_BatchBuffer;
+}
+
 /// Commit whatever utility work is pending. Safe to call when there is none.
 static void mmm_utility_flush(void) {
     if (g_UtilityBlit != nil) {
@@ -101,6 +141,7 @@ static void mmm_utility_flush(void) {
         g_UtilityBlit = nil;
     }
     if (g_UtilityBuffer != nil) {
+        mmm_batch_flush();
         g_StagingReaders[g_StagingSlot] = g_UtilityBuffer;
         g_UtilityBuffer.label = @"MetalMod utility";
         mmm_commit_command_buffer(g_UtilityBuffer);
@@ -112,6 +153,14 @@ static void mmm_utility_flush(void) {
 /// The blit encoder of the pending utility command buffer, creating both on first use. A command
 /// buffer belongs to the queue it came from, so a queue switch commits what is pending first.
 static id<MTLBlitCommandEncoder> mmm_utility_blit(id<MTLCommandQueue> queue) {
+    if (queue == g_BatchQueue && !g_BatchEncoder && !g_UtilityBuffer) {
+        if (!mmm_batch_buffer()) return nil;
+        if (!g_BatchBlit) g_BatchBlit = [g_BatchBuffer blitCommandEncoder];
+        // All utility work conservatively retains the staging slot through this buffer.
+        g_BatchStaged = true;
+        return g_BatchBlit;
+    }
+    if (!g_BatchEncoder) mmm_batch_flush();
     if (g_UtilityBuffer != nil && g_UtilityQueue != queue) mmm_utility_flush();
     if (g_UtilityBuffer == nil) {
         g_UtilityBuffer = mmm_raw_command_buffer(queue);
@@ -156,6 +205,7 @@ static void* mmm_staging_reserve(id<MTLDevice> device, size_t length) {
 
 /// Retire the frame's staging slot. Called once per frame, at the start of drawable acquisition.
 void mmm_utility_end_frame(void) {
+    mmm_batch_flush();
     mmm_utility_flush();
     g_StagingSlot = (g_StagingSlot + 1) % MMM_STAGING_SLOTS;
     // Reuse is MMM_STAGING_SLOTS frames behind, so this wait is normally already satisfied. It is
@@ -171,14 +221,18 @@ void mmm_utility_end_frame(void) {
 static id<MTLCommandBuffer> mmm_make_command_buffer(id<MTLCommandQueue> queue) {
     // Anything already pending in the utility buffer must reach the queue first, or it would be
     // executed after work the caller is about to commit.
+    mmm_batch_flush();
     mmm_utility_flush();
     return mmm_raw_command_buffer(queue);
 }
 
 static id<MTLRenderCommandEncoder> mmm_make_render_encoder(id<MTLCommandBuffer> buffer,
                                                          MTLRenderPassDescriptor* descriptor) {
+    if (buffer == g_BatchBuffer) mmm_batch_end_blit();
+    mmm_gpu_profile_attach(buffer, descriptor);
     id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:descriptor];
     if (encoder != nil) mmm_capture_count(MMM_CAPTURE_RENDER_PASSES);
+    if (buffer == g_BatchBuffer) { g_BatchEncoder = encoder; ++g_BatchPasses; }
     return encoder;
 }
 
@@ -338,6 +392,9 @@ void* mmm_queue_create(void* device) {
 void mmm_queue_release(void* queue) {
     if (queue == NULL) return;
     @autoreleasepool {
+        if ((__bridge id<MTLCommandQueue>)queue == g_BatchQueue) {
+            mmm_batch_flush(); mmm_utility_flush(); g_BatchQueue = nil;
+        }
         id<MTLCommandQueue> released = (__bridge_transfer id<MTLCommandQueue>)queue;
         (void)released;
     }
@@ -540,6 +597,7 @@ bool mmm_fence_wait(void* fence, int64_t timeoutNanos) {
     id<MTLSharedEvent> event = (__bridge id<MTLSharedEvent>)fence;
     if (event == nil) return true;
     if (event.signaledValue >= 1) return true;
+    mmm_batch_flush();
     // About to block. Hand the GPU the utility work this thread is still holding, or the queue
     // drains and the wait covers a gap that the pending copies would have filled.
     mmm_utility_flush();
@@ -918,11 +976,27 @@ void* mmm_render_pass_begin(void* commandBuffer, int32_t colorCount, void* const
     }
 }
 
+// Pointer identities only; the encoder owns bound resources. A newly enabled encoder starts
+// empty, and ending it drops all identities. Other encoders always retain the full setter path.
+struct MMMBufferBindings {
+    void* encoder = nullptr;
+    void* vertex[31] = {};
+    void* fragment[31] = {};
+};
+static thread_local MMMBufferBindings g_BufferBindings;
+
+void mmm_render_pass_enable_buffer_offsets(void* encoder) {
+    g_BufferBindings = {};
+    g_BufferBindings.encoder = encoder;
+}
+
 void mmm_render_pass_end(void* encoder) {
+    if (g_BufferBindings.encoder == encoder) g_BufferBindings = {};
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     if (metalEncoder == nil) return;
     @autoreleasepool {
         [metalEncoder endEncoding];
+        if (metalEncoder == g_BatchEncoder) g_BatchEncoder = nil;
         id<MTLRenderCommandEncoder> released = (__bridge_transfer id<MTLRenderCommandEncoder>)encoder;
         (void)released;
     }
@@ -960,14 +1034,43 @@ void mmm_render_pass_set_vertex_buffer(void* encoder, void* buffer, int64_t offs
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     id<MTLBuffer> metalBuffer = (__bridge id<MTLBuffer>)buffer;
     if (metalEncoder == nil || metalBuffer == nil) return;
-    [metalEncoder setVertexBuffer:metalBuffer offset:(NSUInteger)offset atIndex:(NSUInteger)index];
+    bool cached = g_BufferBindings.encoder == encoder && index >= 0 && index < 31;
+    if (cached && g_BufferBindings.vertex[index] == buffer) {
+        [metalEncoder setVertexBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index];
+    } else {
+        [metalEncoder setVertexBuffer:metalBuffer offset:(NSUInteger)offset atIndex:(NSUInteger)index];
+        if (cached) g_BufferBindings.vertex[index] = buffer;
+    }
+}
+
+int32_t mmm_render_pass_set_uniform_bytes(void* encoder, const void* bytes, int32_t length,
+                                         int32_t vertexSlot, int32_t fragmentSlot) {
+    if (!encoder || !bytes || length <= 0 || length > 4096) return -1;
+    if (vertexSlot < -1 || vertexSlot >= 31 || fragmentSlot < -1 || fragmentSlot >= 31
+            || (vertexSlot < 0 && fragmentSlot < 0)) return -2;
+    id<MTLRenderCommandEncoder> pass = (__bridge id<MTLRenderCommandEncoder>)encoder;
+    if (vertexSlot >= 0) {
+        [pass setVertexBytes:bytes length:(NSUInteger)length atIndex:(NSUInteger)vertexSlot];
+        if (g_BufferBindings.encoder == encoder) g_BufferBindings.vertex[vertexSlot] = nullptr;
+    }
+    if (fragmentSlot >= 0) {
+        [pass setFragmentBytes:bytes length:(NSUInteger)length atIndex:(NSUInteger)fragmentSlot];
+        if (g_BufferBindings.encoder == encoder) g_BufferBindings.fragment[fragmentSlot] = nullptr;
+    }
+    return 0;
 }
 
 void mmm_render_pass_set_fragment_buffer(void* encoder, void* buffer, int64_t offset, int32_t index) {
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     id<MTLBuffer> metalBuffer = (__bridge id<MTLBuffer>)buffer;
     if (metalEncoder == nil || metalBuffer == nil) return;
-    [metalEncoder setFragmentBuffer:metalBuffer offset:(NSUInteger)offset atIndex:(NSUInteger)index];
+    bool cached = g_BufferBindings.encoder == encoder && index >= 0 && index < 31;
+    if (cached && g_BufferBindings.fragment[index] == buffer) {
+        [metalEncoder setFragmentBufferOffset:(NSUInteger)offset atIndex:(NSUInteger)index];
+    } else {
+        [metalEncoder setFragmentBuffer:metalBuffer offset:(NSUInteger)offset atIndex:(NSUInteger)index];
+        if (cached) g_BufferBindings.fragment[index] = buffer;
+    }
 }
 
 void mmm_render_pass_set_vertex_texture(void* encoder, void* texture, int32_t index) {
@@ -1135,6 +1238,16 @@ void mmm_render_pass_draw_indexed(void* encoder, int32_t topology, void* indexBu
                           instanceCount:(NSUInteger)MAX(1, instanceCount)
                              baseVertex:(NSInteger)baseVertex
                            baseInstance:(NSUInteger)MAX(0, firstInstance)];
+}
+
+void mmm_render_pass_draw_indexed_uniform(void* encoder, int32_t topology, void* indexBuffer,
+    int64_t indexBufferOffset, int32_t indexType, int32_t indexCount, int32_t instanceCount,
+    int32_t firstIndex, int32_t baseVertex, int32_t firstInstance, void* uniformBuffer,
+    int64_t uniformOffset, int32_t vertexSlot, int32_t fragmentSlot) {
+    if (vertexSlot >= 0) mmm_render_pass_set_vertex_buffer(encoder, uniformBuffer, uniformOffset, vertexSlot);
+    if (fragmentSlot >= 0) mmm_render_pass_set_fragment_buffer(encoder, uniformBuffer, uniformOffset, fragmentSlot);
+    mmm_render_pass_draw_indexed(encoder, topology, indexBuffer, indexBufferOffset, indexType,
+        indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
 }
 
 int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
@@ -1564,9 +1677,24 @@ void* mmm_command_buffer_create(void* queue) {
     }
 }
 
+void* mmm_command_buffer_batch_create(void* queue) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    if (!metalQueue) return NULL;
+    @autoreleasepool {
+        if (g_BatchEncoder) return NULL; // nested render passes are unsupported
+        if (g_BatchQueue != metalQueue || g_UtilityBuffer || g_BatchPasses >= 64) {
+            mmm_batch_flush();
+            mmm_utility_flush();
+        }
+        g_BatchQueue = metalQueue;
+        mmm_batch_end_blit();
+        return (__bridge_retained void*)mmm_batch_buffer();
+    }
+}
+
 void mmm_command_buffer_commit(void* commandBuffer) {
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
-    if (buffer == nil) return;
+    if (buffer == nil || buffer == g_BatchBuffer) return;
     @autoreleasepool {
         [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
             mmm_note_command_buffer_completion(completed);
@@ -1579,6 +1707,7 @@ void mmm_command_buffer_wait(void* commandBuffer) {
     id<MTLCommandBuffer> buffer = (__bridge id<MTLCommandBuffer>)commandBuffer;
     if (buffer == nil) return;
     @autoreleasepool {
+        if (buffer == g_BatchBuffer) mmm_batch_flush();
         MMMCaptureTimer waitTimer(MMM_CAPTURE_QUEUE_WAIT_NS);
         [buffer waitUntilCompleted];
     }
@@ -1619,6 +1748,7 @@ void mmm_end_encoding(void* encoder) {
     if (metalEncoder == nil) return;
     @autoreleasepool {
         [metalEncoder endEncoding];
+        if (metalEncoder == g_BatchEncoder) g_BatchEncoder = nil;
         id<MTLRenderCommandEncoder> released = (__bridge_transfer id<MTLRenderCommandEncoder>)encoder;
         (void)released;
     }

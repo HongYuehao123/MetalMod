@@ -9,14 +9,14 @@ public final class DisplayProbe {
         String path=System.getProperty("metalmod.displayProbe");
         if(path!=null) {
             var lookup=SymbolLookup.libraryLookup(Path.of(path),Arena.global());var linker=Linker.nativeLinker();
-            activate=linker.downcallHandle(lookup.find("benchmark_display_activate").orElseThrow(),FunctionDescriptor.ofVoid());
+            activate=linker.downcallHandle(lookup.find("benchmark_display_activate").orElseThrow(),FunctionDescriptor.of(ValueLayout.JAVA_INT));
             observe=linker.downcallHandle(lookup.find("benchmark_display_observe").orElseThrow(),FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             reset=linker.downcallHandle(lookup.find("benchmark_display_reset").orElseThrow(),FunctionDescriptor.ofVoid());
             snapshot=linker.downcallHandle(lookup.find("benchmark_display_snapshot").orElseThrow(),FunctionDescriptor.of(ValueLayout.JAVA_INT,ValueLayout.ADDRESS,ValueLayout.JAVA_INT));
         }
     }
     public static void observe(MemorySegment drawable) {if(observe==null)return;try{observe.invokeExact(drawable);}catch(Throwable e){throw new RuntimeException(e);}}
-    public static void activate() {if(activate==null)return;try{activate.invokeExact();}catch(Throwable e){throw new RuntimeException(e);}}
+    public static void activate() {if(activate==null)return;try{int status=(int)activate.invokeExact();if(status!=0)throw new IllegalStateException("benchmark hosting screen unavailable");}catch(Throwable e){throw new RuntimeException(e);}}
     public static void reset() {if(reset==null)return;try{reset.invokeExact();}catch(Throwable e){throw new RuntimeException(e);}}
     public static void save(Path folder) throws Exception {
         if(snapshot==null)return;

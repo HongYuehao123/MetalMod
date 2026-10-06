@@ -76,6 +76,9 @@ done > "${ROOT_DIR}/build/test_sources.txt"
 
 echo "=================================================="
 echo "SUCCESS -> ${MOD_JAR}"
+if [ -n "${METALMOD_SODIUM_JAR:-}" ]; then
+  bash "${ROOT_DIR}/compat/sodium/build.sh" "${METALMOD_SODIUM_JAR}"
+fi
 echo
 echo "Install:"
 echo "  cp ${MOD_JAR} \"${INSTANCE}/mods/\""

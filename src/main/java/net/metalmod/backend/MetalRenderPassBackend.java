@@ -32,8 +32,12 @@ import java.util.function.Supplier;
  * so the shader read zeros and every GUI quad collapsed to nothing.
  */
 public final class MetalRenderPassBackend implements RenderPassBackend {
+    private static final boolean CACHE_BINDINGS = !"false".equalsIgnoreCase(
+            System.getProperty("metalmod.drawStateCache", "true"));
 
     private final MetalCommandEncoderBackend owner;
+    // Read the experiment toggle once per pass, outside the per-section draw loop.
+    private final boolean fuseIndexedUniform = MetalNative.fusedDrawsEnabled();
     private final MemorySegment encoder;
     private final int width;
     private final int height;
@@ -42,8 +46,11 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
     private final boolean generationCoverage,guiCoverage;
 
     private final Map<String, GpuBufferSlice> uniforms = new HashMap<>();
+    private final java.util.Set<String> inlineUniforms = new java.util.HashSet<>();
     private final Map<String, GpuTextureView> textures = new HashMap<>();
     private final Map<String, GpuSampler> samplers = new HashMap<>();
+    // Reuse the uploader rather than constructing a capturing method reference per terrain section.
+    private final RenderPass.UniformUploader drawUniformUploader = this::setUniform;
 
     // Names whose binding changed since the last draw. Only these are handed to Metal. Iterating
     // everything that was ever bound - which is what the backend used to do - costs a map walk per
@@ -115,6 +122,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         this.lastEnginePipeline = pipeline;
+        this.inlineUniforms.clear();
         MetalRenderPipeline resolved = this.owner.device().pipelineFor(pipeline);
         this.pipeline = resolved;
         // Slots differ per pipeline, so everything already set has to be handed to Metal again.
@@ -272,7 +280,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             }
         }
         for (String name : this.pipeline.declaredBuffers()) {
-            if (!this.uniforms.containsKey(name)) {
+            if (!this.uniforms.containsKey(name) && !this.inlineUniforms.contains(name)) {
                 MetalDevice.reportUnboundBinding(this.pipelineName, "uniform buffer", name);
             }
         }
@@ -280,6 +288,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void bindTexture(String name, GpuTextureView textureView, GpuSampler sampler) {
+        if (CACHE_BINDINGS && this.textures.get(name) == textureView
+                && (sampler == null || this.samplers.get(name) == sampler)) return;
         this.textures.put(name, textureView);
         if (sampler != null) {
             this.samplers.put(name, sampler);
@@ -310,8 +320,32 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
                 return;
             }
         }
-        this.uniforms.put(name, slice);
-        this.dirtyUniforms.add(name);
+        this.inlineUniforms.remove(name);
+        GpuBufferSlice previous = this.uniforms.put(name, slice);
+        if (!CACHE_BINDINGS || !sameUniformBinding(previous, slice)) this.dirtyUniforms.add(name);
+    }
+
+    /** Content writes do not change a binding. Pipeline changes still invalidate every named slot. */
+    static boolean sameUniformBinding(GpuBufferSlice previous, GpuBufferSlice next) {
+        return previous != null && next != null && previous.buffer() == next.buffer()
+                && previous.offset() == next.offset() && previous.length() == next.length();
+    }
+
+    /**
+     * Adapter-only immediate uniform update for a bound pipeline. Metal copies the direct buffer
+     * before returning; rebind after every pipeline change. Ordinary deferred buffer bindings
+     * retain their existing behavior and must not use the same name concurrently.
+     */
+    public void setUniformBytes(String name, java.nio.ByteBuffer bytes) {
+        if (!ready() || bytes == null || !bytes.isDirect() || bytes.remaining() <= 0
+                || bytes.remaining() > 4096) throw new IllegalArgumentException("invalid inline uniform");
+        int vertex = this.pipeline.vertexBuffer(name), fragment = this.pipeline.fragmentBuffer(name);
+        if (vertex < 0 && fragment < 0) throw new IllegalArgumentException("uniform absent: " + name);
+        this.uniforms.remove(name);
+        this.dirtyUniforms.remove(name);
+        MetalNative.renderPassSetUniformBytes(this.encoder, MemorySegment.ofBuffer(bytes),
+                bytes.remaining(), vertex, fragment);
+        this.inlineUniforms.add(name);
     }
 
     @Override
@@ -356,6 +390,15 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         }
         MemorySegment handle = MetalCommandEncoderBackend.handleOf(slice.buffer());
         long offset = absoluteOffset(slice);
+        setVertexBufferHandle(index, handle, offset);
+    }
+
+    private void setVertexBuffer(int index, GpuBuffer buffer) {
+        setVertexBufferHandle(index, MetalCommandEncoderBackend.handleOf(buffer),
+                buffer instanceof MetalBuffer metal ? metal.baseOffset() : 0L);
+    }
+
+    private void setVertexBufferHandle(int index, MemorySegment handle, long offset) {
         // Terrain hands every section the same uber buffer at offset 0 - the per-section offset
         // travels as baseVertex, not as a vertex-buffer binding (LevelRenderer builds the Draw with
         // `slice.vertexBuffer()` and `baseVertex = vertexBufferOffset / vertexSize`). So the bind is
@@ -386,8 +429,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
-        applyBindings(true);
-        encodeIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+        encodeIndexedWithBindings(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
     @Override
@@ -396,8 +438,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
+        if (firstIndices.hasRemaining()) applyBindings(true);
         for (int i = 0; i < firstIndices.remaining(); i++) {
-            applyBindings(true);
             encodeIndexed(indexCount, instanceCount,
                     firstIndices.get(firstIndices.position() + i), 0, firstInstance);
         }
@@ -410,8 +452,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         int draws = Math.min(firstIndices.remaining(), Math.min(indexCounts.remaining(), vertexOffsets.remaining()));
+        if (draws > 0) applyBindings(true);
         for (int i = 0; i < draws; i++) {
-            applyBindings(true);
             encodeIndexed(indexCounts.get(indexCounts.position() + i), instanceCount,
                     (int) firstIndices.get(firstIndices.position() + i),
                     vertexOffsets.get(vertexOffsets.position() + i), 0);
@@ -435,14 +477,14 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             // GpuBufferSlice[] of section info, uploaded as the 'ChunkSection' uniform block
             // (ModelViewMat / ChunkPosition / TextureSize). Skipping this left ChunkSection unbound,
             // so terrain had no chunk position and no model-view matrix at all.
-            uploadDrawUniforms(draw, pushConstant, this::setUniform);
+            uploadDrawUniforms(draw, pushConstant, this.drawUniformUploader);
             setIndexBuffer(effectiveIndexBuffer(draw, indexBuffer), effectiveIndexType(draw, indexType));
             if (draw.vertexBuffer() != null) {
-                setVertexBuffer(draw.slot(), draw.vertexBuffer().slice());
+                // Avoid manufacturing a whole-buffer slice for each section of the same arena.
+                setVertexBuffer(draw.slot(), draw.vertexBuffer());
             }
             // Safe to diagnose here now that the consumer has supplied its uniforms.
-            applyBindings(true);
-            encodeIndexed(draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
+            encodeIndexedWithBindings(draw.indexCount(), 1, draw.firstIndex(), draw.baseVertex(), 0);
         }
     }
 
@@ -512,8 +554,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (!ready()) {
             return;
         }
+        if (firstVertices.hasRemaining()) applyBindings(true);
         for (int i = 0; i < firstVertices.remaining(); i++) {
-            applyBindings(true);
             encodeDraw(this.topology, firstVertices.get(firstVertices.position() + i), vertexCount,
                     instanceCount, firstInstance);
         }
@@ -525,8 +567,8 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             return;
         }
         int draws = Math.min(firstVertices.remaining(), vertexCounts.remaining());
+        if (draws > 0) applyBindings(true);
         for (int i = 0; i < draws; i++) {
-            applyBindings(true);
             encodeDraw(this.topology, firstVertices.get(firstVertices.position() + i),
                     vertexCounts.get(vertexCounts.position() + i), instanceCount, 0);
         }
@@ -539,6 +581,32 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
      * draw count - the number F3 reports and the one that grows underground, where far more sections
      * are visible - has a single source.
      */
+    private void encodeIndexedWithBindings(int count, int instances, int firstIndex,
+                                            int baseVertex, int firstInstance) {
+        // Call the opaque uploader normally. Fuse only the fully resolved, single changed
+        // buffer case; textures, texel-buffer refreshes and multiple uniforms use the old path.
+        if (count > 0 && instances > 0 && this.fuseIndexedUniform
+                && this.dirtyTextures.isEmpty() && this.dirtyUniforms.size() == 1) {
+            String name = this.dirtyUniforms.iterator().next();
+            GpuBufferSlice slice = this.uniforms.get(name);
+            int vb = this.pipeline.vertexBuffer(name), fb = this.pipeline.fragmentBuffer(name);
+            if (slice != null && (vb >= 0 || fb >= 0)) {
+                MemorySegment buffer = MetalCommandEncoderBackend.handleOf(slice.buffer());
+                if (buffer.address() != 0) {
+                    if (MetalDevice.censusEnabled()) reportMissingBindings();
+                    MetalNative.renderPassDrawIndexedUniform(this.encoder, indexedTopology(), this.indexBuffer,
+                            this.indexBufferOffset, this.indexType, count, instances, firstIndex, baseVertex,
+                            firstInstance, buffer, absoluteOffset(slice), vb, fb);
+                    this.dirtyUniforms.clear();
+                    MetalDevice.countDraw();
+                    return;
+                }
+            }
+        }
+        applyBindings(true);
+        encodeIndexed(count, instances, firstIndex, baseVertex, firstInstance);
+    }
+
     private void encodeIndexed(int indexCount, int instanceCount, int firstIndex,
                                int baseVertex, int firstInstance) {
         if (indexCount <= 0 || instanceCount <= 0) return;

@@ -5,7 +5,8 @@
   "compatibilityLevel": "JAVA_22",
   "client": [
     "MotionCameraMixin",
-    "DisplayProbeMixin"
+    "DisplayProbeMixin",
+    "OffscreenSurfaceMixin"
   ],
   "injectors": {
     "defaultRequire": 1

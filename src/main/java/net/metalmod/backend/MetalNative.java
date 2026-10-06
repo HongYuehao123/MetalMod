@@ -31,6 +31,10 @@ public final class MetalNative {
     private static boolean available = false;
     private static String loadError = null;
     private static MethodHandle mhCaptureSetEnabled, mhCaptureReadReset;
+    private static MethodHandle mhGpuProfileSetEnabled, mhGpuProfileReadReset;
+    public static final java.util.List<String> GPU_PROFILE_METRICS = java.util.List.of(
+            "gpu_completed_render_passes", "gpu_completed_vertex_ns", "gpu_completed_fragment_ns",
+            "gpu_profile_dropped_passes", "gpu_profile_invalid_passes");
     private static boolean capturing;
     private static Thread captureThread;
     private static long capturePipelineNanos, capturePipelineCount;
@@ -55,8 +59,11 @@ public final class MetalNative {
             mhWriteBufferBytes;
     private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures, mhClearTexturesRegion;
     private static MethodHandle mhFenceCreate, mhFenceWait, mhFenceRelease;
-    private static MethodHandle mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
+    private static MethodHandle mhCommandBufferBatchCreate, mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
             mhCommandBufferRelease;
+    private static MethodHandle mhDrawIndexedUniform;
+    private static MethodHandle mhEnableBufferOffsets;
+    private static MethodHandle mhUniformBytes;
     private static MethodHandle mhLibraryCreate, mhLibraryRelease, mhRenderPipelineCreate,
             mhRenderPipelineRelease, mhLastError;
     private static MethodHandle mhRenderPassBegin, mhRenderPassEnd, mhRenderPassSetPipeline,
@@ -95,6 +102,10 @@ public final class MetalNative {
         mhCaptureSetEnabled = lookup.find("mmm_capture_set_enabled")
                 .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(B))).orElse(null);
         mhCaptureReadReset = lookup.find("mmm_capture_read_reset")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, I))).orElse(null);
+        mhGpuProfileSetEnabled = lookup.find("mmm_gpu_profile_set_enabled")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(B))).orElse(null);
+        mhGpuProfileReadReset = lookup.find("mmm_gpu_profile_read_reset")
                 .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, I))).orElse(null);
 
         mhDeviceCreate = linker.downcallHandle(symbol(lookup, "mmm_device_create"), FunctionDescriptor.of(A));
@@ -230,6 +241,8 @@ public final class MetalNative {
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(B, A))).orElse(null);
         mhTemporalColorEncode = lookup.find("mmm_fx_temporal_color_encode")
                 .map(h -> linker.downcallHandle(h, FunctionDescriptor.of(I, A, A, A, A, B))).orElse(null);
+        mhCommandBufferBatchCreate = lookup.find("mmm_command_buffer_batch_create")
+                .map(symbol -> linker.downcallHandle(symbol, FunctionDescriptor.of(A, A))).orElse(null);
         mhCommandBufferCreate = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_create"), FunctionDescriptor.of(A, A));
         mhCommandBufferCommit = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_commit"), FunctionDescriptor.ofVoid(A));
         mhCommandBufferWait = linker.downcallHandle(symbol(lookup, "mmm_command_buffer_wait"), FunctionDescriptor.ofVoid(A));
@@ -262,6 +275,12 @@ public final class MetalNative {
         mhRenderPassPopDebugGroup = linker.downcallHandle(symbol(lookup, "mmm_render_pass_pop_debug_group"), FunctionDescriptor.ofVoid(A));
         mhRenderPassDraw = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw"), FunctionDescriptor.ofVoid(A, I, I, I, I, I));
         mhRenderPassDrawFan = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_fan"), FunctionDescriptor.ofVoid(A, I, I, I, I));
+        mhDrawIndexedUniform = lookup.find("mmm_render_pass_draw_indexed_uniform")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(A, I, A, L, I, I, I, I, I, I, A, L, I, I))).orElse(null);
+        mhEnableBufferOffsets = lookup.find("mmm_render_pass_enable_buffer_offsets")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(A))).orElse(null);
+        mhUniformBytes = lookup.find("mmm_render_pass_set_uniform_bytes")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(I, A, A, I, I, I))).orElse(null);
         mhRenderPassDrawIndexed = linker.downcallHandle(symbol(lookup, "mmm_render_pass_draw_indexed"), FunctionDescriptor.ofVoid(A, I, A, L, I, I, I, I, I, I));
     }
 
@@ -280,6 +299,8 @@ public final class MetalNative {
     public static void captureSetEnabled(boolean enabled) {
         try {
             mhCaptureSetEnabled.invokeExact(enabled);
+            if (mhGpuProfileSetEnabled != null) mhGpuProfileSetEnabled.invokeExact(
+                    enabled && Boolean.getBoolean("metalmod.gpuStageTiming"));
             capturing = enabled;
             captureThread = enabled ? Thread.currentThread() : null;
             capturePipelineNanos = capturePipelineCount = 0;
@@ -299,6 +320,15 @@ public final class MetalNative {
     }
 
     public static long ffiCallCount() { return ffiCalls; }
+    /** Completed GPU stage workload since the previous read; excludes diagnostics from FFI counts. */
+    public static void gpuProfileReadReset(MemorySegment destination) {
+        destination.fill((byte) 0xff);
+        if (mhGpuProfileReadReset == null || !Boolean.getBoolean("metalmod.gpuStageTiming")) return;
+        try {
+            int count = (int) mhGpuProfileReadReset.invokeExact(destination, GPU_PROFILE_METRICS.size());
+            if (count != GPU_PROFILE_METRICS.size()) throw new IllegalStateException("GPU profile ABI mismatch");
+        } catch (Throwable t) { throw ffiFailure(t); }
+    }
     public static long capturePipelineNanos() { return capturePipelineNanos; }
     public static long capturePipelineCount() { return capturePipelineCount; }
     static long beginPipelineCapture() {
@@ -761,6 +791,21 @@ public final class MetalNative {
         catch (Throwable t) { throw new RuntimeException("Temporal colour encode", t); }
     }
 
+    /** Physical submissions are batched by default; the property supplies a runtime A/B baseline. */
+    public static boolean commandBatchingEnabled() {
+        return mhCommandBufferBatchCreate != null
+                && Boolean.parseBoolean(System.getProperty("metalmod.commandBatching", "true"));
+    }
+
+    /** Ordinary passes share a native queue batch; MetalFX retains explicit command buffers. */
+    public static MemorySegment commandBufferBatchCreate(MemorySegment queue) {
+        if (!commandBatchingEnabled())
+            return commandBufferCreate(queue);
+        ffiCalls++;
+        try { return (MemorySegment) mhCommandBufferBatchCreate.invokeExact(queue); }
+        catch (Throwable t) { throw ffiFailure(t); }
+    }
+
     public static MemorySegment commandBufferCreate(MemorySegment queue) {
         ffiCalls++;
         try {
@@ -875,8 +920,13 @@ public final class MetalNative {
         // to an (Object,...) descriptor and throws WrongMethodTypeException on every call.
         MemorySegment depth = depthTexture == null ? MemorySegment.NULL : depthTexture;
         try {
-            return (MemorySegment) mhRenderPassBegin.invokeExact(cb, colorCount, colorTextures,
+            MemorySegment encoder = (MemorySegment) mhRenderPassBegin.invokeExact(cb, colorCount, colorTextures,
                     colorLoadClear, clearColors, depth, depthLoadClear ? 1 : 0, depthValue, width, height);
+            if (encoder.address() != 0 && bufferOffsetsEnabled()) {
+                ffiCalls++;
+                mhEnableBufferOffsets.invokeExact(encoder);
+            }
+            return encoder;
         } catch (Throwable t) {
             throw ffiFailure(t);
         }
@@ -907,6 +957,17 @@ public final class MetalNative {
         } catch (Throwable t) {
             throw ffiFailure(t);
         }
+    }
+
+    /** Native Metal copies the supplied storage before returning. Optional adapter API. */
+    public static void renderPassSetUniformBytes(MemorySegment enc, MemorySegment bytes,
+                                                  int length, int vertexSlot, int fragmentSlot) {
+        if (mhUniformBytes == null) throw new IllegalStateException("Rebuild MetalMod for inline uniforms");
+        ffiCalls++;
+        try {
+            int result = (int) mhUniformBytes.invokeExact(enc, bytes, length, vertexSlot, fragmentSlot);
+            if (result != 0) throw new IllegalArgumentException("inline uniform rejected: " + result);
+        } catch (Throwable t) { throw ffiFailure(t); }
     }
 
     public static void renderPassSetFragmentBuffer(MemorySegment enc, MemorySegment buffer, long offset, int index) {
@@ -1008,6 +1069,28 @@ public final class MetalNative {
         ffiCalls++;
         try {
             mhRenderPassDrawFan.invokeExact(enc, vertexStart, vertexCount, instanceCount, firstInstance);
+        } catch (Throwable t) {
+            throw ffiFailure(t);
+        }
+    }
+
+    public static boolean fusedDrawsEnabled() {
+        return mhDrawIndexedUniform != null && Boolean.getBoolean("metalmod.fusedDraws");
+    }
+
+    public static boolean bufferOffsetsEnabled() {
+        return mhEnableBufferOffsets != null && !"false".equalsIgnoreCase(
+                System.getProperty("metalmod.bufferOffsets", "true"));
+    }
+
+    public static void renderPassDrawIndexedUniform(MemorySegment enc, int topology,
+            MemorySegment indices, long indexOffset, int indexType, int count, int instances,
+            int firstIndex, int baseVertex, int firstInstance, MemorySegment uniform, long offset,
+            int vertexSlot, int fragmentSlot) {
+        ffiCalls++;
+        try {
+            mhDrawIndexedUniform.invokeExact(enc, topology, indices, indexOffset, indexType, count, instances,
+                    firstIndex, baseVertex, firstInstance, uniform, offset, vertexSlot, fragmentSlot);
         } catch (Throwable t) {
             throw ffiFailure(t);
         }

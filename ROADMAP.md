@@ -294,12 +294,16 @@ above-ground stage, 29% ahead on the heavy underground one. The route recording,
 remaining known gap (the Nether has a route but no paired run) are in
 [TESTING.md](TESTING.md) §4 and §5.
 
-**Compatibility risk (decision: not pursued).** Sodium replaces terrain rendering, and it was named
-here as Phase 5's main compatibility risk. The call is now to **not** port or test Sodium: it sits on
-Blaze3D's abstraction in modern versions, so it should follow without backend work, and it does not
-make optional shaderpack work easier. Iris integration is an optional investigation. If a Metal+Sodium
-combination is ever attempted, the relevant backend gap is the indirect/multi-draw-indirect path,
-which is still a documented no-op (see §6).
+**Sodium compatibility (reopened 2026-10-04).** An optional native Metal adapter for official
+Fabric Sodium **0.9.2+mc26.2** now builds and renders terrain. Its device-specific factory hooks
+replace the GL-only assumption, preserve compact meshes/culling/arenas and direct indexed draw
+semantics, and bind copied region uniforms with the existing MetalMod lighting ABI. All five
+offline gates and 385 copied-world temporal checks pass. Final guarded-adapter frame generation
+passes 186 checks plus 15 saved-On restart checks. Eight foreground ABBA captures show 65–66%
+lower render-thread CPU time and 2–3% more FPS near 60Hz. The adapter remains experimental:
+p99 worsens and broader quality/stress remain. Cave lava BUG-046 is resolved by Sodium
+Fluid Culling = Default, retaining the observed CPU headroom in a controlled run. Vanilla remains the core backend/RT
+foundation; future Sodium RT hooks are separate work. See `docs/performance/sodium-compatibility.md`.
 
 **Implementation history (complete).** Phase 5 began with the draw-path defects rather than the visual ones,
 because they are what make a visual symptom fixable. Twenty-four bugs were found and fixed
@@ -603,7 +607,8 @@ must not delay Phases 8–9.
 - **Feature gaps.** Apple GPUs differ from the Vulkan feature set MC targets; some assumptions will
   need `DeviceFeatures` negotiation rather than hardcoding.
 - **Ecosystem.** Shaderpacks and Iris integration are optional compatibility work. Sodium
-  compatibility remains outside the core scope; if attempted, the indirect-draw path is a known gap.
+  compatibility is reopened as an optional performance goal; the first confirmed gap is its API-specific
+  terrain draw context (see Phase 5 and `docs/performance/sodium-compatibility.md`).
   Native RT must stand on its own with vanilla resources and documented material defaults.
 
 ---

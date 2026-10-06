@@ -493,7 +493,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         return "[MetalMod] last frame: " + String.format(java.util.Locale.ROOT, "%.1f", lastFrameMs())
                 + " ms, drawable wait " + String.format(java.util.Locale.ROOT, "%.1f", lastAcquireWaitMs())
                 + " ms, draws=" + lastFrameDraws()
-                + " commandBuffers=" + lastCommandBuffers()
+                + " commandLeases=" + lastCommandBuffers()
                 + " nativeCalls=" + lastFfiCalls()
                 + " copies=" + lastCopies()
                 + " fences=" + lastFences();
@@ -676,7 +676,8 @@ public final class MetalDevice implements GpuDeviceBackend {
         return lastAcquireWaitMs;
     }
 
-    /** Average render-pass command buffers per frame; a high count is submission overhead. */
+    /** Average Java pass/presentation leases per frame. With native batching this is not
+     * actual submissions; the F8 native submissions column counts physical commits. */
     public static long lastCommandBuffers() {
         return lastCommandBuffers;
     }

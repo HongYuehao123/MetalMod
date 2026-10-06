@@ -39,8 +39,20 @@ public final class MetalRenderPassBackendTest {
         testPerDrawIndexBufferAndTypeWin();
         testPerDrawIndexFallsBackToPassLevel();
         testSubBufferOffsetsAreAbsolute();
+        testUniformBindingIdentity();
 
         return failures;
+    }
+
+    private static void testUniformBindingIdentity() {
+        MetalBuffer root = new MetalBuffer(0, 512L, MemorySegment.NULL, MemorySegment.NULL, false, null);
+        var first = root.slice(0, 64);
+        check("fresh slice with same range keeps binding", MetalRenderPassBackend.sameUniformBinding(first, root.slice(0, 64)), "");
+        check("changed uniform offset rebinds", !MetalRenderPassBackend.sameUniformBinding(first, root.slice(64, 64)), "");
+        check("changed uniform length rebinds", !MetalRenderPassBackend.sameUniformBinding(first, root.slice(0, 128)), "");
+        MetalBuffer sub = MetalBuffer.sub(0, 64, root, 64);
+        check("sub-buffer identity cannot alias root offset zero", !MetalRenderPassBackend.sameUniformBinding(first, sub.slice()), "");
+        check("first uniform binding is dirty", !MetalRenderPassBackend.sameUniformBinding(null, first), "");
     }
 
     /**

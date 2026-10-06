@@ -37,6 +37,8 @@ bin/
 *.class
 *.jar
 *.dSYM/
+__pycache__/
+*.py[cod]
 
 # ---------------------------------------------------------------------------
 # Runtime state written by the mod (MetalConfig.save())

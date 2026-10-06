@@ -140,7 +140,14 @@ public final class MetalRenderPipeline {
             String vertex = source.get(pipeline.getVertexShader(), ShaderType.VERTEX);
             String fragment = source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT);
             String variant = "vanilla";
-            if (device.pointLightProofEnabled() || device.dynamicLightsEnabled()) {
+            if (net.metalmod.lighting.SodiumTerrainVariant.eligible(pipeline)) {
+                var adapted = net.metalmod.lighting.SodiumTerrainVariant.adapt(vertex, fragment,
+                        device.pointLightProofEnabled(), device.dynamicLightsEnabled(), device.clusteredLightsEnabled());
+                vertex = adapted.vertex(); fragment = adapted.fragment();
+                variant = device.dynamicLightsEnabled() ? device.clusteredLightsEnabled()
+                        ? net.metalmod.lighting.SodiumTerrainVariant.CLUSTERED : net.metalmod.lighting.SodiumTerrainVariant.DYNAMIC
+                        : device.pointLightProofEnabled() ? net.metalmod.lighting.SodiumTerrainVariant.POINT : "sodium-region-v1";
+            } else if (device.pointLightProofEnabled() || device.dynamicLightsEnabled()) {
                 Adapted adapted = adaptForLighting(device, pipeline, vertex, fragment);
                 if (adapted != null) {
                     vertex = adapted.vertex();
@@ -309,11 +316,13 @@ public final class MetalRenderPipeline {
     // has to answer them. Deciding them here, from the variant the pipeline was actually built with,
     // is what keeps "the shader declares the block" and "the pass binds it" in step.
     private static boolean isPointLightVariant(String variant) {
-        return TerrainLightVariant.VERSION.equals(variant);
+        return TerrainLightVariant.VERSION.equals(variant) || net.metalmod.lighting.SodiumTerrainVariant.POINT.equals(variant);
     }
 
     private static boolean isDynamicVariant(String variant) {
-        return TerrainLightVariant.DYNAMIC_VERSION.equals(variant)
+        return net.metalmod.lighting.SodiumTerrainVariant.DYNAMIC.equals(variant)
+                || net.metalmod.lighting.SodiumTerrainVariant.CLUSTERED.equals(variant)
+                || TerrainLightVariant.DYNAMIC_VERSION.equals(variant)
                 || TerrainLightVariant.CLUSTERED_VERSION.equals(variant)
                 || ParticleLightVariant.DYNAMIC_VERSION.equals(variant)
                 || ParticleLightVariant.CLUSTERED_VERSION.equals(variant)
@@ -326,7 +335,8 @@ public final class MetalRenderPipeline {
     }
 
     private static boolean isClusteredVariant(String variant) {
-        return TerrainLightVariant.CLUSTERED_VERSION.equals(variant)
+        return net.metalmod.lighting.SodiumTerrainVariant.CLUSTERED.equals(variant)
+                || TerrainLightVariant.CLUSTERED_VERSION.equals(variant)
                 || ParticleLightVariant.CLUSTERED_VERSION.equals(variant)
                 || EntityLightVariant.CLUSTERED_VERSION.equals(variant)
                 || ItemLightVariant.CLUSTERED_VERSION.equals(variant)

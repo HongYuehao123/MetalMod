@@ -21,6 +21,7 @@ include_directories(
 set(SOURCES
     src/metalmod_memory.mm
     src/metalmod_metal.mm
+    src/metalmod_gpu_profile.mm
     src/metalmod_metalfx.mm
     src/metalmod_display_link.mm
     src/metalmod_interpolation.mm

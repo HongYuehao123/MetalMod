@@ -29,6 +29,7 @@ public class GameRendererMixin {
     @Inject(method = "render", at = @At("HEAD"))
     private void metalmod$onFrameBegin(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
         Diagnostics.hook("GameRenderer.render");
+        net.metalmod.performance.ThreadQos.renderThread();
     }
 
     @Inject(method = "resize", at = @At("RETURN"))

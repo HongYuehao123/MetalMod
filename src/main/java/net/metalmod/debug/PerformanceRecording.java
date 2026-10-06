@@ -170,7 +170,11 @@ public final class PerformanceRecording {
                 - frame_ns is the wall interval between successive surface presentation calls. It
                   includes intervening ticks, pacing and waits. It is not GPU execution time.
                 - Native fields cover calls on the rendering thread, including presentation, utility
-                  submissions and clears. Other threads and actual GPU execution are not measured.
+                  submissions and clears. These CPU API fields do not measure GPU execution.
+                - Optional gpu_completed_* fields report completed render-stage workload since the
+                  preceding read. Completions can lag CPU frames; stages/passes can overlap. Do not
+                  add vertex/fragment durations into a frame GPU time or align them to route stages.
+                  Dropped/invalid passes disclose incomplete coverage. No completion means -1 duration.
                 - upload_api_ns includes staging allocation, command-buffer creation and commit;
                   copy_api_ns also includes creation/commit. Do NOT add these overlapping timings.
                 - command_buffer_create_ns and commit_ns are full API durations, not pure stall time.

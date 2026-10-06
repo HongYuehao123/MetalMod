@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "metalmod-sodium",
+  "version": "0.1.1",
+  "name": "MetalMod Sodium Adapter (Experimental)",
+  "description": "Optional native Metal terrain adapter for Sodium 0.9.2 on Minecraft 26.2.",
+  "environment": "client",
+  "license": "MIT",
+  "entrypoints": {
+    "preLaunch": [
+      "net.metalmod.sodium.SodiumCompatibility"
+    ]
+  },
+  "mixins": [
+    "metalmod-sodium.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "java": ">=22",
+    "minecraft": "26.2",
+    "metalmod": "1.0.0",
+    "sodium": "0.9.2+mc26.2"
+  }
+}

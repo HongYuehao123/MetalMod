@@ -17,11 +17,27 @@ import java.util.concurrent.*;
 /** Disposable-world test only. Smooth pose is evaluated before every camera extraction. */
 public final class MotionBenchmark implements ClientModInitializer {
     private record Run(String name,int strength,boolean vsync) {}
-    private final List<Run> runs=Boolean.getBoolean("metalmod.displayCheckOnly")
+    private final boolean submissionCheck=Boolean.getBoolean("metalmod.submissionBenchmark");
+    private final boolean staticCamera=Boolean.getBoolean("metalmod.benchmarkStaticCamera");
+    private final String rendererComparison=System.getProperty("metalmod.rendererComparison", "");
+    private final boolean nativeOnly=Boolean.getBoolean("metalmod.benchmarkNativeOnly");
+    private final boolean offscreenComparison=Boolean.getBoolean("metalmod.offscreenComparison");
+    private final List<Run> requestedRuns=offscreenComparison
+        ? List.of(new Run("present01",0,false),new Run("offscreen02",0,false),new Run("offscreen03",0,false),new Run("present04",0,false))
+        : !rendererComparison.isEmpty()
+        ? List.of(new Run(rendererComparison+"-native",0,false),new Run(rendererComparison+"-sr25",25,false))
+        : Boolean.getBoolean("metalmod.benchmarkDiagnostic")
+        ? List.of(new Run("diagnostic-native-on",0,false),new Run("diagnostic-sr25-on",25,false))
+        : submissionCheck
+        ? List.of(new Run("batch01-native-off",0,false),new Run("batch02-native-on",0,false),
+          new Run("batch03-native-on",0,false),new Run("batch04-native-off",0,false),
+          new Run("batch05-sr25-off",25,false),new Run("batch06-sr25-on",25,false))
+        : Boolean.getBoolean("metalmod.displayCheckOnly")
         ? List.of(new Run("display01-immediate",0,false),new Run("display02-fifo",0,true),new Run("display03-sr25-fifo",25,true)) : List.of(new Run("motion01-native",0,false),new Run("motion02-sr25",25,false),
         new Run("motion03-native",0,false),new Run("motion04-sr33",33,false),
         new Run("motion05-native",0,false),new Run("motion06-sr50",50,false),
         new Run("motion07-native-fifo",0,true),new Run("motion08-sr25-fifo",25,true));
+    private final List<Run> runs=nativeOnly ? requestedRuns.stream().filter(r->r.strength()==0 && !r.vsync()).toList() : requestedRuns;
     private static MotionBenchmark active;
     private Path root,game;
     private CaptureRoute route;
@@ -31,19 +47,30 @@ public final class MotionBenchmark implements ClientModInitializer {
     private long deadline,epoch,nextImage,extracts;
     private double minYaw,maxYaw,maxStep,lastYaw;
     private String surface;
+    private final java.lang.management.ThreadMXBean cpu = java.lang.management.ManagementFactory.getThreadMXBean();
+    private long previousCpu=-1,cpuNanos,cpuFrames;
     @Override public void onInitializeClient() {
         if(!Boolean.getBoolean("metalmod.motionBenchmark")) return;
         active=this;
         var executor=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"MotionBenchmark");t.setDaemon(true);return t;});
         executor.scheduleAtFixedRate(()->Minecraft.getInstance().execute(()->{
-            try { tick(Minecraft.getInstance()); } catch(Throwable error) {error.printStackTrace();state=99;}
+            try { tick(Minecraft.getInstance()); } catch(Throwable error) {error.printStackTrace();state=99;Minecraft.getInstance().stop();}
         }),1,100,TimeUnit.MILLISECONDS);
     }
     public static void beforeExtract() {
         var a=active;var mc=Minecraft.getInstance();
         if(a==null || a.anchor==null || a.state==99 || mc.player==null) return;
+        // Diagnostic addon only: CPU consumed between camera extractions, excluding blocked
+        // presentation/GPU waits. Keep this separate from F8 wall-clock frame intervals.
+        if(a.submissionCheck && a.cpu.isCurrentThreadCpuTimeSupported() && a.cpu.isThreadCpuTimeEnabled()) {
+            long sample=a.cpu.getCurrentThreadCpuTime();
+            if(a.state==3 && PerformanceCapture.isRecording() && sample>=0) {
+                if(a.previousCpu>=0) {a.cpuNanos+=sample-a.previousCpu;a.cpuFrames++;}
+                a.previousCpu=sample;
+            } else a.previousCpu=-1;
+        }
         double seconds=(System.nanoTime()-a.epoch)/1e9;
-        double phase=2*Math.PI*seconds/30;
+        double phase=a.staticCamera?0:2*Math.PI*seconds/30;
         double yaw=a.anchor.yaw()+12*Math.sin(phase);
         mc.player.setPos(a.anchor.x()+3*Math.sin(phase),a.anchor.y(),a.anchor.z()+2*(Math.cos(phase)-1));
         mc.player.setYRot((float)yaw);mc.player.setXRot(a.anchor.pitch());
@@ -69,6 +96,9 @@ public final class MotionBenchmark implements ClientModInitializer {
         if(state==0) {
             game=mc.gameDirectory.toPath();
             if(!Files.exists(game.resolve(".metalmod-benchmark-copy"))) throw new IllegalStateException("disposable clone marker missing");
+            // Baseline performance is real native frames; feature comparisons must be explicit.
+            FrameGenerationSettings.chooseEnabled(false);TemporalJitterProof.chooseEnabled(false);
+            UpscalingSettings.chooseEnabled(false);
             root=game.resolve("debug/metalmod");Files.createDirectories(root);
             route=CaptureRouteStore.load(mc);if(route==null || route.isEmpty()) throw new IllegalStateException("anchor route missing");
             anchor=route.waypoint(0);
@@ -89,21 +119,38 @@ public final class MotionBenchmark implements ClientModInitializer {
             if(config.presentMode()!=expected) throw new IllegalStateException("surface mode mismatch "+config);
             surface=config.toString();DisplayProbe.activate();GLFW.glfwFocusWindow(mc.getWindow().handle());
             previous=captures();DisplayProbe.reset();PerformanceCapture.toggle(mc);resetMotion(now+5_000_000_000L);
+            previousCpu=-1;cpuNanos=0;cpuFrames=0;
             state=3;deadline=now+90_000_000_000L;
             System.out.println("[MotionBenchmark] capture "+runs.get(index)+" effective "+surface);return;
         }
         if(state==3) {
+            if(offscreenComparison && now>=epoch && !OffscreenCompletion.started()) OffscreenCompletion.begin();
             if(PerformanceCapture.isRecording()) {
-                if(Boolean.getBoolean("metalmod.displayCheckOnly") && now>epoch+30_000_000_000L) {PerformanceCapture.toggle(mc);return;}
+                if((submissionCheck || Boolean.getBoolean("metalmod.displayCheckOnly")) && now>epoch+30_000_000_000L) {if(offscreenComparison) OffscreenCompletion.finish();PerformanceCapture.toggle(mc);return;}
                 if(now>deadline)throw new IllegalStateException("capture timeout");return;}
             var current=captures();current.removeAll(previous);if(current.isEmpty())return;
             if(current.size()!=1)throw new IllegalStateException("ambiguous export");
-            Path folder=current.iterator().next();long unfocused;
-            try(var lines=Files.lines(folder.resolve("frames.csv"))) {unfocused=lines.skip(1).filter(l->!l.split(",",7)[5].equals("1")).count();}
-            if(unfocused>0) {Files.writeString(folder.resolve("REJECTED.txt"),"unfocused "+unfocused);if(++retries>=3)throw new IllegalStateException("three focus failures");index--;next(mc,now);return;}
+            Path folder=current.iterator().next();long interrupted;
+            try(var lines=Files.lines(folder.resolve("frames.csv"))) {
+                interrupted=lines.skip(1).filter(l->{var c=l.split(",",7);
+                    return !c[3].equals("0") || !c[4].equals("0") || !c[5].equals("1");}).count();
+            }
+            if(interrupted>0) {Files.writeString(folder.resolve("REJECTED.txt"),"paused/menu/unfocused intervals "+interrupted);if(++retries>=3)throw new IllegalStateException("three interrupted captures");index--;next(mc,now);return;}
             retries=0;DisplayProbe.save(folder);var run=runs.get(index);
-            Files.writeString(folder.resolve("motion.txt"),"Surface: "+surface+"\nCamera extractions: "+extracts+"\nYaw range: "+minYaw+".."+maxYaw+"\nMax yaw step: "+maxStep+"\nSmooth sinusoid: 30s period, +/-12deg yaw, 3x2 block translation\nNo screenshots during capture\n");
+            if(offscreenComparison) {
+                OffscreenCompletion.save(folder);
+                Files.writeString(folder.resolve("INSTRUMENTED.txt"),"Bounded completion-fence presentation experiment; compare only with its paired controls.\n");
+            }
+            if(Boolean.getBoolean("metalmod.benchmarkDiagnostic") || Boolean.getBoolean("metalmod.gpuStageTiming"))
+                Files.writeString(folder.resolve("INSTRUMENTED.txt"),
+                    "Diagnostic run or GPU stage counters enabled; exclude from throughput and CPU stall comparisons.\n");
+            if(submissionCheck) Files.writeString(folder.resolve("render-thread-cpu.json"),
+                "{\"samples\":"+cpuFrames+",\"total_ns\":"+cpuNanos+",\"mean_ms\":"+
+                (cpuFrames>0?Double.toString(cpuNanos/1e6/cpuFrames):"null")+"}\n");
+            Files.writeString(folder.resolve("motion.txt"),"Surface: "+surface+"\nCamera extractions: "+extracts+"\nYaw range: "+minYaw+".."+maxYaw+"\nMax yaw step: "+maxStep+"\n"+(staticCamera?"Fixed saved waypoint\n":"Smooth sinusoid: 30s period, +/-12deg yaw, 3x2 block translation\n")+"No screenshots during capture\n");
             Files.writeString(root.resolve("benchmark-index.tsv"),run.name()+"\t"+folder.getFileName()+"\t"+run+"\n",StandardOpenOption.CREATE,StandardOpenOption.APPEND);
+            // Renderer comparisons retain a terrain image only after the timed capture ends.
+            if(!rendererComparison.isEmpty()) {quality=run.strength();if(!offscreenComparison)qualityFrame=0;image(mc);}
             System.out.println("[MotionBenchmark] complete "+run.name());next(mc,now);return;
         }
         if(state==4 && now>=deadline) {
@@ -114,18 +161,22 @@ public final class MotionBenchmark implements ClientModInitializer {
     private void next(Minecraft mc,long now) throws Exception {
         if(++index>=runs.size()) {
             // The short display checks still finish with all four quality excerpts.
+            if(submissionCheck) quality=3;
             nextQuality(mc,now);return;
         }
-        var run=runs.get(index);UpscalingSettings.chooseEnabled(run.strength()>0);UpscalingSettings.chooseStrength(run.strength());
+        var run=runs.get(index);
+        if(offscreenComparison) OffscreenCompletion.mode(run.name().startsWith("offscreen"));
+        if(submissionCheck && rendererComparison.isEmpty() && !offscreenComparison) System.setProperty(System.getProperty("metalmod.comparisonProperty","metalmod.commandBatching"),Boolean.toString(run.name().endsWith("-on")));
+        UpscalingSettings.chooseEnabled(run.strength()>0);UpscalingSettings.chooseStrength(run.strength());
         System.setProperty("metalmod.fxAntialias","true");mc.options.enableVsync().set(run.vsync());
         new CaptureRoutePlayer(route).arm(mc);resetMotion(now);deadline=now+20_000_000_000L;state=2;
         DisplayProbe.activate();GLFW.glfwFocusWindow(mc.getWindow().handle());System.out.println("[MotionBenchmark] warmup "+run);
     }
     private void nextQuality(Minecraft mc,long now) throws Exception {
-        if(++quality>=4) {
+        if(nativeOnly || ++quality>=4) {
             Files.move(root.resolve("motion-anchor-route.json"),root.resolve("routes/minecraft.overworld.json"),StandardCopyOption.REPLACE_EXISTING);
             Files.writeString(root.resolve("motion-complete.txt"),runs.size()+" performance captures exported\n");
-            state=99;System.out.println("[MotionBenchmark] COMPLETE");mc.stop();return;
+            OffscreenCompletion.drain();state=99;System.out.println("[MotionBenchmark] COMPLETE");mc.stop();return;
         }
         int strength=new int[]{0,25,33,50}[quality];UpscalingSettings.chooseEnabled(strength>0);UpscalingSettings.chooseStrength(strength);
         mc.options.enableVsync().set(false);qualityFrame=0;resetMotion(now+3_000_000_000L);

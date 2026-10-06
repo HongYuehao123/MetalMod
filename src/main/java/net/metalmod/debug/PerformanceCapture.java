@@ -24,6 +24,7 @@ public final class PerformanceCapture {
     private static PerformanceRecording recording;
     private static Arena arena;
     private static MemorySegment nativeSample;
+    private static MemorySegment gpuSample;
     private static List<GarbageCollectorMXBean> collectors;
     private static long readyAt, startedAt, lastFrame, lastFfi, lastCompile, lastCompileCount;
     private static long lastGcCount, lastGcMillis;
@@ -74,6 +75,7 @@ public final class PerformanceCapture {
             if (nativeEnabled) {
                 arena = Arena.ofConfined();
                 nativeSample = arena.allocate(ValueLayout.JAVA_LONG, MetalNative.CAPTURE_METRICS.size());
+                gpuSample = arena.allocate(ValueLayout.JAVA_LONG, MetalNative.GPU_PROFILE_METRICS.size());
             }
             prefix = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))
                     + "-" + backend.replaceAll("[^A-Za-z0-9_-]", "_");
@@ -81,6 +83,13 @@ public final class PerformanceCapture {
             routePlayer = route == null ? null : new CaptureRoutePlayer(route);
             boolean prep = !"false".equalsIgnoreCase(System.getProperty("metalmod.capturePrep", "true"));
             metadata = "Backend: " + backend + "\nNative metrics: " + nativeEnabled
+                    + "\nGPU stage timing: " + Boolean.getBoolean("metalmod.gpuStageTiming")
+                    + "; completed render-stage workload per read interval, asynchronous; not whole-frame GPU time. Missing durations=-1."
+                    + "\nOrdinary render command batching: " + ("Metal".equals(backend) && MetalNative.commandBatchingEnabled())
+                    + "\nBuffer offset updates: " + ("Metal".equals(backend) && MetalNative.bufferOffsetsEnabled())
+                    + "\nFused indexed uniform draws: " + ("Metal".equals(backend) && MetalNative.fusedDrawsEnabled())
+                    + "\nNative submissions count actual commits; Java command-buffer counts are pass leases."
+                    + "\nThread QoS experiment: " + Boolean.getBoolean("metalmod.threadQos")
                     + "\nSuper Resolution at start: " + net.metalmod.upscaling.MetalFxCoordinator.stats().summary()
                     + "\nSR effective codes: 0 native, 1 spatial reference, 2 recovery; sr_gpu_ns=latest completed AA+FX+copy submission (-1 if unavailable); asynchronous, not frame GPU time. SR counters cumulative. sr_reason codes: 0 active, 1 Off, 2 100%, 3 menu, 4 no Metal, 5 suspended, 6 unsupported, 7 creation, 8 scene setup, 9 GPU error, 10 encode, 11 uninitialized."
                     + "\nSR input AA: " + !"false".equalsIgnoreCase(System.getProperty("metalmod.fxAntialias", "true"))
@@ -186,6 +195,10 @@ public final class PerformanceCapture {
                         + LightingCaptureColumns.NAMES.size();
                 for (int i = 0; i < UpscalingCaptureColumns.NAMES.size(); i++)
                     recording.put(srBase + i, UpscalingCaptureColumns.value(sr, i));
+                MetalNative.gpuProfileReadReset(gpuSample);
+                for (int i = 0; i < MetalNative.GPU_PROFILE_METRICS.size(); i++)
+                    recording.put(srBase + UpscalingCaptureColumns.NAMES.size() + i,
+                            gpuSample.getAtIndex(ValueLayout.JAVA_LONG, i));
             }
             long gcCount = gcTotal(false), gcMillis = gcTotal(true);
             recording.put(PerformanceRecording.COL_GC_COLLECTIONS, delta(gcCount, lastGcCount));
@@ -220,6 +233,7 @@ public final class PerformanceCapture {
         java.util.List<String> names = new java.util.ArrayList<>(MetalNative.CAPTURE_METRICS);
         names.addAll(LightingCaptureColumns.NAMES);
         names.addAll(UpscalingCaptureColumns.NAMES);
+        names.addAll(MetalNative.GPU_PROFILE_METRICS);
         return java.util.List.copyOf(names);
     }
 
@@ -285,6 +299,7 @@ public final class PerformanceCapture {
             if (arena != null) arena.close();
             arena = null;
             nativeSample = null;
+            gpuSample = null;
         }
     }
 

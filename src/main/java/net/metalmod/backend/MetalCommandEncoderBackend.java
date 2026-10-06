@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
-/** Phase 3 command encoder: owns a Metal command buffer, records render passes into it, submits. */
+/** Records ordinary render passes using a retained native command-buffer lease. */
 public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     private final MetalDevice device;
@@ -39,7 +39,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     private MemorySegment ensureCommandBuffer() {
         if (this.commandBuffer.address() == 0) {
-            this.commandBuffer = MetalNative.commandBufferCreate(this.device.queueHandle());
+            this.commandBuffer = MetalNative.commandBufferBatchCreate(this.device.queueHandle());
         }
         return this.commandBuffer;
     }
@@ -271,9 +271,9 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         MetalNative.renderPassEnd(this.currentEncoder);
         this.currentEncoder = MemorySegment.NULL;
 
-        // The engine records a render pass on one CommandEncoder but then calls submit() on a
-        // different one, so deferring the commit to submit() lost every draw: only the standalone
-        // clears (which commit immediately) ever reached the GPU. Commit here instead.
+        // Minecraft may call submit() on a different Java encoder. Close and release each
+        // pass lease here; the optional native batch owner retains work until an explicit
+        // ordering boundary, independent of Java encoder identity.
         if (this.commandBuffer.address() != 0) {
             MetalDevice.countCommandBuffer();
             MetalNative.commandBufferCommit(this.commandBuffer);

@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "metalmod/metalmod_metal.h"
+#include "metalmod/metalmod_gpu_profile.h"
 #include "metalmod/metalmod_metalfx.h"
 #include "metalmod/metalmod_interpolation.h"
 #include "metalmod/metalmod_frame_generation.h"
@@ -889,6 +890,12 @@ static void test_draw(void) {
         positions[4] =  0.0f; positions[5] =  0.8f;
     }
 
+    int64_t profileMetrics[MMM_GPU_PROFILE_METRIC_COUNT] = {};
+    mmm_gpu_profile_set_enabled(true);
+    check("GPU profiler rejects short destination", mmm_gpu_profile_read_reset(profileMetrics, 1) == -1, "");
+    mmm_gpu_profile_read_reset(profileMetrics, MMM_GPU_PROFILE_METRIC_COUNT);
+    check("GPU profiler has no fabricated timing before completion", profileMetrics[0] == 0
+            && profileMetrics[1] == -1 && profileMetrics[2] == -1, "");
     void* cb = mmm_command_buffer_create(queue);
     void* colors[1] = { target };
     int32_t clears[1] = { 1 };
@@ -904,6 +911,24 @@ static void test_draw(void) {
     mmm_command_buffer_commit(cb);
     mmm_command_buffer_wait(cb);
 
+    // Completion resolution is asynchronous; waiting on GPU work is not waiting on this observer.
+    for (int retry = 0; retry < 100; retry++) {
+        mmm_gpu_profile_read_reset(profileMetrics, MMM_GPU_PROFILE_METRIC_COUNT);
+        if (profileMetrics[0] || profileMetrics[3] || profileMetrics[4]) break;
+        usleep(1000);
+    }
+    if (mmm_gpu_profile_supported(device)) {
+        check("GPU stage counters resolve a real triangle", profileMetrics[0] == 1
+                && profileMetrics[1] > 0 && profileMetrics[2] > 0
+                && profileMetrics[3] == 0 && profileMetrics[4] == 0, "");
+        printf("     GPU vertex %lld ns, fragment %lld ns (stage workload, not frame time)\n",
+                (long long)profileMetrics[1], (long long)profileMetrics[2]);
+    } else check("unsupported GPU profiling reports unavailable", profileMetrics[0] == 0
+            && profileMetrics[1] == -1 && profileMetrics[3] == 1, "");
+    mmm_gpu_profile_read_reset(profileMetrics, MMM_GPU_PROFILE_METRIC_COUNT);
+    check("GPU profiler read resets completed workload", profileMetrics[0] == 0
+            && profileMetrics[1] == -1 && profileMetrics[2] == -1, "");
+    mmm_gpu_profile_set_enabled(false);
     unsigned char pixels[64 * 64 * 4];
     int rc = mmm_texture_read_region(target, 0, 0, 0, 0, W, H, pixels, sizeof(pixels), W * 4);
     check("draw readback", rc == 0, "");
@@ -938,6 +963,57 @@ static void test_draw(void) {
     mmm_library_release(library);
     mmm_queue_release(queue);
     mmm_device_release(device);
+}
+
+// GPU diagnostics must be bounded and may never publish a previous capture's delayed results.
+static void test_gpu_profile_lifecycle(void) {
+    printf("\n== GPU stage profile lifecycle ==\n");
+    void* device = mmm_device_create();
+    if (!mmm_gpu_profile_supported(device)) { printf("SKIP unsupported stage counters\n"); mmm_device_release(device); return; }
+    void* queue = mmm_queue_create(device);
+    void* target = mmm_texture_create(device, 70, 16, 16, true, 5);
+    int64_t metrics[MMM_GPU_PROFILE_METRIC_COUNT] = {};
+    mmm_gpu_profile_set_enabled(true);
+    void* buffers[17] = {};
+    for (int i = 0; i < 17; i++) {
+        buffers[i] = mmm_command_buffer_create(queue);
+        void* encoder = mmm_begin_clear_pass(buffers[i], target, 0, 0, 1, 1);
+        mmm_end_encoding(encoder);
+    }
+    mmm_gpu_profile_read_reset(metrics, MMM_GPU_PROFILE_METRIC_COUNT);
+    check("GPU profiler bounds pending allocations", metrics[0] == 0 && metrics[3] == 1, "");
+    // Abort uncommitted work: releasing the command buffers must also release counter slots.
+    for (void* buffer : buffers) mmm_command_buffer_release(buffer);
+    void* cb = mmm_command_buffer_create(queue);
+    void* encoder = mmm_begin_clear_pass(cb, target, 0, 1, 0, 1);
+    mmm_end_encoding(encoder);
+    mmm_gpu_profile_set_enabled(false);
+    mmm_gpu_profile_set_enabled(true);
+    mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb);
+    usleep(10000);
+    mmm_gpu_profile_read_reset(metrics, MMM_GPU_PROFILE_METRIC_COUNT);
+    check("old GPU completion cannot leak into new capture", metrics[0] == 0
+            && metrics[1] == -1 && metrics[3] == 0 && metrics[4] == 0, "");
+    mmm_command_buffer_release(cb);
+    cb = mmm_command_buffer_create(queue);
+    for (int i = 0; i < 65; i++) {
+        encoder = mmm_begin_clear_pass(cb, target, 1, 0, 0, 1);
+        mmm_end_encoding(encoder);
+    }
+    mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb);
+    int64_t observed = 0, skipped = 0;
+    for (int retry = 0; retry < 100; retry++) {
+        mmm_gpu_profile_read_reset(metrics, MMM_GPU_PROFILE_METRIC_COUNT);
+        observed += metrics[0] + metrics[4]; skipped += metrics[3];
+        if (observed == 64) break;
+        usleep(1000);
+    }
+    check("GPU profiler retires slots and bounds per-buffer samples", observed == 64 && skipped == 1, "");
+    mmm_command_buffer_release(cb);
+    mmm_gpu_profile_set_enabled(false);
+    mmm_texture_release(target); mmm_queue_release(queue); mmm_device_release(device);
 }
 
 static void test_capture(void) {
@@ -1052,6 +1128,214 @@ static void test_utility_batching(void) {
     mmm_buffer_release(target);
     mmm_queue_release(queue);
     mmm_device_release(device);
+}
+
+// Distinct Java encoders may own consecutive passes. Native ownership must outlive each
+// released lease, retain staged bytes and preserve interleaved write/copy/render ordering.
+static void test_render_batching(void) {
+    printf("\n== ordinary render submission batching ==\n");
+    void* device = mmm_device_create();
+    if (!device) { check("render batch device", false, "no Metal device"); return; }
+    void* queue = mmm_queue_create(device);
+    void* target = mmm_texture_create(device, kBGRA8Unorm, 4, 4, true, 5);
+    void* source = mmm_buffer_create(device, 4);
+    void* copies = mmm_buffer_create(device, 4 * 130);
+    uint64_t metrics[MMM_CAPTURE_METRIC_COUNT] = {};
+    bool ok = queue && target && source && copies;
+    mmm_capture_set_enabled(true);
+    for (unsigned i = 0; ok && i < 130; ++i) {
+        void* cb = mmm_command_buffer_batch_create(queue);
+        void* pass = mmm_begin_clear_pass(cb, target, (float)i/255, 0, 0, 1);
+        ok = cb && pass;
+        mmm_end_encoding(pass);
+        mmm_command_buffer_commit(cb);
+        mmm_command_buffer_release(cb);
+        unsigned value = i + 1000;
+        ok &= mmm_write_buffer_bytes(queue, source, 0, &value, 4) == 0;
+        ok &= mmm_copy_buffer_to_buffer(queue, source, 0, copies, i * 4, 4) == 0;
+    }
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("130 pass leases accepted", ok, "");
+    check("64-pass bound commits twice before explicit boundary", metrics[MMM_CAPTURE_SUBMISSIONS] == 2, "");
+    // The explicit create used by MetalFX must commit the third batch first.
+    void* explicitCB = mmm_command_buffer_create(queue);
+    mmm_command_buffer_commit(explicitCB);
+    mmm_command_buffer_wait(explicitCB);
+    mmm_command_buffer_release(explicitCB);
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("explicit MetalFX boundary flushes batch plus explicit work", metrics[MMM_CAPTURE_SUBMISSIONS] == 2, "");
+    auto values = (unsigned*)mmm_buffer_contents(copies);
+    bool ordered = values != nullptr;
+    for (unsigned i = 0; ordered && i < 130; ++i) ordered = values[i] == i + 1000;
+    check("interleaved staged writes and copies preserve every version", ordered, "");
+    unsigned char pixels[64] = {};
+    mmm_texture_read(target, pixels, sizeof(pixels), 16);
+    check("last batched clear reaches texture", pixels[2] == 129 && pixels[3] == 255, "");
+
+    void* cb = mmm_command_buffer_batch_create(queue);
+    void* pass = mmm_begin_clear_pass(cb, target, 0, 1, 0, 1);
+    unsigned value = 777;
+    mmm_write_buffer_bytes(queue, source, 0, &value, 4); // open pass: separate utility fallback
+    mmm_end_encoding(pass);
+    mmm_command_buffer_commit(cb); mmm_command_buffer_release(cb);
+    void* fence = mmm_fence_create(queue);
+    check("fence flushes open-pass upload fallback", mmm_fence_wait(fence, INT64_MAX), "");
+    check("fallback upload completes", *(unsigned*)mmm_buffer_contents(source) == value, "");
+    mmm_fence_release(fence);
+    cb = mmm_command_buffer_batch_create(queue);
+    pass = mmm_begin_clear_pass(cb, target, 0, 0, 1, 1);
+    mmm_end_encoding(pass); mmm_command_buffer_commit(cb);
+    mmm_command_buffer_wait(cb); // must submit pending lease before blocking
+    mmm_command_buffer_release(cb);
+    mmm_texture_read(target, pixels, sizeof(pixels), 16);
+    check("wait flushes retained batch lease", pixels[0] == 255 && pixels[2] == 0, "");
+    for (unsigned i=0; i<7; ++i) {
+        cb=mmm_command_buffer_batch_create(queue);
+        value=i+800;
+        mmm_write_buffer_bytes(queue,source,0,&value,4);
+        mmm_command_buffer_commit(cb);mmm_command_buffer_release(cb);
+        mmm_utility_end_frame();
+    }
+    mmm_queue_synchronize(queue);
+    check("staging ring survives batched frame retirement", *(unsigned*)mmm_buffer_contents(source)==806, "");
+    void* queue2=mmm_queue_create(device);
+    cb=mmm_command_buffer_batch_create(queue);
+    pass=mmm_begin_clear_pass(cb,target,1,1,1,1);mmm_end_encoding(pass);
+    mmm_command_buffer_commit(cb);mmm_command_buffer_release(cb);
+    cb=mmm_command_buffer_batch_create(queue2);mmm_command_buffer_commit(cb);mmm_command_buffer_release(cb);
+    mmm_queue_synchronize(queue);
+    mmm_texture_read(target,pixels,sizeof(pixels),16);
+    check("queue switch submits prior queue batch",pixels[0]==255&&pixels[1]==255&&pixels[2]==255, "");
+    cb=mmm_command_buffer_batch_create(queue2);
+    pass=mmm_begin_clear_pass(cb,target,0,1,1,1);mmm_end_encoding(pass);
+    mmm_command_buffer_commit(cb);
+    mmm_queue_release(queue2); // native ownership must flush even with a retained caller lease
+    mmm_command_buffer_wait(cb);mmm_command_buffer_release(cb);
+    mmm_texture_read(target,pixels,sizeof(pixels),16);
+    check("queue release flushes outstanding batch",pixels[0]==255&&pixels[1]==255&&pixels[2]==0, "");
+    mmm_capture_set_enabled(false);
+    mmm_buffer_release(copies); mmm_buffer_release(source); mmm_texture_release(target);
+    mmm_queue_release(queue); mmm_device_release(device);
+}
+
+// GPU consumers, rather than copies alone, must see each uniform version in a batch.
+static void test_render_batch_uniform_versions(void) {
+    void* device=mmm_device_create();
+    if(!device) {check("batch uniform device",false,"no Metal device");return;}
+    void* queue=mmm_queue_create(device);
+    const char* msl="#include <metal_stdlib>\nusing namespace metal;\n"
+        "vertex float4 vmain(uint i [[vertex_id]], constant float4& c [[buffer(0)]]) { float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[i]*c.w,0,1); }\n"
+        "fragment float4 fmain(constant float4& c [[buffer(0)]]) {return c;}\n";
+    void* library=mmm_library_create(device,msl,strlen(msl));
+    void* pipeline=mmm_render_pipeline_create(device,library,"vmain",library,"fmain",
+        70,15,0,0,0,0,0,0,0,0,1,0,3,1,0,0,0,0,NULL,0,NULL,0);
+    void* uniform=mmm_buffer_create(device,528);
+    uint16_t data16[5]={7,7,0,1,2};
+    uint32_t data32[5]={7,7,0,1,2};
+    void* indices16=mmm_buffer_create(device,sizeof(data16));
+    void* indices32=mmm_buffer_create(device,sizeof(data32));
+    mmm_write_buffer_bytes(queue,indices16,0,data16,sizeof(data16));
+    mmm_write_buffer_bytes(queue,indices32,0,data32,sizeof(data32));
+    void* replacement=mmm_buffer_create(device,16);
+    void* targets[16]={};
+    bool ok=pipeline&&uniform;
+    for(int i=0;ok&&i<16;++i) {
+        targets[i]=mmm_texture_create(device,70,4,4,true,5);
+        float color[4]={(float)(i/2+1)/8,0,0,1};
+        mmm_write_buffer_bytes(queue,uniform,256,color,16);
+        mmm_write_buffer_bytes(queue,replacement,0,color,16);
+        float green[4]={0,color[0],0,1};
+        mmm_write_buffer_bytes(queue,uniform,512,green,16);
+        void* cb=mmm_command_buffer_batch_create(queue);
+        void* pass=mmm_render_pass_begin(cb,1,&targets[i],NULL,NULL,NULL,0,0,4,4);
+        ok=targets[i]&&pass;
+        if(i%2) mmm_render_pass_enable_buffer_offsets(pass);
+        mmm_render_pass_set_pipeline(pass,pipeline);
+        bool wide=(i/2)%2;
+        void* indices=wide?indices32:indices16;
+        int offset=wide?4:2;
+        if(i%2) {
+            mmm_render_pass_draw_indexed_uniform(pass,3,indices,offset,wide?1:0,3,1,1,0,0,
+                uniform,256,0,0);
+        } else {
+            mmm_render_pass_set_vertex_buffer(pass,uniform,256,0);
+            mmm_render_pass_set_fragment_buffer(pass,uniform,256,0);
+            mmm_render_pass_draw_indexed(pass,3,indices,offset,wide?1:0,3,1,1,0,0);
+        }
+        // Same buffer, changed offset must affect both stages. Then replacing the buffer must
+        // use a full bind; the other half keeps the green offset-only draw's pixels.
+        mmm_render_pass_set_scissor(pass,2,0,2,4);
+        mmm_render_pass_set_vertex_buffer(pass,uniform,512,0);
+        mmm_render_pass_set_fragment_buffer(pass,uniform,512,0);
+        mmm_render_pass_draw_indexed(pass,3,indices,offset,wide?1:0,3,1,1,0,0);
+        mmm_render_pass_set_scissor(pass,0,0,2,4);
+        mmm_render_pass_set_vertex_buffer(pass,replacement,0,0);
+        mmm_render_pass_set_fragment_buffer(pass,replacement,0,0);
+        mmm_render_pass_draw_indexed(pass,3,indices,offset,wide?1:0,3,1,1,0,0);
+        mmm_render_pass_end(pass);mmm_command_buffer_commit(cb);mmm_command_buffer_release(cb);
+    }
+    mmm_queue_synchronize(queue);
+    for(int i=0;ok&&i<16;++i) {
+        unsigned char pixels[64]={};
+        ok=mmm_texture_read(targets[i],pixels,64,16)==0
+            &&abs((int)pixels[0]-(int)lround((i/2+1)*255.0/8))<=1&&pixels[3]==255&&pixels[8]==0
+            &&abs((int)pixels[9]-(int)lround((i/2+1)*255.0/8))<=1&&pixels[11]==255;
+    }
+    check("fused/separate indexed draws match eight staged uniforms, offset updates, replacements and index widths",ok,"");
+    for(auto t:targets) mmm_texture_release(t);
+    mmm_buffer_release(replacement);mmm_buffer_release(indices16);mmm_buffer_release(indices32);mmm_buffer_release(uniform);mmm_render_pipeline_release(pipeline);mmm_library_release(library);
+    mmm_queue_release(queue);mmm_device_release(device);
+}
+
+// Region data must be copied immediately, and replacing inline bytes with the same previous
+// buffer must restore a full binding even when offset-only binding caching is enabled.
+static void test_inline_uniform_versions(void) {
+    void* device=mmm_device_create();
+    if(!device) {check("inline uniform device",false,"no Metal device");return;}
+    void* queue=mmm_queue_create(device);
+    const char* msl="#include <metal_stdlib>\nusing namespace metal;\n"
+        "vertex float4 vmain(uint i [[vertex_id]], constant float4& c [[buffer(0)]]) { float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};return float4(p[i]*c.w,0,1); }\n"
+        "fragment float4 fmain(constant float4& c [[buffer(0)]]) {return c;}\n";
+    void* library=mmm_library_create(device,msl,strlen(msl));
+    void* pipeline=mmm_render_pipeline_create(device,library,"vmain",library,"fmain",
+        70,15,0,0,0,0,0,0,0,0,1,0,3,1,0,0,0,0,NULL,0,NULL,0);
+    void* uniform=mmm_buffer_create(device,16);
+    float red[4]={1,0,0,1}, green[4]={0,1,0,1};
+    mmm_write_buffer_bytes(queue,uniform,0,red,16);
+    void* target=mmm_texture_create(device,70,4,4,true,5);
+    void* cb=mmm_command_buffer_batch_create(queue);
+    void* pass=mmm_render_pass_begin(cb,1,&target,NULL,NULL,NULL,0,0,4,4);
+    bool ok=pipeline&&uniform&&target&&pass;
+    if(ok) {
+        mmm_render_pass_enable_buffer_offsets(pass);
+        mmm_render_pass_set_pipeline(pass,pipeline);
+        mmm_render_pass_set_vertex_buffer(pass,uniform,0,0);
+        mmm_render_pass_set_fragment_buffer(pass,uniform,0,0);
+        check("inline uniform rejects invalid inputs",
+            mmm_render_pass_set_uniform_bytes(pass,NULL,16,0,0)==-1
+            &&mmm_render_pass_set_uniform_bytes(pass,green,4097,0,0)==-1
+            &&mmm_render_pass_set_uniform_bytes(pass,green,16,-1,-1)==-2
+            &&mmm_render_pass_set_uniform_bytes(pass,green,16,31,0)==-2, "");
+        ok=mmm_render_pass_set_uniform_bytes(pass,green,16,0,0)==0;
+        // Mutating the caller's data before submission must not change the encoded draw.
+        green[1]=0;green[2]=1;green[3]=0;
+        mmm_render_pass_set_scissor(pass,0,0,2,4);
+        mmm_render_pass_draw(pass,3,0,3,1,0);
+        mmm_render_pass_set_scissor(pass,2,0,2,4);
+        mmm_render_pass_set_vertex_buffer(pass,uniform,0,0);
+        mmm_render_pass_set_fragment_buffer(pass,uniform,0,0);
+        mmm_render_pass_draw(pass,3,0,3,1,0);
+        mmm_render_pass_end(pass);mmm_command_buffer_commit(cb);
+        mmm_queue_synchronize(queue);
+        unsigned char pixels[64]={};
+        ok=ok&&mmm_texture_read(target,pixels,64,16)==0
+            &&pixels[0]==0&&pixels[1]==255&&pixels[3]==255
+            &&pixels[8]==255&&pixels[9]==0&&pixels[11]==255;
+    }
+    check("inline uniforms copy both stages and invalidate cached buffer identity",ok,"");
+    mmm_command_buffer_release(cb);mmm_texture_release(target);mmm_buffer_release(uniform);
+    mmm_render_pipeline_release(pipeline);mmm_library_release(library);
+    mmm_queue_release(queue);mmm_device_release(device);
 }
 
 // Private storage is the resource half of the GPU-bound work: a render target the CPU never touches
@@ -1931,8 +2215,12 @@ int main(void) {
         test_base_instance();
         test_draw();
         test_surface();
+        test_gpu_profile_lifecycle();
         test_capture();
         test_utility_batching();
+        test_render_batching();
+        test_render_batch_uniform_versions();
+        test_inline_uniform_versions();
         test_private_storage();
     }
     printf("\n==================================================\n");

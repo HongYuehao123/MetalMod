@@ -12,9 +12,13 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--source-game", type=Path, required=True)
 parser.add_argument("--world", required=True)
 parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--extra-mod", type=Path, action="append", default=[], help="Additional mod JARs for this disposable copy only")
 parser.add_argument("--frame-generation", action="store_true")
 parser.add_argument("--delivery-check", action="store_true")
 args = parser.parse_args()
+for extra in args.extra_mod:
+    if not extra.is_file() or extra.suffix != ".jar":
+        parser.error("--extra-mod must be an existing JAR")
 repo = Path(__file__).resolve().parents[2]
 source = args.source_game.resolve()
 output = args.output.resolve()
@@ -51,6 +55,11 @@ for jar in (source / "mods").glob("*.jar"):
         shutil.copy2(jar, output / "mods" / jar.name)
 shutil.copy2(repo / "build/libs/metalmod-1.0.0.jar", output / "mods/metalmod-1.0.0.jar")
 shutil.copy2(repo / "build/temporal-validation/validation.jar", output / "mods/temporal-input-validation.jar")
+for extra in args.extra_mod:
+    destination = output / "mods" / extra.name
+    if destination.exists():
+        parser.error("extra mod name conflicts with copied mods: " + extra.name)
+    shutil.copy2(extra, destination)
 command = [str(jdk / "bin/java"), "-XstartOnFirstThread", "-Xmx4G", "--enable-native-access=ALL-UNNAMED",
            "-Dmetalmod.frameGenerationDeliveryValidation="+str(args.delivery_check).lower(), "-Dmetalmod.metalBackend=true", "-Dmetalmod.frameGenerationForce=true", "-Dmetalmod.dynamicLights=true", "-Dmetalmod.temporalInputValidation="+str(not args.frame_generation).lower(), "-Dmetalmod.frameGenerationValidation="+str(args.frame_generation).lower(), "-Dmetalmod.validationWorld="+args.world, "-Dmetalmod.validationFocus="+str(repo/"build/temporal-validation/focus.dylib"), "-cp", classpath,
            "net.fabricmc.loader.impl.launch.knot.KnotClient", "--username", "MetalFXTest",

@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_22",
   "client": [
     "GameRendererMixin",
+    "IntegratedServerQosMixin",
     "SuperResolutionMixin",
     "TemporalEntityStateMixin",
     "TemporalEntityExtractionMixin",

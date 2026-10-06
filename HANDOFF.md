@@ -56,6 +56,207 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Separate Sodium adapter restored (2026-10-05)
+
+The user requested reverting unified packaging and adding 0.9.3 support. Packaging is restored:
+core `metalmod-1.0.0.jar` plus optional `metalmod-sodium-0.1.1.jar`, with upstream Sodium supplied
+separately. The core has no mandatory Sodium build/runtime dependency. The adapter retains the
+fatal guard from BUG-047. All five offline gates and fresh native-only copied-world tests pass:
+**1771 vanilla / 1793 Sodium clean frames**, exit 0, normal instance hashes unchanged.
+
+**0.9.3 support is deferred at the user’s explicit request, not implemented.** The actual official available
+release is **0.9.3-alpha.1+mc26.3**, requires Minecraft 26.3.x, and changes DrawContext from
+Blaze3D to RenderPearl types/removes the region-update API. Current compatibility remains
+0.9.2+mc26.2; no Minecraft 26.3 port is authorized. An actual-artifact negative test confirms safe dependency rejection on 26.2.
+No Minecraft/world upgrade or normal installation occurred. See
+[verification and version review](docs/performance/sodium-separate-20261005.md).
+
+## Single-JAR Sodium detection (historical, superseded later 2026-10-05)
+
+The canonical `metalmod-1.0.0.jar` now bundles the optional integration code and detects Sodium
+through Fabric at startup. Absent Sodium selects vanilla; official **0.9.2+mc26.2** activates the
+native factories automatically for Metal. Sodium itself remains external and optional. Remove the
+old separate adapter JAR; Fabric rejects the duplicate. Unsupported Sodium versions stop fatally
+in pre-launch with an actionable version message (BUG-047: Mixin-only exception was insufficient).
+
+Final artifact `ed650cf732aff82553fd8f3d4bfef22fb8f265c7f0b13fe6c40f445d704f7423` passes all
+five offline gates and two fresh native-only copied-world launches: **1750 vanilla / 1793 Sodium
+clean captured frames**, both exit 0, with no separate adapter. Negative version/duplicate guards
+pass. Normal instance hashes remain unchanged; no normal installation occurred. This is packaging
+and startup selection, not a new rendering optimization. See
+[verification and install notes](docs/performance/sodium-autodetect-20261005.md).
+
+## Completed offscreen throughput (2026-10-05)
+
+Benchmark-only present/offscreen ABBA on the external screen, 5120×2664, RD32,
+Sodium Default culling, Vsync Off / Unlimited, all FG and upscaling Off:
+**59.96 presented versus 96.56 offscreen completed GPU FPS (+61.04%)**.
+Both modes have the same two-frame bound and completion fences; every measured frame completed.
+Presentation overhead is substantial, but removing it does not explain the full mcopt gap.
+This is diagnostic throughput; offscreen supplies zero new display frames. Core/adapter artifacts
+and normal instance hashes are unchanged. Next candidate is late/selective presentation, with
+completion/cadence/latency verification. See [full evidence](docs/performance/offscreen-completion-20261005.md).
+
+## Ordinary render submission batching (2026-10-04)
+
+### Dense terrain profiling follow-up (2026-10-04)
+
+The original waypoint 13 is now retested at ~19,200 draws/frame, in a disposable fixed-camera
+32-chunk scene at 5120×2664. Clean native off/on/off captures give 56.00/56.83/55.36 FPS and
+p95 32.05/29.60/32.37 ms; an extra on capture overlapped CPU sampling and is explicitly excluded.
+This is an incomplete ABBA, with a small exploratory ~2.07% throughput difference. Creation
+stalls no longer reproduce even with batching off (slow-frame create 0.048–0.533 ms); slow-frame
+drawable waits instead average ~20–21 ms. BUG-031 stays open because renderer/resolution/session
+differences prevent establishing the historical cause or fix.
+
+A separate instrumented Metal trace associates 1,122 interior GPU frames with mean vertex
+intervals 14.59 ms, fragment intervals 6.46 ms and overlapping execution union 17.32 ms. These
+are instrumented GPU workload metrics, not F8-aligned whole-frame time or input latency.
+Stage counters have disclosed dropped-pass coverage; reduced spatial resolution lowers
+fragment workload while leaving vertex workload similar. Terrain visibility/geometry reduction
+and optional Sodium Metal integration are the next larger implementation targets. No new
+production renderer optimization is enabled by this profiling work; existing defaults remain.
+
+All five offline gates pass again; the rebuilt JAR's ZIP entry contents are identical to the
+measured JAR. Normal Minecraft files were not changed. Reproducible runner/analyzers, exact
+limits and artifacts: [dense profiling](docs/performance/dense-profiling.md),
+`build/reports/dense-profiling/`. Temporal treetop BUG-035 and transient FG BUG-045 remain open.
+
+### Follow-up performance experiments and Sodium (2026-10-04)
+
+**mcopt/post review and baseline policy (2026-10-05):** exact linked release v0.2.0-alpha.1,
+commit `7fdeeea...`, rechecked. Video labels M4 Max, 5120×2880, distance 16, surface spin;
+our M4 Pro (20 GPU cores) dense distance-32 fixture is not matched. Material missing techniques
+are selective Vsync-Off presentation/delayed acquisition, native lean terrain shaders, optional
+adaptive GPU Hi-Z quad compaction/indirect vertex pulling, and render-pass continuation/store
+elimination. Source cannot identify which culling path the video selected. Author and release
+defaults indicate no FX/FG in that demo; do not dismiss the result as generated frames.
+Future performance tests default **external, Vsync Off, Unlimited, FG and all SR Off**. Tooling
+now enforces native-only captures and verifies no SR requests/encodes; explicit spatial feature
+comparisons require `--compare-spatial`. One accepted 30s native baseline remains **59.93 FPS,
+CPU 3.59 ms, 16,843 draws at 5120×2664**, despite Vsync Off. No new production optimization
+is claimed; normal instance untouched. See [comparison and next targets](docs/performance/mcopt-comparison-20261005.md).
+
+**Internal-display follow-up (2026-10-05):** four accepted foreground captures at matched
+**3600×2204**, with both displays enabled, show rendered FPS **112.97/121.75** native/spatial
+internally versus **111.75/118.76** externally. Unique positive presentation timestamps are
+**101.46/116.53 Hz internal versus 59.97/59.97 Hz external**, with disclosed zero timestamps.
+Hosting snapshots confirm built-in 120-Hz capability and external CB272K 60-Hz capability.
+The external renderer can exceed 60 FPS in this configuration, while observed displayed cadence
+remains near 60 Hz. This refines the earlier display-limited interpretation; moving screens
+alone does not double rendering FPS at matched dimensions. Single pair per mode/display, not
+ABBA; old 5120×2664 captures differ in resolution/aspect. Rare internal drawable stalls reach
+51.10 ms frame interval. Test-only placement/analysis tools improved; production artifacts and
+normal instance remain unchanged. See [internal display test](docs/performance/internal-display-20261005.md).
+
+Post-Sodium GPU/presentation profiling now identifies the actual hosting display: **CB272K,
+60 Hz**, at 5120×2664 output. A separate instrumented native trace reports overlapping GPU
+execution union **11.37 ms** (associated frame IDs, not CPU frame timing). A clean fresh-JVM
+repeat measures **59.73 FPS native/spatial**, CPU **3.71/3.81 ms**, with p99 **32.35/36.49 ms**.
+Slow-frame drawable waits average **23.45/25.28 ms**; command-buffer creation remains below
+0.1 ms in these groups. Actual presentation median/p95 is 16.67 ms, with disclosed zero
+timestamps and roughly 58–59 Hz unique observed callbacks. Display pacing and occasional
+missed presentations are now the priority; further CPU crossings alone have no demonstrated
+FPS benefit here. Test tooling logs the hosting screen and excludes diagnostic captures.
+No production renderer changes or new performance gain are claimed; artifact hashes and normal
+instance files remain unchanged. See [post-Sodium profiling](docs/performance/sodium-gpu-profiling.md).
+
+The optional native Sodium adapter now builds and renders official Fabric **0.9.2+mc26.2**.
+It intercepts the Metal-device terrain factories, uses copied region uniforms and preserves
+Sodium's compact meshes/culling/arena and direct indexed batch semantics. The core remains free
+of a mandatory Sodium dependency. Offline gates pass: **921 native checks, 87+9 shaders,
+204 vanilla + 66 Sodium pixel checks, standalone tests**. The copied-world temporal run passed
+**385 checks** with zero backend health errors. Final guarded-adapter frame generation passed
+**186 checks + 15 saved-On restart checks** in an unlocked fresh copy. The earlier locked attempt
+is retained as interrupted; broader FG BUG-045 stays open. Eight accepted foreground ABBA
+captures measure native CPU **10.629→3.607 ms (66.06% lower)** and spatial strength 25 CPU
+**10.537→3.705 ms (64.84% lower)**. FPS rises **58.61→59.83 / 58.01→59.75**, near 60Hz
+presentation. P95 improves but p99 worsens. Lava difference BUG-046 is resolved as Sodium
+Fluid Culling = Optimized: a one-setting Default control restores the patches and still measures
+**3.595 ms / 59.93 FPS native, 3.707 ms / 59.76 FPS spatial**. Recommend Default for fluid parity;
+no production rendering change was needed. The adapter remains experimental for broader quality/stress. This is one fixed dense 5120×2664/32-chunk scene.
+The normal instance has not been changed. See [integration evidence and limits](docs/performance/sodium-compatibility.md)
+and [build/usage/region ABI](compat/sodium/README.md).
+
+Follow-up verification completed on 2026-10-04:
+
+- **Buffer offset updates are now on by default.** `-Dmetalmod.bufferOffsets=false` restores
+  full setters. Native ABBA measured CPU **6.319→6.190 ms** (2.04% lower); spatial strength 25's
+  single pair measured **6.146→6.018 ms**. FPS stayed near 60 (native difference -0.20%), with no
+  material tail improvement. This is scoped CPU headroom, not a universal FPS gain.
+- **Fused indexed draws remain off.** Their 63.8% reduction in native crossings did not yield
+  a material native CPU/FPS gain. `-Dmetalmod.fusedDraws=true` remains an experiment.
+- **All five final default offline gates pass:** native 919, static 87/87, post 9/9, 204 pixel
+  assertions and standalone tests. Explicitly enabled offset updates pass **385/385 temporal**
+  gameplay checks and final **191/191 FG + 15/15** saved-On restart checks.
+- The initial enabled FG run failed **10/186** checks (occluded startup plus ordering/cadence).
+  The disabled control passed **158 + 15**, with quality protection skipping some cadence
+  assertions; the unchanged enabled retry passed **191 + 15**. Exact initial cause is unresolved,
+  and all outcomes are retained. No production presentation logic or test thresholds were changed.
+- Historical interrupted/locked comparisons are retained but superseded by the complete accepted
+  six-capture comparison. The runner holds a temporary wake assertion and rejects paused/menu/
+  unfocused captures. The normal instance/world/config/JAR was not replaced.
+
+See [buffer-offset evidence and limits](docs/performance/buffer-offsets.md),
+[fused-call results](docs/performance/fused-draws.md), and
+`build/reports/buffer-offsets/reverification/verification-summary.json` for artifact hashes and
+all outcomes. Existing submission batching remains on; native MetalFX/RT resource ownership,
+shader inputs and lighting contracts are unchanged.
+
+### Enabled batching behavior
+
+Ordinary Java render passes now lease a shared native command buffer instead of physically
+submitting each pass. Buffer uploads/GPU copies outside open passes share the ordered batch. Explicit buffers
+used by MetalFX/temporal/motion, fences, readback, presentation and frame retirement flush it;
+64 render encoders bound a batch. Attachment actions, shader/lighting inputs and geometry contracts
+are unchanged. The independent frame-generation presentation queue keeps its existing ownership.
+Default **on**; `-Dmetalmod.commandBatching=false` restores per-pass submissions.
+
+In a copied-world 5K/32-chunk smooth-camera scene (~7470 draws/frame), native ABBA gives
+**54.46/54.49 → 59.59/59.46 FPS** (9.27% throughput gain), p95 **33.31/33.27 → 18.06/18.36 ms**.
+Spatial strength 25's single A/B pair gives **57.23 → 59.96 FPS** (4.77%). Submissions roughly halve.
+These are scoped gameplay measurements including display pacing, not a universal FPS claim.
+One unfocused spatial capture was rejected and retained. The subsequent fixed-camera dense
+BUG-031 retest is described above; the historical cause remains open.
+
+All five offline gates pass on the default-enabled path, including Metal validation and native
+pixel verification of eight different staged uniform versions consumed in one render batch.
+Temporal copied-world gameplay validation passes **385/385**, including history, motion,
+lighting, resize, dimension/reconnect and hand/UI coverage. Final visible frame-generation
+validation passes **191/191**, with **15/15** saved-On fresh-JVM restart checks. The test add-on
+isolates object coverage from clouds and waits for stable startup visibility (BUG-043); earlier
+baseline/occluded failures remain archived. The final JAR is built;
+the normal instance has not been replaced by this task.
+Architecture, reproducer and exact evidence: [submission batching](docs/performance/submission-batching.md),
+`build/reports/submission-batching/`.
+
+## mcopt-inspired performance work (2026-10-04)
+
+The vanilla draw path now skips identical uniform/texture/sampler bindings, reuses the terrain
+uniform uploader and avoids a whole-buffer slice allocation per section. Multi-draw state that
+cannot change in the loop is applied once. Per-draw uploader callbacks, index overrides,
+sub-buffer offsets and texel-buffer refresh semantics remain covered by verification.
+The new cache is on by default; `-Dmetalmod.drawStateCache=false` supplies the A/B baseline.
+A real-pipeline repeated-binding check measures **5 native calls off versus 0 on**, with both
+modes passing all **204 render checks**. This is an API-call reduction, not a gameplay FPS claim.
+
+F8 optionally records completed vertex/fragment stage workload with
+`-Dmetalmod.gpuStageTiming=true`. Counter storage is bounded, unsupported/invalid/dropped passes
+are disclosed, and old capture completions are discarded. These asynchronous per-read sums
+are not whole-frame GPU time, do not cover compute/blit/MetalFX encoders and cannot be aligned
+naively to CPU frame/route labels. The whole-frame timing gap remains open.
+
+`-Dmetalmod.threadQos=true` enables an independent render/integrated-server scheduling experiment;
+workers retain their QoS. The default is off pending routed gameplay and thermal measurements.
+A dedicated-thread test verifies both requested native QoS classes; the 26.2 server target is
+confirmed by javap. Gameplay mixin application and FPS/latency effects remain unmeasured.
+
+All five offline gates pass, including Metal validation on smoke/render, 87/87 + 9/9 shader
+inventory, and standalone tests with GPU-stage capture enabled. This section has no routed gameplay FPS measurement; the subsequent submission-batching work
+above supplies separate evidence. Pass continuation and GPU terrain culling require separate ownership
+and geometry designs. Sources, semantics, commands and evidence:
+[mcopt techniques](docs/performance/mcopt-techniques.md), `build/reports/mcopt-techniques/`.
+
 ## Frame Generation final-image correction (2026-10-04)
 
 The user reports the installed build looks usable for now (2026-10-04) and requested a commit.
@@ -573,8 +774,10 @@ $HOME/Documents/.minecraft/versions/MetalMod_Test_26.2
 ```
 
 Mods present: Fabric API, Mod Menu, Placeholder API, and the built MetalMod jar.
-**Sodium is deliberately not installed** — compatibility with it is not pursued (it sits on
-Blaze3D's abstraction, and porting it does not simplify the shaderpack work). Iris lives in the separate
+**Sodium is not installed in the normal instance.** Integration was reopened as an optional
+performance goal on 2026-10-04. Official Sodium 0.9.2 / 26.2 now renders through the optional native adapter in copied-world tests;
+foreground ABBA establishes scoped CPU headroom. Fluid Culling = Default resolves lava BUG-046;
+rare frame tails and broader quality/stress keep the adapter experimental. FG lifecycle validation passes. See `docs/performance/sodium-compatibility.md`. Iris lives in the separate
 `26.2-Fabric` instance; integration is optional and is not a core dependency.
 
 Override the build target with `METALMOD_MC_INSTANCE`.
@@ -588,4 +791,4 @@ Override the build target with `METALMOD_MC_INSTANCE`.
 | Remove main-render-target scaling | It broke the GUI and froze input |
 | Remove the LWJGL allocator interception | LWJGL 3.4 needs native function pointers for its fast path; mixing allocator ownership risks corruption. Also a measured pessimisation. |
 | Delete the MoltenVK-interop / MetalFX leftovers | Inert: a per-frame hook and native scalers that could never present, plus config that controlled nothing |
-| Do not pursue Sodium compatibility | It follows Blaze3D and does not ease optional shaderpack work |
+| Reopen optional Sodium integration (2026-10-04 user request) | Performance goal; requires native Metal draw context rather than automatic Blaze3D compatibility |

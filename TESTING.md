@@ -341,6 +341,20 @@ The rule is still a claim about engine behaviour, so it is checked rather than t
 
 ## 4. Comparing performance
 
+Current user baseline policy (2026-10-05): **external display, Vsync Off, Unlimited FPS,
+frame generation Off, spatial/temporal super resolution Off**. Compare rendered throughput
+separately from actual presentation cadence. Vsync Off was already used in the recent captures;
+drawable acquisition can still throttle the renderer. Vanilla's numeric FPS value 260 means
+Unlimited in the real 26.2 client, whose limiter runs only below 260.
+
+`tools/metalfx_benchmark/run_manual.py` now enforces this baseline in disposable copies and
+captures native only by default. Explicit `--compare-spatial` is reserved for a separately
+requested feature experiment. Record actual output dimensions, render distance, scene and
+lighting settings; the existing dense route uses distance 32, while the mcopt X footage labels
+distance 16. Do not compare headline FPS across different scenes or conflate their 5K footage
+with the README's separate 1080p benchmarks. See
+[release/source comparison](docs/performance/mcopt-comparison-20261005.md).
+
 The roadmap's exit criterion is a comparable frame rate to Vulkan/MoltenVK. Measure **in normal
 play**, not with a menu open (the world must be ticking):
 
@@ -753,3 +767,24 @@ See [implementation/evidence](docs/phase7/implementation.md) and the full
 [Phase 7 acceptance matrix](docs/phase7-plan.md). Automated checks passed; representative
 visual/performance pairs and the full lifecycle matrix/steady soak remain release gates. Frame
 generation and display-link pacing are deferred and cannot be inferred from scaler success.
+
+### Completed offscreen throughput diagnostic
+
+The optional copied-instance benchmark now accepts `--offscreen-comparison` with a native-only
+submission benchmark. It runs presented/offscreen ABBA with the same two-frame GPU bound and
+completion fence overhead. Analyze with `tools/metalfx_benchmark/analyze_offscreen.py <copied-game>`;
+exclude these marked captures from regular throughput comparisons. See
+[2026-10-05 evidence](docs/performance/offscreen-completion-20261005.md).
+
+### Separate optional Sodium adapter (current packaging)
+
+The user restored separate packaging on 2026-10-05. Core-only canonical builds require no Sodium.
+Set `METALMOD_SODIUM_JAR` to the actual tested 0.9.2+mc26.2 JAR to also build the separate
+`metalmod-sodium-0.1.1.jar`. Vanilla copied tests use only the core; Sodium copied tests add both
+that adapter and official Sodium. The former unified artifact is historical evidence only.
+The adapter retains the exact fatal Fabric pre-launch guard from BUG-047.
+
+Official 0.9.3-alpha.1 metadata requires Minecraft 26.3.x. Its DrawContext uses RenderPearl
+RenderPass/RenderPipeline types and drops the region-update method; current 26.2 compatibility
+cannot be extended by changing a version whitelist. See
+[restoration and version review](docs/performance/sodium-separate-20261005.md).
