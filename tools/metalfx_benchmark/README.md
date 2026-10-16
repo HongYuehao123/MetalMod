@@ -185,3 +185,22 @@ fences. Offscreen retains frame resource lifecycles and omits drawable/blit/pres
 Use `analyze_offscreen.py <copied-game-directory>`; general analyzers reject its instrumented captures.
 Completed FPS is not displayed FPS. The offscreen window retains its last displayed image.
 See `docs/performance/offscreen-completion-20261005.md` for measured results and limitations.
+
+## Early versus late drawable acquisition
+
+`--comparison-property metalmod.lateDrawableAcquire` runs native early/late/late/early when
+`--submission-benchmark` is set and `--renderer-comparison` is omitted. All frames are submitted
+for presentation; there is no selective-presentation scheduler. The driver option defaults Off.
+The display probe now observes late drawables once they exist. `analyze_display.py` emits
+`presentation_events_per_second`; these are not physical refreshes or complete scanouts, and
+Vsync-Off events can exceed the screen Hz. See the 2026-10-16 report for the negative result.
+
+## Completed GPU property ABBA
+
+Combine `--offscreen-comparison --offscreen-property-comparison --comparison-property
+metalmod.sodiumEmptyLights` with the native-only submission fixture and **no** fixed-renderer
+argument. All four off/on/on/off runs render offscreen; only the property changes. Identical
+completion fences and at most two pending frames prevent enqueue-only FPS inflation. Analyze
+with `analyze_offscreen.py <copied-game>`. The original `--offscreen-comparison` behavior still
+compares presentation against offscreen rendering when the property-comparison flag is absent.
+Legacy captures remain analyzable. Neither experiment measures input latency or physical refresh.

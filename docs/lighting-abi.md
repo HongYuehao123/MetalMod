@@ -99,3 +99,16 @@ layout, the bounds above, the zero-light path being pixel-identical to vanilla, 
 `net.metalmod.StandaloneTestRunner` asserts the record offsets, the ABI version, the capacity, the
 per-cell bound and the one-row texture limit. A new consumer should extend both rather than add a
 third place that believes its own copy of the layout.
+
+## Empty-source Sodium specialization (2026-10-16)
+
+The light-record ABI remains **v1**. The optional Sodium adapter may select a baked-only compiled
+pipeline when the published snapshot contains zero sources. Collection stays enabled; a nonempty
+snapshot selects the lit variant before the next region's uniforms are copied. GPU light buffers
+remain available on demand for consumers that declare them. Caller-supplied light uniforms keep
+the original lit path and take precedence over automatic bindings. Cache invalidation and resource
+reload retire both terrain representations. No geometry/material data is culled or removed.
+
+The core metadata marker `metalmod:sodium_adapter_abi=2` describes the separate adapter's Java
+selection API, not a change to these light-record byte layouts. Runtime temporal/FG features stay
+Off in the performance captures; derived coverage pipelines are separately compile-checked.

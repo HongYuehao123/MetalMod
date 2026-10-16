@@ -24,7 +24,7 @@ p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--world',required=True)
 p.add_argument('--output',type=pathlib.Path,required=True)
 p.add_argument('--submission-benchmark',action='store_true',help='Run automated 30s native ABBA; spatial A/B requires --compare-spatial')
-p.add_argument('--comparison-property',choices=['metalmod.commandBatching','metalmod.fusedDraws','metalmod.bufferOffsets'],default='metalmod.commandBatching')
+p.add_argument('--comparison-property',choices=['metalmod.commandBatching','metalmod.fusedDraws','metalmod.bufferOffsets','metalmod.lateDrawableAcquire','metalmod.sodiumEmptyLights'],default='metalmod.commandBatching')
 p.add_argument('--source-world',type=pathlib.Path,help='Read-only saved-world source override')
 p.add_argument('--anchor-route',type=pathlib.Path)
 p.add_argument('--anchor-waypoint',type=int,default=0)
@@ -32,6 +32,7 @@ p.add_argument('--static-camera',action='store_true')
 p.add_argument('--diagnostic-only',action='store_true',help='Two enabled captures for profiling, not an A/B comparison')
 p.add_argument('--gpu-stage-timing',action='store_true',help='Diagnostic counters; compare throughput separately')
 p.add_argument('--renderer-comparison',choices=['vanilla','sodium'],help='Fixed renderer in a fresh JVM; native capture (optional spatial), no property A/B')
+p.add_argument('--offscreen-property-comparison',action='store_true',help='Compare the chosen property with all four runs offscreen and GPU-completion bounded')
 p.add_argument('--offscreen-comparison',action='store_true',help='Test-only bounded present/offscreen ABBA; real GPU completion fences in both modes')
 p.add_argument('--compare-spatial',action='store_true',help='Explicit feature experiment: also capture spatial MetalFX; default performance tests are native only')
 p.add_argument('--render-distance',type=int,default=32,help='Record explicit terrain distance; 32 is the existing stress fixture, mcopt footage uses 16')
@@ -44,6 +45,8 @@ a=p.parse_args()
 if a.window_width<=0 or a.window_height<=0:p.error('positive window dimensions required')
 if not 2<=a.render_distance<=32:p.error('render distance must be 2..32')
 if a.compare_spatial and not a.submission_benchmark:p.error('spatial comparison requires --submission-benchmark')
+if a.offscreen_property_comparison and (not a.offscreen_comparison or a.renderer_comparison):
+    p.error('offscreen property comparison requires --offscreen-comparison and no fixed renderer selection')
 if a.offscreen_comparison and (not a.submission_benchmark or a.compare_spatial or a.diagnostic_only or a.gpu_stage_timing):
     p.error('offscreen comparison requires native submission benchmark without GPU-stage instrumentation')
 if (a.renderer_comparison or a.diagnostic_only or a.static_camera or a.gpu_stage_timing or a.anchor_route) and not a.submission_benchmark:
@@ -91,7 +94,7 @@ for jar in a.extra_mod:
     shutil.copy2(jar,out/'mods'/jar.name)
 if a.submission_benchmark:
     import hashlib
-    (out/'comparison.json').write_text(json.dumps({'offscreen_comparison':a.offscreen_comparison,'property':a.comparison_property,
+    (out/'comparison.json').write_text(json.dumps({'offscreen_comparison':a.offscreen_comparison,'offscreen_property_comparison':a.offscreen_property_comparison,'property':a.comparison_property,
         'diagnostic_only':a.diagnostic_only,'static_camera':a.static_camera,'anchor':dict(position=pos,rotation=rot),
         'source_world':str(source),'anchor_route':str(a.anchor_route) if a.anchor_route else None,
         'anchor_waypoint':a.anchor_waypoint,'gpu_stage_timing':a.gpu_stage_timing,
@@ -108,6 +111,8 @@ command=['/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/java','
 command[command.index('--width')+1]=str(a.window_width)
 command[command.index('--height')+1]=str(a.window_height)
 command.insert(command.index('-cp'),'-Dmetalmod.benchmarkNativeOnly='+str(not a.compare_spatial).lower())
+if a.offscreen_property_comparison:
+    command.insert(command.index('-cp'),'-Dmetalmod.offscreenPropertyComparison=true')
 if a.offscreen_comparison:
     command.insert(command.index('-cp'),'-Dmetalmod.offscreenComparison=true')
 if a.submission_benchmark:

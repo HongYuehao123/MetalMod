@@ -19,5 +19,5 @@ mkdir -p "$output" build/sodium-adapter
 find compat/sodium/src/main/java -name '*.java' > build/sodium-adapter/sources.txt
 "$jdk/bin/javac" --release 22 -proc:none -cp "$classpath" -d "$output" @build/sodium-adapter/sources.txt
 cp compat/sodium/src/main/resources/*.json "$output/"
-"$jdk/bin/jar" cf build/libs/metalmod-sodium-0.1.1.jar -C "$output" .
-echo "Optional Sodium adapter -> build/libs/metalmod-sodium-0.1.1.jar"
+"$jdk/bin/jar" cf build/libs/metalmod-sodium-0.1.2.jar -C "$output" .
+echo "Optional Sodium adapter -> build/libs/metalmod-sodium-0.1.2.jar"

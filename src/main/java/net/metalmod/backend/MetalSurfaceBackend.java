@@ -71,9 +71,11 @@ public final class MetalSurfaceBackend implements GpuSurfaceBackend {
     public void acquireNextTexture() throws SurfaceException {
         if (!this.configured || this.closed) throw new SurfaceException("Surface is not configured");
         if (this.frameAcquired) throw new SurfaceException("Previous frame has not been presented");
-        if(this.fifo&&FrameGenerationSettings.current().enabled()) {
+        if ((this.fifo && FrameGenerationSettings.current().enabled())
+                || (!this.fifo && Boolean.getBoolean("metalmod.lateDrawableAcquire"))) {
             // The engine renders offscreen. Reserve a drawable after world/FG work has
-            // entered the GPU queue, so a generated pair cannot stall the next world.
+            // entered the GPU queue. The opt-in ordinary path still presents every frame;
+            // it changes only when the drawable is acquired, without bypassing resource retirement.
             MetalNative.utilityEndFrame();
             this.drawable=MemorySegment.NULL;this.frameAcquired=true;return;
         }

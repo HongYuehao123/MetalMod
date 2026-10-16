@@ -13,7 +13,9 @@ def summarize(game):
         raise ValueError('requires explicit native-only offscreen experiment')
     root=game/'debug/metalmod'
     index=[line.split('\t',2) for line in (root/'benchmark-index.tsv').read_text().splitlines()]
-    if [line[0] for line in index]!=['present01','offscreen02','offscreen03','present04']:
+    property_comparison=metadata.get('offscreen_property_comparison',False)
+    expected=['batch01-native-off','batch02-native-on','batch03-native-on','batch04-native-off'] if property_comparison else ['present01','offscreen02','offscreen03','present04']
+    if [line[0] for line in index]!=expected:
         raise ValueError('requires complete ordered ABBA captures')
     runs=[]
     for name,folder,_ in index:
@@ -32,7 +34,7 @@ def summarize(game):
         completion=json.loads((capture/'gpu-completion.json').read_text())
         if completion['submitted']!=completion['completed'] or completion['max_in_flight']!=2:
             raise ValueError('uncompleted GPU work or wrong bound')
-        if completion['offscreen']!=name.startswith('offscreen'): raise ValueError('mode mismatch')
+        if completion['offscreen']!=(property_comparison or name.startswith('offscreen')): raise ValueError('mode mismatch')
         seconds=completion['elapsed_ns']/1e9
         if not 29<seconds<32: raise ValueError('unexpected measurement duration')
         cpu=json.loads((capture/'render-thread-cpu.json').read_text())
@@ -43,6 +45,14 @@ def summarize(game):
     if len({(r['width'],r['height']) for r in runs})!=1: raise ValueError('unmatched output resolution')
     if max(r['draws'] for r in runs)/min(r['draws'] for r in runs)>1.01:
         raise ValueError('draw workload differs by more than 1%')
+    if property_comparison:
+        off=statistics.mean(r['completed_fps'] for r in runs if r['name'].endswith('-off'))
+        on=statistics.mean(r['completed_fps'] for r in runs if r['name'].endswith('-on'))
+        return dict(metadata=metadata,runs=runs,off_completed_fps=off,on_completed_fps=on,
+                    throughput_increase_percent=100*(on/off-1),
+                    scope='All four runs render offscreen with the same completion fence and two-frame bound. '
+                          'Rates count completed GPU frames, not CPU enqueue loops or displayed FPS. '
+                          'Only the declared property changes; final drain is included.')
     present=statistics.mean(r['completed_fps'] for r in runs if not r['offscreen'])
     offscreen=statistics.mean(r['completed_fps'] for r in runs if r['offscreen'])
     return dict(metadata=metadata,runs=runs,present_completed_fps=present,

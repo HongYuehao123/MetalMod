@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize actual drawable presentedTime callbacks; unrelated to CPU render-throughput FPS."""
+"""Summarize drawable presentedTime events, not physical refreshes or input latency."""
 import csv,json,statistics,math,argparse
 from pathlib import Path
 if __name__=='__main__':
@@ -16,6 +16,10 @@ if __name__=='__main__':
             'unique_displayed_times':len(stamps),'mean_interval_ms':statistics.mean(intervals),
             'median_interval_ms':statistics.median(intervals),'p95_interval_ms':ordered[math.ceil(len(ordered)*.95)-1],
             'displayed_rate_hz':(len(stamps)-1)*1e9/(stamps[-1]-stamps[0]),
+            'presentation_events_per_second':(len(stamps)-1)*1e9/(stamps[-1]-stamps[0]),
+            'rate_scope':'Unique nonzero MTLDrawable.presentedTime events, not physical refreshes, '
+                         'complete screen scans or input latency. Vsync-Off events may exceed refresh rate. '
+                         'displayed_rate_hz is retained as a legacy alias.',
             'counts':(folder/'display-counts.txt').read_text(),
         }
     (a.root/'display-analysis.json').write_text(json.dumps(result,indent=2)+'\n')

@@ -112,7 +112,37 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
 
     @Override
     public void setPipeline(RenderPipeline pipeline) {
-        if (pipeline == this.lastEnginePipeline) {
+        setPipeline(pipeline, null);
+    }
+
+    private boolean sodiumPipelineOverride;
+    private boolean ownsDynamicLightUniform;
+    private long dynamicLightGeneration = -1;
+
+    /** Called only by the Sodium adapter, before copying each region's uniforms. */
+    public void setSodiumPipeline(RenderPipeline pipeline) {
+        boolean explicitLights = !this.ownsDynamicLightUniform
+                && (this.uniforms.containsKey(LightSnapshot.UNIFORM)
+                    || this.inlineUniforms.contains(LightSnapshot.UNIFORM));
+        setPipeline(pipeline, explicitLights ? null : this.owner.device().pipelineForSodium(pipeline));
+        refreshDynamicLightBinding();
+    }
+
+    private void refreshDynamicLightBinding() {
+        if (this.pipeline == null || !this.pipeline.usesDynamicLights()
+                || this.inlineUniforms.contains(LightSnapshot.UNIFORM)) return;
+        if (!this.uniforms.containsKey(LightSnapshot.UNIFORM)
+                || (this.ownsDynamicLightUniform && this.dynamicLightGeneration
+                    != net.metalmod.lighting.LightCollector.generation())) {
+            setUniform(LightSnapshot.UNIFORM, this.owner.device().dynamicLightsBuffer());
+            this.ownsDynamicLightUniform = true;
+            this.dynamicLightGeneration = net.metalmod.lighting.LightCollector.generation();
+        }
+    }
+
+    private void setPipeline(RenderPipeline pipeline, MetalRenderPipeline override) {
+        if (pipeline == this.lastEnginePipeline && (override != null
+                ? override == this.pipeline : !this.sodiumPipelineOverride)) {
             // Same pipeline as the previous draw, so the encoder already holds its state and every
             // binding was applied under it. Consecutive chunk-section draws hit this path, and
             // returning here skips the synchronized pipeline lookup, two string allocations, a
@@ -121,9 +151,17 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
             // can never be stale.
             return;
         }
+        if (pipeline == this.lastEnginePipeline && override == null && this.sodiumPipelineOverride
+                && this.pipeline == this.owner.device().pipelineFor(pipeline)) {
+            // Returning from adapter selection to the identical ordinary state must not erase
+            // inline uniforms supplied by the caller: there is no actual pipeline change.
+            this.sodiumPipelineOverride = false;
+            return;
+        }
         this.lastEnginePipeline = pipeline;
+        this.sodiumPipelineOverride = override != null;
         this.inlineUniforms.clear();
-        MetalRenderPipeline resolved = this.owner.device().pipelineFor(pipeline);
+        MetalRenderPipeline resolved = override != null ? override : this.owner.device().pipelineFor(pipeline);
         this.pipeline = resolved;
         // Slots differ per pipeline, so everything already set has to be handed to Metal again.
         this.dirtyUniforms.addAll(this.uniforms.keySet());
@@ -151,9 +189,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (resolved.usesPointLight() && !this.uniforms.containsKey(PointLight.UNIFORM)) {
             setUniform(PointLight.UNIFORM, this.owner.device().pointLightProofBuffer());
         }
-        if (resolved.usesDynamicLights() && !this.uniforms.containsKey(LightSnapshot.UNIFORM)) {
-            setUniform(LightSnapshot.UNIFORM, this.owner.device().dynamicLightsBuffer());
-        }
+        refreshDynamicLightBinding();
         if (resolved.usesClusteredLights()) {
             if (!this.uniforms.containsKey(LightClusterGrid.GRID_UNIFORM)) {
                 setUniform(LightClusterGrid.GRID_UNIFORM, this.owner.device().lightGridBuffer());
@@ -307,6 +343,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
         if (slice == null) {
             return;
         }
+        if (LightSnapshot.UNIFORM.equals(name)) this.ownsDynamicLightUniform = false;
         // A texel-buffer uniform arrives as a GpuBuffer but the shader reads it as a 2D integer
         // texture, so present its bytes that way rather than as a uniform buffer.
         MetalRenderPipeline.TexelBuffer texel =
@@ -341,6 +378,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
                 || bytes.remaining() > 4096) throw new IllegalArgumentException("invalid inline uniform");
         int vertex = this.pipeline.vertexBuffer(name), fragment = this.pipeline.fragmentBuffer(name);
         if (vertex < 0 && fragment < 0) throw new IllegalArgumentException("uniform absent: " + name);
+        if (LightSnapshot.UNIFORM.equals(name)) this.ownsDynamicLightUniform = false;
         this.uniforms.remove(name);
         this.dirtyUniforms.remove(name);
         MetalNative.renderPassSetUniformBytes(this.encoder, MemorySegment.ofBuffer(bytes),

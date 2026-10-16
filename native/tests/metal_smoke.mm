@@ -1172,6 +1172,25 @@ static void test_render_batching(void) {
     mmm_texture_read(target, pixels, sizeof(pixels), 16);
     check("last batched clear reaches texture", pixels[2] == 129 && pixels[3] == 255, "");
 
+    // No drawable is needed to prove the important ordering: pending GPU work must already
+    // be committed when display acquisition starts, even if the layer cannot supply a drawable.
+    void* lateCb = mmm_command_buffer_batch_create(queue);
+    void* latePass = mmm_begin_clear_pass(lateCb, target, 1, 0, 1, 1);
+    mmm_end_encoding(latePass); mmm_command_buffer_commit(lateCb);
+    id<MTLCommandBuffer> lateBuffer = (__bridge id<MTLCommandBuffer>)lateCb;
+    check("late-acquire fixture retains uncommitted render batch",
+          lateBuffer.status == MTLCommandBufferStatusNotEnqueued, "");
+    mmm_layer_acquire_display(NULL);
+    check("display acquire submits retained rendering before drawable wait",
+          lateBuffer.status >= MTLCommandBufferStatusCommitted, "");
+    // The cleanup also submits on a regression, so a failed assertion cannot hang this test.
+    mmm_command_buffer_wait(lateCb);
+    check("late-acquire submission completes successfully",
+          lateBuffer.status == MTLCommandBufferStatusCompleted, "");
+    mmm_command_buffer_release(lateCb);
+    mmm_texture_read(target, pixels, sizeof(pixels), 16);
+    check("late-acquire submission preserves rendered pixels", pixels[0] == 255 && pixels[2] == 255, "");
+
     void* cb = mmm_command_buffer_batch_create(queue);
     void* pass = mmm_begin_clear_pass(cb, target, 0, 1, 0, 1);
     unsigned value = 777;

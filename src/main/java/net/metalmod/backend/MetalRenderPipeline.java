@@ -118,16 +118,30 @@ public final class MetalRenderPipeline {
     /** Compile both stages and build the native pipeline. Returns null on any failure. */
     public static MetalRenderPipeline create(MetalDevice device, MetalShaderCompiler compiler,
                                              RenderPipeline pipeline, ShaderSource source) {
+        return create(device, compiler, pipeline, source, false);
+    }
+
+    /** Same verified Sodium region/geometry shaders, without dynamic-light varyings for an empty set. */
+    static MetalRenderPipeline createSodiumUnlit(MetalDevice device, MetalShaderCompiler compiler,
+                                                RenderPipeline pipeline, ShaderSource source) {
+        if (!net.metalmod.lighting.SodiumTerrainVariant.eligible(pipeline)) {
+            throw new IllegalArgumentException("Not a verified Sodium terrain pipeline");
+        }
+        return create(device, compiler, pipeline, source, true);
+    }
+
+    private static MetalRenderPipeline create(MetalDevice device, MetalShaderCompiler compiler,
+                                              RenderPipeline pipeline, ShaderSource source, boolean sodiumUnlit) {
         long started = MetalNative.beginPipelineCapture();
         try {
-            return createUnprofiled(device, compiler, pipeline, source);
+            return createUnprofiled(device, compiler, pipeline, source, sodiumUnlit);
         } finally {
             MetalNative.endPipelineCapture(started);
         }
     }
 
     private static MetalRenderPipeline createUnprofiled(MetalDevice device, MetalShaderCompiler compiler,
-                                                        RenderPipeline pipeline, ShaderSource source) {
+                                                        RenderPipeline pipeline, ShaderSource source, boolean sodiumUnlit) {
         try {
             // Inject the pipeline's own shader defines on top of the source the ShaderManager
             // produced. Without these, defines like PORTAL_LAYERS are undefined, and worse, a
@@ -141,12 +155,14 @@ public final class MetalRenderPipeline {
             String fragment = source.get(pipeline.getFragmentShader(), ShaderType.FRAGMENT);
             String variant = "vanilla";
             if (net.metalmod.lighting.SodiumTerrainVariant.eligible(pipeline)) {
+                boolean dynamic = device.dynamicLightsEnabled() && !sodiumUnlit;
+                boolean point = device.pointLightProofEnabled() && !sodiumUnlit;
                 var adapted = net.metalmod.lighting.SodiumTerrainVariant.adapt(vertex, fragment,
-                        device.pointLightProofEnabled(), device.dynamicLightsEnabled(), device.clusteredLightsEnabled());
+                        point, dynamic, device.clusteredLightsEnabled());
                 vertex = adapted.vertex(); fragment = adapted.fragment();
-                variant = device.dynamicLightsEnabled() ? device.clusteredLightsEnabled()
+                variant = dynamic ? device.clusteredLightsEnabled()
                         ? net.metalmod.lighting.SodiumTerrainVariant.CLUSTERED : net.metalmod.lighting.SodiumTerrainVariant.DYNAMIC
-                        : device.pointLightProofEnabled() ? net.metalmod.lighting.SodiumTerrainVariant.POINT : "sodium-region-v1";
+                        : point ? net.metalmod.lighting.SodiumTerrainVariant.POINT : "sodium-region-v1";
             } else if (device.pointLightProofEnabled() || device.dynamicLightsEnabled()) {
                 Adapted adapted = adaptForLighting(device, pipeline, vertex, fragment);
                 if (adapted != null) {

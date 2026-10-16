@@ -50,6 +50,8 @@ public final class MetalDevice implements GpuDeviceBackend {
     private final MetalTransientMemory transientMemory;
     private final MetalShaderCompiler shaderCompiler = new MetalShaderCompiler();
     private final Map<RenderPipeline, MetalRenderPipeline> pipelines = new HashMap<>();
+    private final Map<RenderPipeline, MetalRenderPipeline> sodiumUnlitPipelines = new HashMap<>();
+    private final java.util.Set<RenderPipeline> failedSodiumUnlit = new java.util.HashSet<>();
 
     // Startup-only experimental switches. The snapshot they publish is immutable, so one buffer per
     // frame can safely be shared by every draw in that frame - and only when a pipeline actually
@@ -124,6 +126,7 @@ public final class MetalDevice implements GpuDeviceBackend {
      * is for a resource reload where the shader text itself changed.
      */
     public synchronized void invalidatePipelines() {
+        clearSodiumUnlitPipelines();
         for (MetalRenderPipeline compiled : this.pipelines.values()) {
             compiled.close();
         }
@@ -1243,11 +1246,17 @@ public final class MetalDevice implements GpuDeviceBackend {
         MetalRenderPipeline compiled = MetalRenderPipeline.create(this, this.shaderCompiler, pipeline, effective);
         SHADER_COMPILER_SUMMARY.set(this.shaderCompiler.cacheSummary());
         if (compiled != null) {
+            MetalRenderPipeline unlit = this.sodiumUnlitPipelines.remove(pipeline);
+            if (unlit != null) unlit.close();
+            this.failedSodiumUnlit.remove(pipeline);
             MetalRenderPipeline previous = this.pipelines.put(pipeline, compiled);
             if (previous != null) {
                 previous.close();
             }
             this.failedPipelines.remove(pipeline);
+            // Warm both representations together, so removing a held light later does not compile
+            // a new terrain shader in the middle of gameplay.
+            warmSodiumUnlitPipeline(pipeline, effective);
             if (this.pipelineLogCount < 30) {
                 this.pipelineLogCount++;
                 System.out.println("[MetalMod] metal pipeline compiled: " + key);
@@ -1296,6 +1305,7 @@ public final class MetalDevice implements GpuDeviceBackend {
             return null;
         }
         this.pipelines.put(pipeline, compiled);
+        warmSodiumUnlitPipeline(pipeline, this.lastShaderSource);
         if (this.pipelineLogCount < 40) {
             this.pipelineLogCount++;
             System.out.println("[MetalMod] metal pipeline compiled lazily: " + pipeline.getLocation());
@@ -1303,8 +1313,45 @@ public final class MetalDevice implements GpuDeviceBackend {
         return compiled;
     }
 
+    /** Adapter-only selection. Never changes global lighting settings or the published snapshot. */
+    public synchronized MetalRenderPipeline pipelineForSodium(RenderPipeline pipeline) {
+        if (!net.metalmod.lighting.SodiumTerrainVariant.emptyLightsEnabled() || !this.dynamicLights
+                || this.pointLightProof || !LightCollector.current().lights().isEmpty()
+                || this.lastShaderSource == null || this.failedSodiumUnlit.contains(pipeline)) {
+            return pipelineFor(pipeline);
+        }
+        MetalRenderPipeline unlit = this.sodiumUnlitPipelines.get(pipeline);
+        if (unlit == null) {
+            warmSodiumUnlitPipeline(pipeline, this.lastShaderSource);
+            unlit = this.sodiumUnlitPipelines.get(pipeline);
+        }
+        return unlit != null ? unlit : pipelineFor(pipeline);
+    }
+
+    private void warmSodiumUnlitPipeline(RenderPipeline pipeline, ShaderSource source) {
+        if (!net.metalmod.lighting.SodiumTerrainVariant.emptyLightsEnabled() || !this.dynamicLights
+                || this.pointLightProof || this.sodiumUnlitPipelines.containsKey(pipeline)
+                || this.failedSodiumUnlit.contains(pipeline)
+                || !net.metalmod.lighting.SodiumTerrainVariant.eligible(pipeline)) return;
+        MetalRenderPipeline unlit = MetalRenderPipeline.createSodiumUnlit(this, this.shaderCompiler, pipeline, source);
+        if (unlit == null) {
+            this.failedSodiumUnlit.add(pipeline);
+            return; // Original lit pipeline remains the safe fallback.
+        }
+        this.sodiumUnlitPipelines.put(pipeline, unlit);
+        SHADER_COMPILER_SUMMARY.set(this.shaderCompiler.cacheSummary());
+        System.out.println("[MetalMod] Sodium empty-light terrain variant cached: " + pipeline.getLocation());
+    }
+
+    private void clearSodiumUnlitPipelines() {
+        for (MetalRenderPipeline compiled : this.sodiumUnlitPipelines.values()) compiled.close();
+        this.sodiumUnlitPipelines.clear();
+        this.failedSodiumUnlit.clear();
+    }
+
     @Override
     public void clearPipelineCache() {
+        clearSodiumUnlitPipelines();
         for (MetalRenderPipeline compiled : this.pipelines.values()) {
             compiled.close();
         }

@@ -18,6 +18,11 @@ public final class SodiumTerrainVariant {
 
     private SodiumTerrainVariant() {}
 
+    /** Empty snapshots use the verified baked-only variant; false retains the original lit shader. */
+    public static boolean emptyLightsEnabled() {
+        return Boolean.parseBoolean(System.getProperty("metalmod.sodiumEmptyLights", "true"));
+    }
+
     public static boolean eligible(RenderPipeline pipeline) {
         return Boolean.getBoolean("metalmod.sodiumAdapter")
                 && "sodium:blocks/block_layer_opaque".equals(pipeline.getVertexShader().toString())

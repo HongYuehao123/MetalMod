@@ -6,7 +6,7 @@ and MetalMod 1.0.0. The user restored separate packaging on 2026-10-05 after try
 Use the core MetalMod JAR alone for vanilla rendering. For Sodium, install **all three JARs**:
 
 1. `metalmod-1.0.0.jar` — core native Metal backend.
-2. `metalmod-sodium-0.1.1.jar` — optional compatibility adapter (including the fatal version gate).
+2. `metalmod-sodium-0.1.2.jar` — optional compatibility adapter (including the fatal version gate).
 3. Official `sodium-fabric-0.9.2+mc26.2.jar` — upstream Sodium itself.
 
 No Sodium classes are bundled into either MetalMod artifact. The core has no adapter classes,
@@ -27,13 +27,29 @@ Build the core and optional adapter against the actual tested release JAR:
 METALMOD_SODIUM_JAR=/path/to/sodium-fabric-0.9.2+mc26.2.jar ./scripts/build_mod.sh
 ```
 
-Outputs: `build/libs/metalmod-1.0.0.jar` and `build/libs/metalmod-sodium-0.1.1.jar`.
+Outputs: `build/libs/metalmod-1.0.0.jar` and `build/libs/metalmod-sodium-0.1.2.jar`.
 Nothing is installed into the normal Minecraft instance automatically.
 
 Official Sodium **0.9.3-alpha.1** is for Minecraft **26.3** (`minecraft: 26.3.x`), not 26.2.
 Supporting it requires the corresponding Minecraft/API port and verification, rather than a
 version whitelist edit. Release/artifact metadata was checked on 2026-10-05 and retained under
 `build/reports/sodium-separate-20261005/`.
+
+## Empty-light terrain specialization
+
+Adapter **0.1.2** selects a cached baked-light-only shader when dynamic lighting is enabled but
+MetalMod's published light snapshot is empty. It restores the normal lit variant before the next
+region update when sources appear. Point-light proof mode and explicit light uniforms retain the
+lit path. This changes no geometry, texture filtering, baked lighting, fog, alpha, or source data.
+Both variants warm together and are retired together on reload/lighting changes. Use
+`-Dmetalmod.sodiumEmptyLights=false` to retain the original lit shader for comparison.
+
+Update the **core and adapter together**: this adapter requires core metadata
+`metalmod:sodium_adapter_abi=2` and rejects an older core in Fabric pre-launch. This is a Java
+adapter API marker; the Phase 6 light-record ABI remains **v1** and its layouts are unchanged.
+Sodium remains **0.9.2+mc26.2**; adapter 0.1.2 is not Sodium 0.9.3 support.
+
+See [controlled rendering and GPU-completion results](../../docs/performance/sodium-empty-lights-20261016.md).
 
 The adapter intercepts Sodium's draw-context and batch factories only for an actual `MetalDevice`.
 OpenGL/Vulkan devices keep Sodium's own contexts. It preserves Sodium's compact 20-byte meshes,

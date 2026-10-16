@@ -22,7 +22,8 @@ public final class MotionBenchmark implements ClientModInitializer {
     private final String rendererComparison=System.getProperty("metalmod.rendererComparison", "");
     private final boolean nativeOnly=Boolean.getBoolean("metalmod.benchmarkNativeOnly");
     private final boolean offscreenComparison=Boolean.getBoolean("metalmod.offscreenComparison");
-    private final List<Run> requestedRuns=offscreenComparison
+    private final boolean offscreenPropertyComparison=Boolean.getBoolean("metalmod.offscreenPropertyComparison");
+    private final List<Run> requestedRuns=offscreenComparison && !offscreenPropertyComparison
         ? List.of(new Run("present01",0,false),new Run("offscreen02",0,false),new Run("offscreen03",0,false),new Run("present04",0,false))
         : !rendererComparison.isEmpty()
         ? List.of(new Run(rendererComparison+"-native",0,false),new Run(rendererComparison+"-sr25",25,false))
@@ -165,8 +166,8 @@ public final class MotionBenchmark implements ClientModInitializer {
             nextQuality(mc,now);return;
         }
         var run=runs.get(index);
-        if(offscreenComparison) OffscreenCompletion.mode(run.name().startsWith("offscreen"));
-        if(submissionCheck && rendererComparison.isEmpty() && !offscreenComparison) System.setProperty(System.getProperty("metalmod.comparisonProperty","metalmod.commandBatching"),Boolean.toString(run.name().endsWith("-on")));
+        if(offscreenComparison) OffscreenCompletion.mode(offscreenPropertyComparison || run.name().startsWith("offscreen"));
+        if(submissionCheck && rendererComparison.isEmpty() && (!offscreenComparison || offscreenPropertyComparison)) System.setProperty(System.getProperty("metalmod.comparisonProperty","metalmod.commandBatching"),Boolean.toString(run.name().endsWith("-on")));
         UpscalingSettings.chooseEnabled(run.strength()>0);UpscalingSettings.chooseStrength(run.strength());
         System.setProperty("metalmod.fxAntialias","true");mc.options.enableVsync().set(run.vsync());
         new CaptureRoutePlayer(route).arm(mc);resetMotion(now);deadline=now+20_000_000_000L;state=2;

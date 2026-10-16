@@ -341,6 +341,7 @@ MMM_API int mmm_layer_present_clear(void* layer, void* drawable,
 /// Render sourceTexture into the drawable with a built-in full-screen blit pipeline, then present
 /// it. Encoding the blit and the present in one command buffer on the present queue is what keeps
 /// them ordered. Pass a NULL source to clear instead.
+/// Flush pending rendering/uploads before waiting; does not rotate the frame/staging ring.
 MMM_API void* mmm_layer_acquire_display(void* layer);
 // Plain VSync presentation with scheduled-handler registration ordered before returning.
 MMM_API /* Presents completed drawable copies asynchronously in FIFO order at display cadence. */

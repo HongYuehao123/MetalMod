@@ -1945,8 +1945,13 @@ int mmm_layer_present_texture(void* layer,void* drawable,void* source) {
 }
 /* Additional display acquisition is NOT a real-render/staging boundary. */
 void* mmm_layer_acquire_display(void* layer) {
-    MMMCaptureTimer timer(MMM_CAPTURE_DRAWABLE_WAIT_NS);
     if(mmm_display_link_owns_layer(layer))return NULL;
+    // Hand the GPU all preceding world/UI work before nextDrawable can block. In particular,
+    // a retained ordinary render batch must not sit on the CPU throughout the display wait.
+    // This is not a frame boundary: do not advance or retire staging slots here.
+    mmm_batch_flush();
+    mmm_utility_flush();
+    MMMCaptureTimer timer(MMM_CAPTURE_DRAWABLE_WAIT_NS);
     CAMetalLayer* l=mmm_layer(layer);
     @autoreleasepool { return (__bridge_retained void*)[l nextDrawable]; }
 }

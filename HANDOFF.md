@@ -56,6 +56,46 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Empty-light Sodium terrain specialization (2026-10-16)
+
+Default-on cached baked-only terrain shader for an empty published dynamic-light snapshot; restore
+original lighting for sources or explicit light uniforms. Both variants warm together and retire
+on lighting/source/resource changes. Geometry, materials, 32-byte region block, light-record ABI v1,
+vanilla rendering and future MetalFX/RT ownership are preserved. Roll back with
+`-Dmetalmod.sodiumEmptyLights=false`. BUG-048's source-transition/override binding cases are fixed.
+
+Exact-final-artifact off/on/on/off completed-GPU ABBA at 5120×2664/RD32 gives
+**97.69→138.30 FPS (+41.57%)**, with the same completion fences and
+at most two pending frames. An earlier independent candidate gives +41.40%. This is offscreen
+rendering throughput, not displayed FPS or isolated GPU time. Ordinary presented candidate ABBA
+stays **59.20→59.28 FPS**; no gameplay FPS/latency/power benefit is claimed from that result.
+
+All five gates pass: **925 native checks, 87+9 shaders, 347 pixels (204 vanilla + 143 Sodium),
+standalone tests**. Final default-on gameplay capture and final completed-GPU ABBA exit 0 with
+zero health errors. Temporal/FG coverage pipelines compile; those gameplay features remain Off
+and were not revalidated live with this optimization. Normal-instance hashes are unchanged.
+
+Current separate adapter is **0.1.2**, still for **Sodium 0.9.2+mc26.2**. Update core+adapter
+together: new adapter requires core API marker 2 and rejects older cores before rendering.
+Sodium 0.9.3/MC26.3 remains deferred. See [results and contracts](docs/performance/sodium-empty-lights-20261016.md).
+
+## Late drawable acquisition measured (2026-10-16)
+
+An opt-in Vsync-Off experiment submits rendering before acquiring the drawable and still submits
+all frames for presentation. Fresh matched early/late/late/early captures at 5120×2664/RD32 with
+Sodium Default culling: **93.88→94.44 FPS (+0.60%)**, CPU **2.72→2.92 ms**, p99 **24.35→31.14 ms**.
+No useful performance improvement is demonstrated; `metalmod.lateDrawableAcquire` stays **Off**.
+Prioritize actual terrain/vertex/bandwidth work next. Do not infer recoverable gameplay gains from
+the older offscreen diagnostic, whose absolute baseline is not reproduced in this fresh session.
+
+The native deferred-acquire boundary flushes queued rendering/uploads before blocking, without
+rotating resource rings twice; four new ordering/pixel checks pass. All five gates pass with
+**925 native checks, 87+9 shaders, 204+66 pixels, standalone tests**; four clean live captures exit 0.
+The normal instance is unchanged. Existing FIFO/FG choice and separate 26.2/0.9.2 adapter remain.
+Probe rates are now explicitly **presentedTime events per second**, not physical refresh or input
+latency; Vsync-Off events can exceed the hosting screen's refresh rate. See
+[experiment and evidence](docs/performance/late-drawable-20261016.md).
+
 ## Separate Sodium adapter restored (2026-10-05)
 
 The user requested reverting unified packaging and adding 0.9.3 support. Packaging is restored:

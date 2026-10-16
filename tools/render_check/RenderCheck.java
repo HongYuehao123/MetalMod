@@ -306,7 +306,7 @@ public final class RenderCheck {
 
     /** Optional release-pinned Sodium fixtures: real compressed vertices, region/fade ABI and lights. */
     private static void sodiumTerrainCheck(Path jar) throws Exception {
-        String[] keys={"metalmod.sodiumAdapter","metalmod.pointLightProof","metalmod.dynamicLights","metalmod.clusteredLights"};
+        String[] keys={"metalmod.sodiumAdapter","metalmod.pointLightProof","metalmod.dynamicLights","metalmod.clusteredLights","metalmod.sodiumEmptyLights"};
         String[] old=new String[keys.length];
         for(int i=0;i<keys.length;i++) old[i]=System.getProperty(keys[i]);
         try(ZipFile zip=new ZipFile(jar.toFile())) {
@@ -319,10 +319,11 @@ public final class RenderCheck {
                         .replace("color *= v_Color;","color *= v_Color * 0.5;"),false,false,false);
                 check("Sodium rejects altered shader semantics",false,"");
             } catch(IllegalArgumentException expected) {check("Sodium rejects altered shader semantics",true,"");}
-            for(int mode=0;mode<4;mode++) {
+            for(int mode=0;mode<6;mode++) {
+                System.setProperty(keys[4],Boolean.toString(mode>=4));
                 System.setProperty(keys[1],Boolean.toString(mode==1));
                 System.setProperty(keys[2],Boolean.toString(mode>=2));
-                System.setProperty(keys[3],Boolean.toString(mode==3));
+                System.setProperty(keys[3],Boolean.toString(mode==3 || mode==5));
                 MetalDevice device=MetalDevice.create();
                 try {
                     var format=VertexFormat.builder(0).addAttribute("a_Position",GpuFormat.RG32_UINT)
@@ -369,17 +370,54 @@ public final class RenderCheck {
                         if(mode==1) putProofUniform(device,uniforms,net.metalmod.lighting.PointLight.UNIFORM,
                             new net.metalmod.lighting.PointLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,0).relativeTo(0,0,0));
                         net.metalmod.lighting.LightCollector.clear();
+                        var emptyVariant=mode>=4?device.pipelineForSodium(pipeline):null;
+                        if(mode>=4) check("Sodium empty snapshot selects baked-only variant "+mode+"/"+layer,
+                            emptyVariant!=null&&!emptyVariant.usesDynamicLights()&&compiled.usesDynamicLights(),"");
+                        if(mode>=4 && emptyVariant!=null) {
+                            check("Sodium baked-only temporal pipeline retains coverage outputs "+mode+"/"+layer,
+                                emptyVariant.handleForTemporalDepth(252).address()!=0,"");
+                            check("Sodium baked-only frame generation pipeline retains coverage outputs "+mode+"/"+layer,
+                                emptyVariant.handleForFrameGenerationDepth(252).address()!=0,"");
+                        }
                         var textures=Map.of("u_BlockTex",av,"u_LightTex",bv);
                         int[] base=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
                         check("Sodium compact/base-vertex/index-offset/region/fade baked pixels "+mode+"/"+layer,
                             base[0]==32&&base[1]==32&&base[2]==32&&base[3]==255,java.util.Arrays.toString(base));
+                        if(mode==4 && layer==0) {
+                            int[] appeared=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium source appears",new float[]{0,1,0,1});
+                            check("Sodium source appearing within a pass refreshes the owned light binding",
+                                appeared[0]>base[0]+20&&appeared[1]==32&&appeared[2]==32,java.util.Arrays.toString(appeared));
+                            net.metalmod.lighting.LightCollector.clear();
+                            var explicitSnapshot=new net.metalmod.lighting.LightSnapshot(0,0,0,
+                                java.util.List.of(new net.metalmod.lighting.PointLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1)));
+                            putProofUniform(device,uniforms,net.metalmod.lighting.LightSnapshot.UNIFORM,explicitSnapshot.encode());
+                            int[] explicit=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium explicit light",new float[]{0,1,0,1});
+                            check("Sodium explicit light uniform keeps the lit pipeline despite an empty collector",
+                                explicit[0]>base[0]+20&&explicit[1]==32&&explicit[2]==32,java.util.Arrays.toString(explicit));
+                            uniforms.remove(net.metalmod.lighting.LightSnapshot.UNIFORM).close();
+                            int[] inline=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium explicit inline light",new float[]{0,1,0,1});
+                            check("Sodium inline override survives selecting the identical ordinary lit pipeline",
+                                inline[0]==32&&inline[1]>base[1]+20&&inline[2]==32,java.util.Arrays.toString(inline));
+                            net.metalmod.lighting.LightCollector.clear();
+                        }
                         if(mode>0) {
                             if(mode==1) putProofUniform(device,uniforms,net.metalmod.lighting.PointLight.UNIFORM,
                                 new net.metalmod.lighting.PointLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1).relativeTo(0,0,0));
                             else publishLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1);
+                            if(mode>=4) check("Sodium source appearance selects original lit pipeline "+mode+"/"+layer,
+                                device.pipelineForSodium(pipeline)==compiled,"");
                             int[] lit=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
                             check("Sodium light raises red and preserves baked green/blue "+mode+"/"+layer,
                                 lit[0]>base[0]+20&&lit[1]==32&&lit[2]==32&&lit[3]==255,java.util.Arrays.toString(lit));
+                        }
+                        if(mode>=4) {
+                            net.metalmod.lighting.LightCollector.clear();
+                            check("Sodium removed sources reuse cached baked-only pipeline "+mode+"/"+layer,
+                                device.pipelineForSodium(pipeline)==emptyVariant,"");
+                            int[] restored=renderQuad(device,pipeline,vertices,indices,uniforms,textures,true,"Sodium fixture",new float[]{0,1,0,1});
+                            check("Sodium removed sources restore exact baked pixels "+mode+"/"+layer,
+                                java.util.Arrays.equals(restored,base),java.util.Arrays.toString(restored));
+                            publishLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1);
                         }
                         if(layer==2) {
                             solid(albedo,128,128,128,128);
@@ -408,6 +446,17 @@ public final class RenderCheck {
                             check("Sodium alpha cutout remains discarded "+mode,cutout[0]==0&&cutout[1]==255&&cutout[2]==0,java.util.Arrays.toString(cutout));
                         }
                         for(var b:uniforms.values())b.close();vertices.close();indices.close();av.close();bv.close();albedo.close();baked.close();
+                        if(mode>=4 && layer==2) {
+                            net.metalmod.lighting.LightCollector.clear();
+                            device.invalidatePipelines();
+                            var reloaded=device.pipelineForSodium(pipeline);
+                            check("Sodium lighting invalidation rebuilds empty-light cache "+mode,
+                                reloaded!=null&&reloaded!=emptyVariant&&!reloaded.usesDynamicLights(),"");
+                            device.clearPipelineCache();
+                            var cleared=device.pipelineForSodium(pipeline);
+                            check("Sodium resource reload rebuilds empty-light cache "+mode,
+                                cleared!=null&&cleared!=reloaded&&!cleared.usesDynamicLights(),"");
+                        }
                     }
                 } finally {device.close();net.metalmod.lighting.LightCollector.clear();}
             }
@@ -4432,8 +4481,53 @@ public final class RenderCheck {
         for (Map.Entry<String, GpuTextureView> texture : textures.entrySet()) {
             pass.bindTexture(texture.getKey(), texture.getValue(), sampler);
         }
+        if(label.startsWith("Sodium") && Boolean.getBoolean("metalmod.sodiumEmptyLights")) {
+            var backend=(net.metalmod.backend.MetalRenderPassBackend)pass;
+            backend.setSodiumPipeline(pipeline);
+            backend.setUniformBytes(net.metalmod.lighting.SodiumTerrainVariant.REGION,
+                ((MetalBuffer)uniforms.get(net.metalmod.lighting.SodiumTerrainVariant.REGION)).data().asByteBuffer());
+        }
         pass.setVertexBuffer(0, vertices.slice());
         pass.setIndexBuffer(indices, com.mojang.blaze3d.IndexType.INT);
+        if(label.startsWith("Sodium") && Boolean.getBoolean("metalmod.sodiumEmptyLights")
+                && net.metalmod.lighting.LightCollector.current().lights().isEmpty()) {
+            // Exercise unlit -> ordinary lit -> unlit on one encoder, without changing the
+            // published snapshot or touching centre-pixel depth. Each change drops inline slots.
+            var backend=(net.metalmod.backend.MetalRenderPassBackend)pass;
+            var region=((MetalBuffer)uniforms.get(net.metalmod.lighting.SodiumTerrainVariant.REGION)).data().asByteBuffer();
+            pass.setPipeline(pipeline);
+            backend.setUniformBytes(net.metalmod.lighting.SodiumTerrainVariant.REGION,region);
+            pass.enableScissor(0,0,1,1);
+            pass.drawIndexed(6,1,3,1,0);
+            pass.disableScissor();
+            backend.setSodiumPipeline(pipeline);
+            backend.setUniformBytes(net.metalmod.lighting.SodiumTerrainVariant.REGION,region);
+        }
+        if(label.equals("Sodium source appears")) {
+            // The first tiny draw uses the empty variant and cannot sample the light buffer.
+            // Publishing a source must refresh the previously bound empty buffer before the lit draw.
+            pass.enableScissor(0,0,1,1);
+            pass.drawIndexed(6,1,3,1,0);
+            pass.disableScissor();
+            publishLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1);
+            var backend=(net.metalmod.backend.MetalRenderPassBackend)pass;
+            backend.setSodiumPipeline(pipeline);
+            backend.setUniformBytes(net.metalmod.lighting.SodiumTerrainVariant.REGION,
+                ((MetalBuffer)uniforms.get(net.metalmod.lighting.SodiumTerrainVariant.REGION)).data().asByteBuffer());
+        }
+        if(label.equals("Sodium explicit inline light")) {
+            publishLight(1.0/WIDTH,-1.0/HEIGHT,1,2,1,0,0,1);
+            var backend=(net.metalmod.backend.MetalRenderPassBackend)pass;
+            backend.setSodiumPipeline(pipeline);
+            backend.setUniformBytes(net.metalmod.lighting.SodiumTerrainVariant.REGION,
+                ((MetalBuffer)uniforms.get(net.metalmod.lighting.SodiumTerrainVariant.REGION)).data().asByteBuffer());
+            var green=new net.metalmod.lighting.LightSnapshot(0,0,0,
+                java.util.List.of(new net.metalmod.lighting.PointLight(1.0/WIDTH,-1.0/HEIGHT,1,2,0,1,0,1)));
+            backend.setUniformBytes(net.metalmod.lighting.LightSnapshot.UNIFORM,green.encode());
+            backend.setSodiumPipeline(pipeline);
+            backend.setUniformBytes(net.metalmod.lighting.SodiumTerrainVariant.REGION,
+                ((MetalBuffer)uniforms.get(net.metalmod.lighting.SodiumTerrainVariant.REGION)).data().asByteBuffer());
+        }
         GpuBuffer changedUniform = null;
         if (label.equals("gui") && MetalNative.fusedDrawsEnabled()) {
             // Prime the ordinary binding path without producing pixels, then change exactly one

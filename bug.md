@@ -8,6 +8,30 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-048 — Empty-light specialization must refresh and preserve light bindings
+
+**Status:** **FIXED before enabling the new specialization (2026-10-16).**
+
+Real-pixel tests of the development candidate reproduced two errors: adding a source within a
+flat-light pass could leave the previously owned empty light buffer bound, and an explicit light
+uniform could be ignored by choosing the baked-only variant from the collector alone. Both
+incorrectly produced `[32,32,32,255]` instead of the expected red-lit pixels.
+
+The pass now records ownership and generation of automatically supplied light uniforms. The
+Sodium region selector refreshes those buffers after source publication and keeps the ordinary
+lit pipeline when a caller supplies light data. Selecting the identical compiled pipeline also
+preserves inline bindings instead of treating it as an actual state change.
+
+Regression pixels pass: source appearance and explicit buffer both produce `[128,32,32,255]`;
+an explicit inline green light survives reselecting the ordinary pipeline and produces
+`[32,128,32,255]`. Other tests cover empty/lit/empty selection, cached object reuse, same-encoder
+pipeline changes with region-byte rebinding, fog/fade/cutout/translucency, cache invalidation and
+resource reload. All **347** render assertions pass. See
+`docs/performance/sodium-empty-lights-20261016.md` and the retained failed-before/final logs under
+`build/reports/sodium-empty-lights-20261016/`.
+
+---
+
 ## BUG-047 — Sodium version error in Mixin plugin allowed unsafe startup
 
 **Status:** **FIXED during unified-JAR packaging (2026-10-05).**

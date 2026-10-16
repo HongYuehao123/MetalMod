@@ -788,3 +788,28 @@ Official 0.9.3-alpha.1 metadata requires Minecraft 26.3.x. Its DrawContext uses 
 RenderPass/RenderPipeline types and drops the region-update method; current 26.2 compatibility
 cannot be extended by changing a version whitelist. See
 [restoration and version review](docs/performance/sodium-separate-20261005.md).
+
+### Late drawable acquisition ABBA
+
+Use `--submission-benchmark --comparison-property metalmod.lateDrawableAcquire` with the normal
+fixed-camera Sodium fixture and both extra JARs; omit `--renderer-comparison` to keep property
+ABBA. Vsync/FG/SR remain Off. The experiment is disabled by default because the fresh 2026-10-16
+ABBA did not demonstrate a useful gain. See [results](docs/performance/late-drawable-20261016.md).
+Display analysis reports drawable presentation events, not physical screen refreshes or input
+latency; Vsync-Off event rates can exceed the screen's nominal Hz.
+
+### Sodium empty-light terrain specialization
+
+Current adapter is **0.1.2** and requires core adapter API marker **2**. Update both JARs together;
+this is separate from the unchanged Phase 6 light-record ABI v1. Keep official Sodium 0.9.2+mc26.2.
+`metalmod.sodiumEmptyLights` defaults true; false selects the original lit terrain path. Pixel checks
+now cover source transitions, caller-owned/inline light buffers, same-encoder region rebinding,
+opaque/cutout/translucent rendering and both cache lifecycles (347 total with the Sodium JAR).
+
+Normal presented ABBA: `--submission-benchmark --comparison-property metalmod.sodiumEmptyLights`
+with the fixed camera, both extra mods and Default-fluid-culling options. Independent completed-GPU
+ABBA adds `--offscreen-comparison --offscreen-property-comparison`; all four runs then render
+offscreen with the same two-frame bound/completion fences. Use `analyze_offscreen.py <copied-game>`
+for those marked captures. Its rates count completed work and are not displayed FPS. SR/temporal/FG
+remain Off. The original present/offscreen diagnostic remains supported without the new property flag.
+See [scope and results](docs/performance/sodium-empty-lights-20261016.md).
