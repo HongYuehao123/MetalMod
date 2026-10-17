@@ -36,6 +36,7 @@ public class StandaloneTestRunner {
         failures += net.metalmod.lighting.LightingSettingsTest.runTests();
         failures += net.metalmod.lighting.PointLightTest.runTests();
         failures += net.metalmod.lighting.LightClusterTest.runTests();
+        failures += net.metalmod.lighting.LightCollectorStatsTest.runTests();
         failures += net.metalmod.lighting.LightOcclusionTest.runTests();
         failures += net.metalmod.lighting.BlockLightIndexTest.runTests();
         failures += net.metalmod.debug.PerformanceRecordingTest.runTests();

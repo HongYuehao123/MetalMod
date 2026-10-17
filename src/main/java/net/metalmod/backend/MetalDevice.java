@@ -146,7 +146,6 @@ public final class MetalDevice implements GpuDeviceBackend {
     private int lightFrameIndex;
     private LightFrame currentLightFrame;
     private long uploadedLightGeneration = -1;
-    private boolean currentFrameClustered;
     private final Set<String> pointLightFallbacks = new HashSet<>();
     private final Set<String> lightingVariants = new HashSet<>();
     private int variantLogCount;
@@ -202,8 +201,8 @@ public final class MetalDevice implements GpuDeviceBackend {
     /**
      * Upload the published light set for this frame, once, into its ring slot.
      *
-     * <p>{@code clustered} is part of what has been uploaded: one frame can contain both a clustered
-     * pipeline and a plain light-set pipeline, and each must be given the buffers it declares.
+     * <p>When clustered lighting is enabled, the list, grid and texture are encoded together.
+     * Switching which representation a pipeline binds does not invalidate that publication.
      */
     private LightFrame publishLightFrame(boolean clustered) {
         long publishStarted = System.nanoTime();
@@ -214,9 +213,6 @@ public final class MetalDevice implements GpuDeviceBackend {
         long generation = LightCollector.generation();
         if (this.currentLightFrame == null) {
             this.currentLightFrame = claimLightFrame();
-            this.uploadedLightGeneration = -1;
-        } else if (clustered != this.currentFrameClustered && this.uploadedLightGeneration == generation) {
-            // The other representation has not been built for this generation yet.
             this.uploadedLightGeneration = -1;
         }
         if (generation != this.uploadedLightGeneration) {
@@ -240,7 +236,6 @@ public final class MetalDevice implements GpuDeviceBackend {
                 PUBLISHED_CLUSTER_STATS = this.clusterGrid.stats();
             }
             this.uploadedLightGeneration = generation;
-            this.currentFrameClustered = clustered;
         }
         return this.currentLightFrame;
     }
@@ -394,6 +389,8 @@ public final class MetalDevice implements GpuDeviceBackend {
                 this.clusteredLights ? cluster.evicted() : 0,
                 this.clusteredLights ? cluster.orphaned() : 0,
                 LightCollector.entityQueryNanos(), LightCollector.blockIndexNanos());
+        // Work belongs to this completed frame, even if the next frame skips level extraction.
+        LightCollector.resetWorkStats();
         this.frameClusterBuilds = 0;
         this.frameClusterNanos = 0L;
         this.frameUploads = 0;

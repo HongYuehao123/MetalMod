@@ -25,6 +25,53 @@ float patchError(texture2d<float> current, texture2d<float> previous, float2 p, 
     }
     return error/24.0f;
 }
+// Jitter changes which side of a sharp texel edge a raster sample hits. Pointwise colour error
+// treats that expected sampling variation as animation and feeds it back into MetalFX's history
+// weights. Bound static appearance by the two local sampling ranges instead. Changes outside
+// either range still reject; identity/pose matching below retains its pointwise patch metric.
+float3 appearanceYCoCg(float3 rgb) {
+    return float3(dot(rgb,float3(0.25f,0.5f,0.25f)),(rgb.r-rgb.b)*0.5f,
+                  (-rgb.r+2*rgb.g-rgb.b)*0.25f);
+}
+float3 appearanceRGB(float3 ycocg) {
+    return float3(ycocg.x+ycocg.y-ycocg.z,ycocg.x+ycocg.z,ycocg.x-ycocg.y-ycocg.z);
+}
+float staticAppearanceError(texture2d<float> current, texture2d<float> previous,
+        float2 p, float2 q, float2 size) {
+    const float2 offsets[5]={float2(0),float2(-1,0),float2(1,0),float2(0,-1),float2(0,1)};
+    float3 a[5],b[5],loA=INFINITY,hiA=-INFINITY,loB=INFINITY,hiB=-INFINITY;
+    float3 loYA=INFINITY,hiYA=-INFINITY,loYB=INFINITY,hiYB=-INFINITY;
+    for(uint i=0;i<5;i++) {
+        a[i]=current.sample(historySampler,(p+offsets[i])/size).rgb;
+        b[i]=previous.sample(historySampler,(q+offsets[i])/size).rgb;
+        loA=min(loA,a[i]);hiA=max(hiA,a[i]);loB=min(loB,b[i]);hiB=max(hiB,b[i]);
+        float3 ya=appearanceYCoCg(a[i]),yb=appearanceYCoCg(b[i]);
+        loYA=min(loYA,ya);hiYA=max(hiYA,ya);loYB=min(loYB,yb);hiYB=max(hiYB,yb);
+    }
+    float error=0,luminanceError=0;
+    for(uint i=0;i<5;i++) {
+        float3 da=a[i]-clamp(a[i],loB,hiB),db=b[i]-clamp(b[i],loA,hiA);
+        error+=(dot(da,da)+dot(db,db))*(i==0?4.0f:1.0f);
+        // An RGB box alone admits new colours, e.g. yellow inside a red/green box.
+        // Intersect with a linear luminance/chroma bound, evaluating error back in RGB units.
+        float3 ya=appearanceYCoCg(a[i]),yb=appearanceYCoCg(b[i]);
+        float3 dya=appearanceRGB(ya-clamp(ya,loYB,hiYB));
+        float3 dyb=appearanceRGB(yb-clamp(yb,loYA,hiYA));
+        luminanceError+=(dot(dya,dya)+dot(dyb,dyb))*(i==0?4.0f:1.0f);
+    }
+    return max(error,luminanceError)/48.0f;
+}
+// Depth is a surface identifier here: interpolating two unrelated surfaces can invent a third
+// depth and falsely reject stationary edges. Require a real positive sample in the same bilinear
+// footprint to agree. An all-sky or wholly incompatible footprint still rejects history.
+bool depthAgrees(depth2d<float> previousDepth,float2 q,float z,float tolerance) {
+    uint2 base=uint2(floor(q-0.5f));
+    for(uint y=0;y<2;y++)for(uint x=0;x<2;x++) {
+        float observed=previousDepth.read(base+uint2(x,y));
+        if(observed>0 && isfinite(observed) && abs(observed-z)<=tolerance)return true;
+    }
+    return false;
+}
 kernel void motionInputs(texture2d<float> current [[texture(0)]], depth2d<float> depth [[texture(1)]],
         texture2d<float> previous [[texture(2)]], depth2d<float> previousDepth [[texture(3)]],
         texture2d<half,access::write> motion [[texture(4)]], texture2d<half,access::write> reactive [[texture(5)]], texture2d<float> coverage [[texture(6)]],
@@ -74,12 +121,14 @@ kernel void motionInputs(texture2d<float> current [[texture(0)]], depth2d<float>
                 float2 q=oldUnjittered-params.jitter.zw;
                 if(params.meta.z!=0)vector=oldUnjittered-unjittered;
                 if(all(q>=1.5f)&&all(q<size-1.5f)&&ndc.z>0&&ndc.z<=1) {
-                    float observed=previousDepth.sample(historySampler,q/size);
                     // Reversed-Z agreement rejects newly uncovered/background and missing geometry.
                     float depthTolerance=max(0.000001f,abs(ndc.z)*0.04f);
-                    bool depthValid=observed>0 && abs(observed-ndc.z)<=depthTolerance;
+                    bool depthValid=depthAgrees(previousDepth,q,ndc.z,depthTolerance);
                     if(depthValid) {
-                        float best=patchError(current,previous,p,q,size), second=INFINITY;
+                        float best=membership==0 && params.meta.z==0
+                                && any(params.jitter.xy!=params.jitter.zw)
+                                ? staticAppearanceError(current,previous,p,q,size)
+                                : patchError(current,previous,p,q,size), second=INFINITY;
                         float2 bestOffset=0;
                         // Refine only object pixels; static terrain uses exact camera reprojection.
                         // Missing/deformed geometry falls back to reactive rejection, never zero flow.
@@ -88,8 +137,7 @@ kernel void motionInputs(texture2d<float> current [[texture(0)]], depth2d<float>
                                 if(x==0&&y==0)continue;
                                 float2 candidate=q+float2(x,y);
                                 if(any(candidate<1.5f)||any(candidate>=size-1.5f))continue;
-                                float oldDepth=previousDepth.sample(historySampler,candidate/size);
-                                if(oldDepth<=0 || abs(oldDepth-ndc.z)>depthTolerance)continue;
+                                if(!depthAgrees(previousDepth,candidate,ndc.z,depthTolerance))continue;
                                 float error=patchError(current,previous,p,candidate,size);
                                 if(error<best){second=best;best=error;bestOffset=float2(x,y);}
                                 else second=min(second,error);

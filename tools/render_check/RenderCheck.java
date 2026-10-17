@@ -1309,13 +1309,68 @@ public final class RenderCheck {
             net.metalmod.lighting.LightCollector.publish(new net.metalmod.lighting.LightSnapshot(0, 0, 0,
                     java.util.List.of(new net.metalmod.lighting.PointLight(0, 0, 1, 2, 1, 1, 1, 1))));
             int uploadsBefore = device.pendingLightUploads();
+            int buildsBefore = device.pendingClusterBuilds();
             renderQuad(device, terrain, offVertices, offIndices, offUniforms, offTextures, true,
                     "lighting on draw", new float[]{0, 1, 0, 1});
-            check("lighting on uploads the set and builds the cluster list",
-                    device.pendingLightUploads() > uploadsBefore
-                            && device.pendingClusterBuilds() > 0,
+            check("lighting on publishes exactly one list/grid/texture and one cluster build",
+                    device.pendingLightUploads() == uploadsBefore + 3
+                            && device.pendingClusterBuilds() == buildsBefore + 1,
                     "uploads=" + device.pendingLightUploads()
                             + " clusterBuilds=" + device.pendingClusterBuilds());
+
+            // Each new immutable set must refresh once, including two publications in one frame.
+            // Reopening the pass repeats all automatic list/grid/texture bindings without a refresh.
+            int[] emptyPixel = null;
+            for (int count : new int[]{0, 1, 16, 64, 0}) {
+                java.util.List<net.metalmod.lighting.PointLight> lights = new java.util.ArrayList<>();
+                for (int i = 0; i < count; i++) lights.add(new net.metalmod.lighting.PointLight(
+                        1.0 / WIDTH, -1.0 / HEIGHT, 1, 2, 1, 0, 0, 1));
+                net.metalmod.lighting.LightCollector.publish(
+                        new net.metalmod.lighting.LightSnapshot(0, 0, 0, lights));
+                uploadsBefore = device.pendingLightUploads();
+                buildsBefore = device.pendingClusterBuilds();
+                int[] pixel = renderQuad(device, terrain, offVertices, offIndices, offUniforms, offTextures,
+                        true, "publication " + count, new float[]{0, 1, 0, 1});
+                check("new " + count + "-light generation publishes once",
+                        device.pendingLightUploads() == uploadsBefore + 3
+                                && device.pendingClusterBuilds() == buildsBefore + 1,
+                        "uploads=" + device.pendingLightUploads() + " builds=" + device.pendingClusterBuilds());
+                if (count == 0) {
+                    if (emptyPixel == null) emptyPixel = pixel;
+                    else check("same-frame source removal restores baked pixels",
+                            java.util.Arrays.equals(pixel, emptyPixel), java.util.Arrays.toString(pixel));
+                } else check(count + " published lights reach the real fragment",
+                        pixel[0] > emptyPixel[0] + 20 && pixel[1] == emptyPixel[1],
+                        java.util.Arrays.toString(pixel));
+                int[] repeated = renderQuad(device, terrain, offVertices, offIndices, offUniforms, offTextures,
+                        true, "repeat publication " + count, new float[]{0, 1, 0, 1});
+                check("repeated bindings in another pass reuse " + count + "-light publication",
+                        device.pendingLightUploads() == uploadsBefore + 3
+                                && device.pendingClusterBuilds() == buildsBefore + 1
+                                && java.util.Arrays.equals(pixel, repeated), "");
+                // More than three iterations retire and reuse every fenced ring slot. The next
+                // presented frame must republish even when the immutable source set is unchanged.
+                device.endDynamicLightFrame();
+                renderQuad(device, terrain, offVertices, offIndices, offUniforms, offTextures,
+                        true, "next frame " + count, new float[]{0, 1, 0, 1});
+                check("new frame republishes " + count + " lights once after ring rotation",
+                        device.pendingLightUploads() == 3 && device.pendingClusterBuilds() == 1, "");
+            }
+            // Even a frame that skips the extractor must consume work only once. These are the
+            // same immutable stats read by F3 and mapped to the performance CSV columns.
+            net.metalmod.lighting.LightCollector.extract(null, null, 0);
+            long measuredExtract = net.metalmod.lighting.LightCollector.extractNanos();
+            device.endDynamicLightFrame();
+            check("present snapshots fresh extraction work for capture and F3",
+                    measuredExtract > 0 && MetalDevice.lightingStats().extractNanos() == measuredExtract, "");
+            device.endDynamicLightFrame();
+            MetalDevice.LightingStats idle = MetalDevice.lightingStats();
+            check("a following frame without extraction reports zero work in capture and F3",
+                    idle.extractNanos() == 0 && idle.entityQueryNanos() == 0
+                            && idle.blockIndexNanos() == 0 && idle.examined() == 0 && idle.allocated() == 0
+                            && net.metalmod.debug.LightingCaptureColumns.value(idle, 7) == 0
+                            && net.metalmod.debug.LightingCaptureColumns.value(idle, 18) == 0
+                            && net.metalmod.debug.LightingCaptureColumns.value(idle, 19) == 0, "");
             net.metalmod.lighting.LightCollector.clear();
             offVertices.close(); offIndices.close(); offSurfaceView.close(); offBakedView.close();
             offSurface.close(); offBaked.close();

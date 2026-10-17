@@ -2095,6 +2095,78 @@ static void test_temporal_prototype(void) {
     mmm_device_release(device);
 }
 
+static void test_temporal_reactive_footprints(void) {
+    printf("\n== temporal raster-footprint rejection (BUG-051) ==\n");
+    void* device=mmm_device_create();
+    if(!device){check("reactive footprint device",false,"");return;}
+    if(!mmm_fx_temporal_supported(device)){printf("[SKIP] temporal footprint unsupported\n");mmm_device_release(device);return;}
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;
+    id<MTLCommandQueue> queue=[dev newCommandQueue];
+    const int W=32,H=32;
+    auto texture=[&](MTLPixelFormat format,int w,int h){
+        auto d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
+        d.storageMode=MTLStorageModeShared;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+        return [dev newTextureWithDescriptor:d];
+    };
+    id<MTLTexture> color=texture(MTLPixelFormatRGBA8Unorm,W,H),depth=texture(MTLPixelFormatDepth32Float,W,H);
+    id<MTLTexture> output=texture(MTLPixelFormatRGBA8Unorm,W*2,H*2);
+    void* frame=mmm_fx_temporal_frame_create(device,W,H,W*2,H*2,MTLPixelFormatRGBA8Unorm);
+    check("reactive footprint frame created",frame!=NULL,"");
+    if(!frame){mmm_device_release(device);return;}
+    auto mask=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(frame,1);
+    auto coverage=(__bridge id<MTLTexture>)mmm_fx_temporal_frame_texture(frame,5);
+    std::vector<uint8_t> pixels(W*H*4,255),raster(W*H,0);
+    std::vector<float> depths(W*H,0.5f);
+    float matrices[48]={};for(int m=0;m<3;m++)for(int i=0;i<4;i++)matrices[m*16+i*5]=1;
+    auto solid=[&](int red,int green,int blue){for(int i=0;i<W*H;i++){
+        pixels[i*4]=red;pixels[i*4+1]=green;pixels[i*4+2]=blue;pixels[i*4+3]=255;}};
+    auto encode=[&](float jx,float jy,bool reset){
+        [color replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:W*4];
+        [depth replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:depths.data() bytesPerRow:W*4];
+        [coverage replaceRegion:MTLRegionMake2D(0,0,W,H) mipmapLevel:0 withBytes:raster.data() bytesPerRow:W];
+        id<MTLCommandBuffer> cb=[queue commandBuffer];
+        int rc=mmm_fx_temporal_frame_encode(frame,(__bridge void*)cb,(__bridge void*)color,(__bridge void*)depth,
+                (__bridge void*)output,matrices,NULL,0,jx,jy,reset);
+        if(rc){check("footprint encoding",false,"");return;}
+        [cb commit];[cb waitUntilCompleted];
+        if(cb.status!=MTLCommandBufferStatusCompleted)check("footprint GPU completion",false,"");
+    };
+    auto sample=[&](){uint8_t value=255;[mask getBytes:&value bytesPerRow:1 fromRegion:MTLRegionMake2D(16,16,1,1) mipmapLevel:0];return value;};
+    solid(100,100,100);
+    // Linear depth filtering invents 0.3 at the boundary between 0.5 and 0.1. The real
+    // reprojected surface is present in the same 2x2 sample footprint at depth 0.5.
+    for(int y=0;y<H;y++)for(int x=0;x<W;x++)depths[y*W+x]=x%2==0?0.5f:0.1f;
+    encode(0,0,true);std::fill(depths.begin(),depths.end(),0.5f);encode(0.25f,0,false);
+    check("matching depth in a reprojected footprint retains history",sample()==0,"");
+    // A changed sampling phase crossing a stationary two-colour edge is not an appearance change.
+    auto edge=[&](float jx){for(int y=0;y<H;y++)for(int x=0;x<W;x++){
+        uint8_t v=x+0.5f+jx<16.5f?30:220;int i=(y*W+x)*4;
+        pixels[i]=pixels[i+1]=pixels[i+2]=v;pixels[i+3]=255;}};
+    edge(-0.25f);encode(-0.25f,0,true);edge(0.25f);encode(0.25f,0,false);
+    check("stationary sharp raster edge retains temporal history across jitter",sample()==0,"");
+    // Real appearance changes outside the neighbourhood range must still reject, with jitter on.
+    solid(20,100,40);encode(-0.25f,0,true);solid(250,10,200);encode(0.25f,0,false);
+    check("changed opaque colour rejects history with jitter",sample()==255,"");
+    // A new yellow surface lies inside the separate RGB bounds of red/green, but is brighter
+    // than either and cannot be produced by their sampling mixture. Do not accept that change.
+    for(int y=0;y<H;y++)for(int x=0;x<W;x++){
+        int i=(y*W+x)*4;pixels[i]=x%2?0:255;pixels[i+1]=x%2?255:0;pixels[i+2]=0;
+    }
+    encode(0,-0.25f,true);solid(255,255,0);encode(0,0.25f,false);
+    check("new luminance inside an old RGB box still rejects history",sample()==255,"");
+    solid(100,100,100);std::fill(depths.begin(),depths.end(),0.1f);encode(-0.25f,0,true);
+    std::fill(depths.begin(),depths.end(),0.5f);encode(0.25f,0,false);
+    check("no compatible depth in footprint rejects history",sample()==255,"");
+    std::fill(depths.begin(),depths.end(),0.0f);encode(-0.25f,0,true);
+    std::fill(depths.begin(),depths.end(),0.0000001f);encode(0.25f,0,false);
+    check("zero-depth footprint never masquerades as far geometry",sample()==255,"");
+    std::fill(depths.begin(),depths.end(),0.5f);encode(-0.25f,0,true);
+    raster[16*W+16]=255;encode(0.25f,0,false);
+    check("raster transient coverage still overrides a stable footprint",sample()==255,"");
+    check("reactive footprint generation remains healthy",mmm_fx_temporal_frame_healthy(frame),"");
+    mmm_fx_temporal_frame_release(frame);mmm_device_release(device);
+}
+
 static void test_temporal_scene(void) {
     printf("\n== complete temporal scene, camera/object motion and rejection ==\n");
     void* device=mmm_device_create();
@@ -2222,6 +2294,7 @@ int main(void) {
         test_temporal_prototype();
         test_temporal_color();
         test_temporal_scene();
+        test_temporal_reactive_footprints();
         test_clear_and_readback();
         test_resources();
         test_mip_filter();

@@ -15,10 +15,13 @@ def compare(roots):
         for key in ('jar_sha256','anchor','source_world','static_camera','gpu_stage_timing','native_only','render_distance'):
             if result['comparison'].get(key) != metadata.get(key):
                 raise ValueError('mismatched comparison field: '+key)
+        if result['comparison'].get('compare_temporal',False) != metadata.get('compare_temporal',False):
+            raise ValueError('mismatched comparison field: compare_temporal')
     if metadata.get('gpu_stage_timing'):
         raise ValueError('instrumented throughput comparison')
     changes = {}
     modes=[('native',0)] if metadata.get('native_only') else [('native',0),('sr25',1)]
+    if metadata.get('compare_temporal'): modes.append(('temporal25',2))
     for mode, effective in modes:
         groups = {}
         dimensions = set()

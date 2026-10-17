@@ -19,6 +19,8 @@ def compare(internal, external):
                     'anchor','source_world','static_camera','gpu_stage_timing','native_only','render_distance'):
             if metadata.get(key)!=baseline.get(key):
                 raise ValueError('mismatched comparison field: '+key)
+        if metadata.get('compare_temporal',False)!=baseline.get('compare_temporal',False):
+            raise ValueError('mismatched comparison field: compare_temporal')
         screens=re.findall(r'hosting screen=(.*?) displayID=(\d+) maximumHz=(\d+).*?builtIn=(\d+)',
                            (roots[name]/'console.log').read_text())
         if not screens or len(set(screens))!=1 or any(s[3]!=('1' if name=='internal' else '0') for s in screens):
@@ -27,6 +29,7 @@ def compare(internal, external):
                                       maximum_hz=int(screens[0][2]),snapshots=len(screens))
     modes={}
     selected=[('native',0)] if baseline.get('native_only') else [('native',0),('sr25',1)]
+    if baseline.get('compare_temporal'): selected.append(('temporal25',2))
     for mode,effective in selected:
         runs={name:next(r for r in result['runs'] if r['name'].endswith('-'+mode))
               for name,result in results.items()}
@@ -37,7 +40,7 @@ def compare(internal, external):
         modes[mode]={'internal':runs['internal'],'external':runs['external'],
                      'rendered_fps_change_percent':100*(runs['internal']['fps']/runs['external']['fps']-1)}
     return {'launches':results,'modes':modes,'scope':
-            'One fresh-JVM launch per display, two clean 30s native/spatial captures each. '
+            'One fresh-JVM launch per display, clean 30s captures for each declared reconstruction mode. '
             'Same actual output resolution and production artifacts; exploratory pair, not ABBA. '
             'Hosting-screen snapshots are outside captures. Display timestamp coverage must be '
             'reported separately; rendered FPS is not input latency or displayed update rate.'}

@@ -49,7 +49,7 @@ Always build the mod using:
 4. **Packages mod JAR:** Copies `fabric.mod.json`, `metalmod.mixins.json`, and embeds `libmetalmod.dylib` under `natives/` into `build/libs/metalmod-1.0.0.jar`.
 5. **Compiles standalone tests:** Compiles `src/test/java` (skipping JUnit-only files) into `build/test-classes`.
 
-Optional separate adapter: set `METALMOD_SODIUM_JAR` to the actual Sodium 0.9.2+mc26.2 release JAR to also build `build/libs/metalmod-sodium-0.1.2.jar`. Core-only builds/runs require no Sodium. Official 0.9.3-alpha.1 targets Minecraft 26.3; current compatibility remains scoped to 26.2 until a port is authorized and verified.
+Optional separate adapter: set `METALMOD_SODIUM_JAR` to the actual Sodium 0.9.2+mc26.2 release JAR to also build `build/libs/metalmod-sodium-0.1.3.jar`. Core-only builds/runs require no Sodium. Official 0.9.3-alpha.1 targets Minecraft 26.3; current compatibility remains scoped to 26.2 until a port is authorized and verified.
 
 #### Environment Configuration:
 - `JAVA_HOME`: Default is `/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home` (JDK 22+ required).

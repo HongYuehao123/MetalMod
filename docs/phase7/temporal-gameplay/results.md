@@ -96,3 +96,13 @@ The prior diagnostic JAR is backed up in the verification directory. Config chec
 Metal On, SR On/strength 50, dynamic lights On, clustered Off, UMA On, previous temporal switch On.
 That saved switch now enables actual temporal reconstruction after restarting Minecraft.
 No test add-on is installed in the normal instance. [Installation record](installation.json).
+
+
+## BUG-051 sampling-footprint follow-up — 2026-10-16
+
+The adapter projection correction plus native real-depth/neighbourhood appearance checks now pass
+Sodium strengths 25/33/50 and repeated static images under the unchanged calibrated gate. Native
+934 checks, both lifecycle suites, FG restart and capped-30 midpoint delivery pass. This closes
+the reported stationary-image defect, not all Phase 7 release-quality/performance selection.
+See [the complete report](../../performance/bug051-temporal-footprints-20261016.md), including the
+variable increase in isolated native GPU-batch cost and remaining animation/long-soak limits.

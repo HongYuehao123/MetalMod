@@ -8,6 +8,156 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-051 — Sodium temporal output retains coherent stationary jitter
+
+**Status:** **FIXED for the reported stationary-image failure (2026-10-16).** Adapter 0.1.3
+corrects the missing scene jitter; the native footprint fix removes the remaining false history
+rejection. Final Sodium strength-50 repeats pass at **0.1564/0.1786** and **0.1467/0.1720 px**;
+the **0.25-pixel** threshold is unchanged.
+
+**Original audit observations:**
+
+The original audited core + adapter 0.1.2 passes all 385 gameplay contract checks, but the independent
+16-image static registration gate fails: **1.4100 px X / 1.4447 px Y** coherent output range,
+versus a **0.25 px** limit. Matched vanilla passes at **0.1962 / 0.1719 px**. Both sequences have
+all 16 jitter samples and successful one-pixel calibration controls. Audited output is 3842×2162,
+temporal strength 50, RD8, in the copied cherry-foliage scene. API/resource health remains clean.
+
+The measured Sodium displacement closely tracks scene jitter (linear fit R² 0.990/0.996 for
+X/Y). This points to a projection/reconstruction alignment mismatch to investigate; it is not a
+proven root cause. The adapter's shader transformation does not itself establish that Sodium's
+own projection producer consumes the scene jitter applied at the vanilla projection-buffer hook.
+Trace that producer/binding and validate the actual rendered displacement before changing signs.
+
+Reanalyzing an untouched copy of the **October 4** Sodium static sequence also fails at
+**1.5005 / 1.4329 px**, so the evidence predates the October 16 empty-light specialization.
+Do not attribute this to that optimization or conflate it with the unverified vanilla foliage
+symptom in BUG-036. This also exposes a test gap: the 385-check runtime verdict does not include
+the separate image-analysis verdict.
+
+Reproduce with `tools/temporal_validation/run.py` and both official Sodium 0.9.2+mc26.2 and
+adapter 0.1.2 in a fresh copy, then run `tools/temporal_validation/analyze.py` on `validation/`.
+Retain native/vanilla controls and require a passing calibrated static-image gate before accepting
+Sodium temporal visual stability. No production fix or threshold change was made.
+
+**Initial projection-only follow-up (historical):** Sodium's `GameRendererMixin` copies the unjittered projection before the core's
+vanilla upload redirect applies jitter. Its separate terrain globals therefore missed the scene
+sample. The adapter now applies the same active `TemporalJitterProof` sample when Sodium reads its
+cached projection. The source matrix, motion/culling inputs and native hand/UI stay unjittered.
+A live hook and raw raster readbacks confirm the corrected sampling; stationary motion is within
+0.000103 scene pixels. Initial corrected captures still fail at **0.3410/0.3325** and
+**0.2717/0.2788** output pixels, versus the original **1.4100/1.4447**. This is a partial fix.
+The final corrected artifact passes **489 runtime checks** but still fails the image gate at
+**0.2597/0.2666 px**. An experimental filtered appearance comparison also failed (**0.3100/0.2943**) and was reverted;
+no native history-policy or image-threshold change remains. The launcher now requires image PASS
+as well as runtime PASS. See the [fix report](docs/performance/bugfix-lighting-sodium-temporal-20261016.md)
+for final-artifact results and remaining limits.
+
+**Residual fix and closure:** linear interpolation of previous depth invented values between
+surfaces; pointwise appearance differences mistook jittered texel-edge sampling for animation.
+The native evaluator now requires a real compatible positive depth in the bilinear footprint and
+uses RGB plus luminance/chroma neighbourhood bounds for jittered static appearance. Pose matching
+retains its pointwise metric. Incompatible/all-zero depth, changed opaque colour/luminance,
+unknown objects and explicit transient/changed-light rejection remain covered by regressions.
+The two original edge regressions fail before the native change and pass after it.
+
+All five offline gates pass (**934 native checks**). Sodium strengths 25/33/50 and vanilla controls
+pass calibrated images; Sodium/vanilla lifecycle suites pass **477/476** checks, FG **186 + 15**
+restart checks, and capped-30 delivery **22** checks plus native/spatial midpoint-pixel analysis.
+Every final launcher exits 0; all **688 checked normal-instance files remain unchanged**.
+The isolated complete-GPU-batch diagnostic averages **+10.0%** across eight variable runs
+(+4.1% median-of-run-medians); this cost is documented for optimization, not a gameplay FPS claim.
+General Phase 7 release quality and BUG-036 remain separate. See the
+[complete footprint fix report](docs/performance/bug051-temporal-footprints-20261016.md).
+
+![Final static ROI, one frame; full-cycle metrics are in the report](docs/bugs/bug-051-fixed-static-roi.png)
+
+Evidence: [whole-mod report](docs/performance/whole-mod-test-20261016.md),
+`build/reports/whole-mod-20261016/temporal-{sodium,vanilla}/validation/image-analysis.json`,
+`historical-sodium-static/`, and `jitter-correlation-{sodium,vanilla}.json` under that report root.
+
+## BUG-050 — Suppressed lighting repeats stale extraction timing in captures
+
+**Status:** **FIXED (2026-10-16). Suppressed frames reset work independently of publication;
+present consumes work once.**
+
+In the pre-fix path, when extraction is suppressed (for example in spectator mode) and the source
+snapshot is already empty, `LevelExtractorLightMixin` neither extracts nor clears the collector. The previous
+extraction/query/index times remain available and `MetalDevice.endDynamicLightFrame()` copies them
+into subsequent frame records. Calling `LightCollector.clear()` does reset the query/index split,
+but leaves total extraction time, examined-source count and allocated-record count unchanged.
+
+Reproduction: in a disposable world, allow an active extraction with no nearby dynamic sources,
+then enter spectator mode and capture successive frames without changing levels. Source count stays
+zero while no new extraction occurs; the timing fields can retain the last active extraction's
+values. Also cover disabling lighting after an empty extraction and suppression after a nonempty
+snapshot, since those take different clearing paths.
+
+Retained current-day evidence: all **1,763** rows of
+`build/reports/sodium-empty-lights-20261016/default-final/debug/metalmod/20261016-162554-904-Metal-8011078320655016255/frames.csv`
+have zero published lights and repeat exactly **774041 ns extraction / 62750 ns entity query /
+523125 ns block index**. This pattern supports the identified code path; an isolated transition
+regression has not yet been run. The fresh whole-mod offline verification passes but does not
+exercise this transition. Frame intervals and unrelated native timing columns remain usable;
+these lighting durations must not be interpreted as work executed on every captured frame.
+
+Original follow-up: reset work statistics independently of source publication, or expose an extraction/frame
+marker and label last-extraction values explicitly. Require zero attributable work on suppressed
+frames, fresh values after re-enabling, and no unnecessary GPU uploads. Source references and scope:
+[whole-mod improvement audit](docs/performance/whole-mod-improvements-20261016.md#p2--suppressed-lighting-can-report-stale-extraction-cost).
+
+**Fix verification:** `LightCollector.suppress()` resets total/query/index time and examined/
+allocated counts even when the source set is already empty. Only nonempty removal increments the
+publication generation. `clear()` resets the complete work sample, and `endDynamicLightFrame()`
+consumes it after publishing the immutable F3/capture stats so frames without extraction cannot
+repeat it. Standalone transition regressions and real-device present-boundary checks pass;
+expanded Sodium lifecycle checks plus a **113-check** focused vanilla run confirm disabled
+renderer uploads/builds are zero and settled suppression does not advance empty publication
+generations. Mapped CSV evidence is recorded in the
+[fix report](docs/performance/bugfix-lighting-sodium-temporal-20261016.md).
+
+---
+
+## BUG-049 — Clustered-light bindings upload the same snapshot twice
+
+**Status:** **FIXED (2026-10-16). Binding a different representation no longer invalidates a
+generation that already contains the list, grid and texture.**
+
+Before the fix, `MetalDevice.publishLightFrame(boolean clustered)` invalidates the upload when a caller switches
+between flat and clustered representations, even though each upload already builds the list, grid
+and texture whenever clustered lighting is enabled. A clustered pipeline's automatic binding path
+requests the list (`false`) and then the grid (`true`), causing duplicate work for one unchanged
+publication generation. Further alternating requests can repeat it in the same frame.
+
+Reproduction: enable dynamic and clustered lighting, publish one snapshot, then draw one ordinary
+clustered terrain quad with automatic light bindings. The existing render-check live-toggle case
+does exactly this. Fresh verification at source `2ca817453f23095bc540119d0b13231537abbfe7` reports:
+
+```text
+PASS  lighting on uploads the set and builds the cluster list  uploads=6 clusterBuilds=2
+```
+
+Evidence: `build/reports/verification-20261016-170210-106603/05-render-check.log:439`.
+All five offline gates still pass because this assertion only requires positive counts. The
+expected unique work is three logical uploads and one cluster build for the unchanged generation.
+This establishes redundant CPU encoding/allocation and texture-upload work, not a visual defect
+or a measured gameplay FPS penalty; default flat lighting does not take this clustered path.
+
+Follow-up: track representation readiness per generation or avoid invalidating data already built.
+Add exact-count regression checks for repeated list/grid/texture requests and pipeline/pass changes,
+then require one additional publication with correct pixels when sources change within a frame.
+Preserve explicit caller bindings and fenced resource lifetimes. See
+[source references and test scope](docs/performance/whole-mod-improvements-20261016.md#p2--duplicate-clustered-light-publication).
+
+**Fix verification:** the automatic clustered draw now measures **3 uploads / 1 grid build**.
+Exact-delta checks pass for 0/1/16/64 lights, repeated automatic list/grid/texture bindings in new
+passes, same-frame source changes and removal, and fenced ring rotation/reuse. Existing explicit
+binding and Sodium pixel checks remain required. This removes duplicated encoding/upload work;
+a gameplay FPS improvement has not been measured. See the
+[fix report](docs/performance/bugfix-lighting-sodium-temporal-20261016.md).
+
+---
+
 ## BUG-048 — Empty-light specialization must refresh and preserve light bindings
 
 **Status:** **FIXED before enabling the new specialization (2026-10-16).**
@@ -103,6 +253,11 @@ Reproducer: `JAVA_TOOL_OPTIONS=-Dmetalmod.bufferOffsets=true python3 tools/tempo
 All outcomes are retained in `build/reports/buffer-offsets/reverification/fg-{initial,control,final}/`.
 See [verification and selection limits](docs/performance/buffer-offsets.md). The passing retry
 establishes scoped compatibility; it does not close broader experimental FG delivery risks.
+
+Fresh 2026-10-16 sweep: the first Sodium FG run recorded startup visibility bits=10/focus=false
+and exited before a terminal result. The separate unchanged retry passed **186+15 restart**
+checks; vanilla also passed **186+15**. No new order/cadence root cause or fix is established.
+Evidence: [whole-mod report](docs/performance/whole-mod-test-20261016.md).
 
 ## BUG-044 — Official Sodium selects OpenGL for the native Metal backend
 
@@ -349,6 +504,13 @@ and presentation backpressure exceeding the refresh budget, but does not prove t
 cost, one expensive temporal kernel, or the driver's internal scheduling cause. Unlike BUG-031,
 frame/command-creation correlation is only 0.181 here. No rendering fix or commit was made.
 Evidence: [manual results and raw CSVs](docs/phase7/manual-motion-check/results.md).
+
+Fresh 2026-10-16 feature capture: at **5120×2664/RD32, VSync Off, static surface, strength25**,
+vanilla native/spatial25/temporal25 measured **59.73/59.60/49.79 FPS**; temporal p95 was
+**34.53 ms**. Sodium measured **59.13/59.46/56.70 FPS**, temporal p95 **31.39 ms**.
+These are separate matched feature samples, not the original FIFO/strength50 reproduction.
+No timed compilation, scaler failure/recovery, or focus loss was accepted. Total GPU time and
+precise kernel attribution remain unmeasured. See [whole-mod report](docs/performance/whole-mod-test-20261016.md).
 
 ## BUG-034 — Empty indexed jobs abort Metal validation after chunk replacement
 

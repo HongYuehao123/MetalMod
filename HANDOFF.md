@@ -56,6 +56,72 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## BUG-051 stationary temporal instability fixed (2026-10-16)
+
+The core native fix replaces interpolated cross-surface depth checks with real footprint samples,
+and bounds static jittered appearance in RGB plus luminance/chroma space. No image/depth threshold,
+jitter amplitude/sign, public ABI or default was relaxed. Native regressions reproduce the two
+old false-rejection cases and preserve real appearance/depth/transient rejection.
+
+All five offline gates pass (**934 native checks**). Sodium strengths 25/33/50 pass the calibrated
+0.25-pixel image gate; two final strength-50 runs measure **0.1564/0.1786** and **0.1467/0.1720 px**.
+Vanilla controls pass at ~0.035/0.016. Lifecycle checks pass **477 Sodium / 476 vanilla**, FG
+**186 + 15** saved-On restart, and capped-30 delivery **22** plus both midpoint-pixel analyses.
+Core + adapter 0.1.3/API 3 remain separate; update the core to obtain the native fix. All **688**
+checked normal-instance files remain unchanged. BUG-036/general release quality remain separate.
+
+Cost follow-up: eight isolated complete-GPU-batch runs average **5.199 → 5.722 ms (+10.0%)**,
+with substantial run variance; median-of-run-medians rises 4.1%. This is not game FPS. A matching-
+patch fast path is a measured optimization candidate, not an implemented performance claim.
+See [fix, regressions, artifacts and GPU data](docs/performance/bug051-temporal-footprints-20261016.md).
+
+## Lighting fixes and Sodium projection correction (2026-10-16)
+
+Historical partial-fix status; superseded by the footprint fix above.
+
+**BUG-049/050 fixed:** clustered publication is **3 uploads / 1 build** instead of 6/2, with
+exact-count/pixel regressions for 0/1/16/64 lights, repeated bindings, same-frame changes/removal
+and fenced ring reuse. Suppression resets work without republishing empty sets; present consumes
+extraction statistics once so later idle frames do not repeat them in F3/captures.
+
+**BUG-051 remains open:** adapter **0.1.3**, core adapter API **3**, applies scene jitter to Sodium's
+separate cached projection. The large coherent error is corrected, but repeated static-image
+captures still exceed 0.25 px: the final full-suite sequence measures **0.2597 X / 0.2666 Y**. An unsuccessful native appearance
+filter was reverted. The launcher now enforces image acceptance independently of runtime PASS.
+All offline gates and **368** combined core/Sodium render checks pass. Full vanilla/Sodium runtime
+suites pass **476/489** checks; corrected focused vanilla lighting passes **113**, and Sodium FG
+passes **186 + 15** restart checks. Vanilla images pass; Sodium images still fail. All **688**
+checked normal-instance files are unchanged. Final gameplay results and remaining limits: [fix report](docs/performance/bugfix-lighting-sodium-temporal-20261016.md).
+The original sweep below describes the earlier artifact and is retained as historical evidence.
+
+## Whole-mod test sweep (2026-10-16)
+
+All five offline gates pass on core `2ca8174` + optional adapter 0.1.2: **925 native checks,
+87+9 shaders (also lighting-enabled), 347 pixels, standalone tests**. Both vanilla and Sodium
+pass **385 temporal runtime checks** and **186 FG + 15 saved-On restart checks**. The first
+Sodium FG launch ended early after a visibility failure; its clean retry is retained separately.
+
+**Visual acceptance is not green:** independent static-image analysis finds **BUG-051**:
+Sodium temporal output moves **1.4100/1.4447 px** across jitter phases (0.25-pixel limit),
+while vanilla passes at **0.1962/0.1719 px**. The archived October 4 Sodium sequence also fails,
+so this predates empty-light specialization. Projection/reconstruction root cause remains
+unverified; runtime contract checks alone missed the image failure.
+
+**22 clean 30-second captures / 38,652 frames** cover native/spatial, surface/underground,
+16/32 chunks, plus matched temporal25 features at 5120×2664 on the external 60-Hz display.
+Dense RD32 native ABBA measures vanilla→Sodium **58.02→59.10 FPS**, CPU **11.773→3.616 ms
+(69.28% lower)**. Temporal25 surface captures measure **49.79 FPS vanilla / 56.70 FPS Sodium**,
+with worse p95 than their native controls. These are rendered rates, not input latency or
+physical refresh; spectator fixtures have no active dynamic sources.
+
+Two standalone CPU-lighting runs cover 0/1/16/64 sources and synthetic saturation. Confirmed
+improvements are registered as **BUG-049** (duplicate clustered builds/uploads) and **BUG-050**
+(stale suppressed-light timing); the audit also prioritizes allocation/packing and temporal
+cost. No production source/default/install changes. All **688** hashed normal-instance files
+remain unchanged. Full tables, p95/p99, images, commands, failures and limits:
+[whole-mod report](docs/performance/whole-mod-test-20261016.md),
+[improvement audit](docs/performance/whole-mod-improvements-20261016.md).
+
 ## Empty-light Sodium terrain specialization (2026-10-16)
 
 Default-on cached baked-only terrain shader for an empty published dynamic-light snapshot; restore
@@ -75,7 +141,7 @@ standalone tests**. Final default-on gameplay capture and final completed-GPU AB
 zero health errors. Temporal/FG coverage pipelines compile; those gameplay features remain Off
 and were not revalidated live with this optimization. Normal-instance hashes are unchanged.
 
-Current separate adapter is **0.1.2**, still for **Sodium 0.9.2+mc26.2**. Update core+adapter
+The empty-light change introduced separate adapter **0.1.2**, still for **Sodium 0.9.2+mc26.2**. Update core+adapter
 together: new adapter requires core API marker 2 and rejects older cores before rendering.
 Sodium 0.9.3/MC26.3 remains deferred. See [results and contracts](docs/performance/sodium-empty-lights-20261016.md).
 

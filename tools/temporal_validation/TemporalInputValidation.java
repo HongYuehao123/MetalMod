@@ -22,7 +22,7 @@ import java.util.*;
 /** Disposable copied-world validation only; not packaged in the production mod. */
 public final class TemporalInputValidation implements ClientModInitializer {
     private record Stage(String name,boolean on,int strength,boolean jitter,String screen,int guiScale,boolean resize) {}
-    private final List<Stage> stages=List.of(
+    private final List<Stage> allStages=List.of(
             new Stage("01-native-off",false,25,false,"world",2,false),
             new Stage("02-native-100",true,0,true,"world",2,false),
             new Stage("03-spatial-25",true,25,false,"world",2,false),
@@ -46,6 +46,13 @@ public final class TemporalInputValidation implements ClientModInitializer {
             new Stage("10ha-lights-off",true,50,true,"world",2,false),
             new Stage("10hc-lights-on",true,50,true,"world",2,false),
             new Stage("10hb-moving-block",true,50,true,"world",2,false),
+            new Stage("10hd-spectator-nonempty",true,50,true,"world",2,false),
+            new Stage("10he-spectator-empty",true,50,true,"world",2,false),
+            new Stage("10hf-active-empty",true,50,true,"world",2,false),
+            new Stage("10hg-disabled-empty",true,50,true,"world",2,false),
+            new Stage("10hh-active-empty",true,50,true,"world",2,false),
+            new Stage("10hi-spectator-empty",true,50,true,"world",2,false),
+            new Stage("10hj-restore-lights",true,50,true,"world",2,false),
             new Stage("10i-generation-stress",true,50,true,"world",2,false),
             new Stage("10j-minimize",true,50,true,"world",2,false),
             new Stage("10k-nether",true,50,true,"world",2,false),
@@ -63,6 +70,19 @@ public final class TemporalInputValidation implements ClientModInitializer {
             new Stage("10-proof-disabled",true,25,false,"world",2,false),
             new Stage("11-return-native",false,25,true,"world",2,false),
             new Stage("12-menu-only",true,25,true,"menu",2,false));
+    private final List<Stage> selectedStages = Boolean.getBoolean("metalmod.validationLightingOnly")
+            ? allStages.stream().filter(stage -> stage.name().equals("01-native-off")
+                    || stage.name().matches("10h[d-j]-.*")).toList()
+            : Boolean.getBoolean("metalmod.validationStaticOnly")
+            ? allStages.stream().filter(stage -> List.of("01-native-off", "07-jitter-resize",
+                    "10a-static-sequence", "10n-native-quality", "10o-spatial-quality", "10p-temporal-quality")
+                    .contains(stage.name())).toList() : allStages;
+    private final List<Stage> stages = selectedStages.stream()
+            .filter(stage -> !Boolean.getBoolean("metalmod.validationSkipTiming") || !stage.name().contains("benchmark"))
+            .map(stage -> Boolean.getBoolean("metalmod.validationStaticOnly")
+                    && (stage.name().equals("10a-static-sequence") || stage.name().matches("10[nop]-.*"))
+                    ? new Stage(stage.name(),stage.on(),Integer.getInteger("metalmod.validationStaticStrength",50),
+                        stage.jitter(),stage.screen(),stage.guiScale(),stage.resize()) : stage).toList();
     private static TemporalInputValidation active;
     private Path root;
     private Field coordinatorField,targetField;
@@ -78,6 +98,8 @@ public final class TemporalInputValidation implements ClientModInitializer {
     private int unfocused;
     private boolean qualityFrozen;
     private int maxLightRegions;
+    private int staleWorkFrames;
+    private long settledLightGeneration;
     private java.lang.invoke.MethodHandle activate;
     private long start,stageStart,depthStart,frames;
     private boolean done;
@@ -135,6 +157,12 @@ public final class TemporalInputValidation implements ClientModInitializer {
         stageFrames++;frames++;
         maxLightRegions=Math.max(maxLightRegions,TemporalSceneMotion.stats().lightRegions());
         var name=stages.get(index).name();
+        if (stageFrames == 61) settledLightGeneration = net.metalmod.lighting.LightCollector.generation();
+        if (name.matches("10h[d-j]-.*") && stageFrames > 60 && expectsNoLightWork(name)) {
+            var cost = MetalDevice.lightingStats();
+            if (cost.extractNanos()!=0 || cost.entityQueryNanos()!=0 || cost.blockIndexNanos()!=0
+                    || cost.examined()!=0 || cost.allocated()!=0) staleWorkFrames++;
+        }
         if(name.equals("10b-camera-motion")) {
             mc.player.setYRot(mc.player.getYRot()+0.12f);
             mc.player.setYHeadRot(mc.player.getYRot());
@@ -185,6 +213,29 @@ public final class TemporalInputValidation implements ClientModInitializer {
         }
         if(stage.name().equals("10ha-lights-off"))
             check("dynamic lighting off while temporal stays active",!net.metalmod.lighting.LightingSettings.active(),"");
+        if (stage.name().matches("10h[d-j]-.*")) {
+            var cost = MetalDevice.lightingStats();
+            boolean idle = expectsNoLightWork(stage.name());
+            check(stage.name()+" work attribution", idle
+                    ? staleWorkFrames==0 && cost.extractNanos()==0 && cost.entityQueryNanos()==0
+                        && cost.blockIndexNanos()==0 && cost.examined()==0 && cost.allocated()==0
+                    : cost.extractNanos()>0, cost+" staleFrames="+staleWorkFrames);
+            boolean empty = !stage.name().equals("10hj-restore-lights");
+            check(stage.name()+" source state", empty ? cost.published()==0 : cost.published()>0,
+                    "published="+cost.published());
+            check(stage.name()+" renderer setting",cost.enabled()!=stage.name().contains("disabled"),
+                    "rendererEnabled="+cost.enabled());
+            if (idle) check(stage.name()+" no redundant empty publication",
+                    net.metalmod.lighting.LightCollector.generation()==settledLightGeneration, "");
+            if (stage.name().contains("disabled")) check(stage.name()+" no renderer light work",
+                    cost.uploads()==0 && cost.clusterBuilds()==0, cost.toString());
+            Path csv = root.resolve("lighting-transitions.csv");
+            if (!Files.exists(csv)) Files.writeString(csv,"stage,"+String.join(",",net.metalmod.debug.LightingCaptureColumns.NAMES)+"\n");
+            StringBuilder row = new StringBuilder(stage.name());
+            for(int i=0;i<net.metalmod.debug.LightingCaptureColumns.NAMES.size();i++)
+                row.append(',').append(net.metalmod.debug.LightingCaptureColumns.value(cost,i));
+            Files.writeString(csv,row+"\n",StandardOpenOption.APPEND);
+        }
         if(stage.name().equals("10hb-moving-block"))
             check("live moving-block pose producer",Diagnostics.hasHook("Temporal.movingBlock"),TemporalSceneMotion.stats().toString());
         if(stage.name().matches("10[c-gj-m]-.*"))
@@ -266,7 +317,7 @@ public final class TemporalInputValidation implements ClientModInitializer {
             button.onPress(null);
             check(stage.name()+" temporal button callback",TemporalJitterProof.requested()==stage.jitter(),"");
         }
-        stageFrames=sequenceFrames=maxLightRegions=0;restored=false;qualityFrozen=false;intervals.clear();gpuTimes.clear();lastBenchmarkTime=0;unfocused=0;
+        stageFrames=sequenceFrames=maxLightRegions=staleWorkFrames=0;restored=false;qualityFrozen=false;intervals.clear();gpuTimes.clear();lastBenchmarkTime=0;unfocused=0;
         mc.options.framerateLimit().set(stage.name().contains("benchmark")?260:60);
         if(stage.name().contains("benchmark")){activateApplication();GLFW.glfwFocusWindow(mc.getWindow().handle());}stageStart=now;depthStart=coordinator(mc).temporalDepthCopies();
         resetsStart=TemporalSceneMotion.stats().resets();generationsStart=MetalFxCoordinator.stats().generation();
@@ -282,8 +333,21 @@ public final class TemporalInputValidation implements ClientModInitializer {
                 command(mc,"tp @s ~ ~ ~ 0 15");
                 command(mc,"weather rain");command(mc,"time set midnight");
             }
-            case "10ha-lights-off" -> net.metalmod.lighting.LightingSettings.chooseDynamicLights(false);
-            case "10hc-lights-on" -> net.metalmod.lighting.LightingSettings.chooseDynamicLights(true);
+            case "10ha-lights-off" -> chooseLights(false);
+            case "10hc-lights-on" -> chooseLights(true);
+            case "10hd-spectator-nonempty", "10he-spectator-empty", "10hi-spectator-empty" -> command(mc,"gamemode spectator");
+            case "10hf-active-empty" -> {
+                command(mc,"gamemode creative");
+                command(mc,"item replace entity @s weapon.mainhand with minecraft:air");
+                command(mc,"item replace entity @s weapon.offhand with minecraft:air");
+                command(mc,"kill @e[type=minecraft:item]");
+            }
+            case "10hg-disabled-empty" -> chooseLights(false);
+            case "10hh-active-empty" -> chooseLights(true);
+            case "10hj-restore-lights" -> {
+                command(mc,"gamemode creative");
+                command(mc,"item replace entity @s weapon.mainhand with minecraft:torch");
+            }
             case "10hb-moving-block" -> {
                 piston=mc.player.blockPosition().offset(0,0,4);
                 int px=piston.getX(),py=piston.getY(),pz=piston.getZ();
@@ -346,6 +410,23 @@ public final class TemporalInputValidation implements ClientModInitializer {
             image.writeToFile(root.resolve(name+".png"));
             Files.writeString(root.resolve(name+".txt"),"time_ns="+System.nanoTime()+"\n"+TemporalJitterProof.stats()
                     +"\n"+TemporalSceneMotion.stats()+"\nroi="+x+","+y+","+width+","+height+"\n");
+            if (name.startsWith("10a-static-sequence-") && Boolean.getBoolean("metalmod.validationDumpTemporalInputs")) {
+                var fx = coordinator(mc);
+                var field = MetalFxCoordinator.class.getDeclaredField("temporalFrame");field.setAccessible(true);
+                var frame = (MemorySegment)field.get(fx);
+                var stats = MetalFxCoordinator.stats();
+                int sx=x*stats.sceneWidth()/target.width, sy=y*stats.sceneHeight()/target.height;
+                int sw=width*stats.sceneWidth()/target.width, sh=height*stats.sceneHeight()/target.height;
+                for (int role : new int[]{0,1,2,3,5}) {
+                    int stride = role==1||role==5 ? 1 : role==3 ? 8 : 4;
+                    var data=arena.allocate((long)sw*sh*stride,8);
+                    int status=MetalNative.textureReadRegion(MetalNative.temporalFrameTexture(frame,role),
+                            0,0,sx,sy,sw,sh,data,data.byteSize(),(long)sw*stride);
+                    if(status!=0)throw new IllegalStateException("temporal diagnostic role "+role+" status "+status);
+                    Files.write(root.resolve(name+"-input-"+role+".bin"),data.toArray(ValueLayout.JAVA_BYTE));
+                }
+                Files.writeString(root.resolve(name+"-inputs.txt"),"scene_roi="+sx+","+sy+","+sw+","+sh+"\n");
+            }
         }
     }
     private void capture(Minecraft mc,String name) throws Exception {
@@ -370,12 +451,25 @@ public final class TemporalInputValidation implements ClientModInitializer {
         Files.writeString(root.resolve("checks.txt"),line+"\n",StandardOpenOption.CREATE,StandardOpenOption.APPEND);
     }
     private void finish(Minecraft mc) throws Exception {
-        for (var hook:List.of("TemporalProof.worldProjection","Temporal.worldReconstruction","Temporal.entityIdentity","Temporal.movingBlock"))
+        for (var hook: Boolean.getBoolean("metalmod.validationStaticOnly") || Boolean.getBoolean("metalmod.validationLightingOnly")
+                ? List.of("TemporalProof.worldProjection","Temporal.worldReconstruction")
+                : List.of("TemporalProof.worldProjection","Temporal.worldReconstruction","Temporal.entityIdentity","Temporal.movingBlock"))
             check("live hook "+hook,Diagnostics.hasHook(hook),"");
+        if (Boolean.getBoolean("metalmod.sodiumAdapter"))
+            check("live Sodium scene projection",Diagnostics.hasHook("TemporalProof.rendererProjection"),"");
         done=true;
         Files.writeString(root.resolve("result.txt"),(failures==0?"PASS":"FAIL")+"\nchecks="+checks.size()
                 +" failures="+failures+" frames="+frames+"\n");
         System.out.println("[TemporalInputValidation] COMPLETE failures="+failures+" frames="+frames);
         mc.stop();
+    }
+
+    private static boolean expectsNoLightWork(String stage) {
+        return stage.contains("spectator") || stage.contains("disabled");
+    }
+
+    private static void chooseLights(boolean enabled) {
+        net.metalmod.lighting.LightingSettings.chooseDynamicLights(enabled);
+        MetalDevice.requestLightingRebuild();
     }
 }

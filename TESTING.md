@@ -800,7 +800,7 @@ latency; Vsync-Off event rates can exceed the screen's nominal Hz.
 
 ### Sodium empty-light terrain specialization
 
-Current adapter is **0.1.2** and requires core adapter API marker **2**. Update both JARs together;
+Current adapter is **0.1.3** and requires core adapter API marker **3**. Update both JARs together;
 this is separate from the unchanged Phase 6 light-record ABI v1. Keep official Sodium 0.9.2+mc26.2.
 `metalmod.sodiumEmptyLights` defaults true; false selects the original lit terrain path. Pixel checks
 now cover source transitions, caller-owned/inline light buffers, same-encoder region rebinding,
@@ -813,3 +813,52 @@ offscreen with the same two-frame bound/completion fences. Use `analyze_offscree
 for those marked captures. Its rates count completed work and are not displayed FPS. SR/temporal/FG
 remain Off. The original present/offscreen diagnostic remains supported without the new property flag.
 See [scope and results](docs/performance/sodium-empty-lights-20261016.md).
+
+### Whole-mod scenario sweep (2026-10-16)
+
+See [the whole-mod test report](docs/performance/whole-mod-test-20261016.md) for fresh
+core/adapter gates, vanilla/Sodium temporal and FG lifecycle checks, matched surface/dense
+16/32-chunk performance, temporal feature comparisons, and explicit coverage limits.
+[Historical baselines](docs/performance/whole-mod-historical-baselines-20261016.md) stay separate.
+[The improvement audit](docs/performance/whole-mod-improvements-20261016.md) records confirmed
+BUG-049/050/051 and proposed follow-up experiments. The independent Sodium temporal image
+gate fails despite runtime contract checks passing; retain both verdicts.
+
+Use `--compare-temporal` with the fixed-renderer submission benchmark to capture native,
+spatial25, and temporal25 at the same camera/output; it does not enable frame generation.
+The optional `tools/lighting_benchmark/run.sh` checks and measures CPU light preparation at
+0/1/16/64 lights. Run it separately from game measurements; it does not measure gameplay FPS
+or GPU lighting cost. See each tool's README for methodology and commands.
+
+
+## Lighting publication and Sodium projection regressions (2026-10-16)
+
+Run the five canonical gates and the optional Sodium pixel inventory against the actual upstream
+0.9.2+mc26.2 JAR. The clustered toggle check now requires exactly three uploads/one build per new
+publication and checks repeated bindings, 0/1/16/64 lights, same-frame changes/removal and ring reuse.
+Standalone and real-device checks require suppressed/idle frames to report zero extraction work
+without gratuitously publishing empty source generations.
+
+The gameplay launcher now enforces its calibrated static-image gate. `--static-check` selects a
+short projection/image reproduction; `--lighting-check` selects the seven suppression/re-enable
+transitions and writes capture-mapped CSV. Run full vanilla/Sodium lifecycle tests and FG saved-On
+restart for integration changes. Adapter 0.1.3 requires core adapter API 3. BUG-049/050 are fixed;
+BUG-051 remains open after its missing-jitter projection correction because residual movement
+still exceeds the unchanged 0.25-pixel limit. See the
+[fix report](docs/performance/bugfix-lighting-sodium-temporal-20261016.md) for final-artifact evidence.
+
+
+## BUG-051 footprint regressions (2026-10-16)
+
+The native suite now has 934 checks, including real-depth-footprint agreement, sharp static
+raster edges across jitter, genuine opaque colour/luminance changes, incompatible/all-zero depth,
+and transient overrides. The two original false-rejection cases must fail on the pre-fix native
+implementation and pass on the current one. All final image runs keep the calibrated 0.25-pixel
+limit. Use `--static-check --static-strength 25` (or 33/50) for a strength sweep and `--skip-timing`
+for lifecycle verification without the six benchmark-only stages. Full defaults are unchanged.
+
+BUG-051 is fixed for its reported stationary-image failure; the earlier projection-only follow-up
+was incomplete. See the [completed footprint verification](docs/performance/bug051-temporal-footprints-20261016.md)
+for final artifact identity, repeats, FG delivery/restart, native regressions and the variable GPU
+cost increase. Do not apply historical gameplay FPS to the new artifacts or call this overall
+Phase 7 release-quality acceptance.

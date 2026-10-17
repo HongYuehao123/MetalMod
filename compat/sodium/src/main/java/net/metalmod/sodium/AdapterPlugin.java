@@ -37,7 +37,7 @@ public final class AdapterPlugin implements IMixinConfigPlugin {
     // No target names are registered when Sodium is absent. In particular, neither the factories
     // nor their Sodium subclasses are resolved or initialized on the vanilla path.
     @Override public List<String> getMixins() {
-        return this.enabled ? List.of("DrawContextMixin", "MultiDrawBatchMixin") : List.of();
+        return this.enabled ? List.of("DrawContextMixin", "MultiDrawBatchMixin", "TemporalProjectionMixin") : List.of();
     }
     @Override public void preApply(String target, ClassNode node, String mixin, IMixinInfo info) {}
     @Override public void postApply(String target, ClassNode node, String mixin, IMixinInfo info) {}

@@ -56,10 +56,20 @@ public final class TemporalPrototypeTest {
             require(hand==extracted && !world.equals(hand) && extracted.equals(new Matrix4f()), "world samples jitter; native hand stays unjittered without camera mutation");
             var firstProof = TemporalJitterProof.stats();
             require(firstProof.worldUploads()==1 && firstProof.handUploads()==0, "proof upload diagnostics");
+            // Sodium has its own projection upload: it must sample the same phase, without
+            // advancing it or modifying the unjittered camera used for motion/culling (BUG-051).
+            for (int i = 0; i < 16; i++) {
+                if (i > 0) proof.begin(true, 1, 120, 80);
+                Matrix4f vanilla = proof.projection(extracted, false);
+                Matrix4f terrain = proof.sceneProjection((org.joml.Matrix4fc) extracted);
+                require(vanilla.equals(terrain), "terrain and vanilla share jitter phase " + i);
+                require(extracted.equals(new Matrix4f()), "terrain source remains unjittered " + i);
+            }
             proof.end();
             require(proof.projection(extracted, false)==extracted, "GUI boundary bypasses jitter");
+            require(proof.sceneProjection(extracted)==extracted, "optional renderer bypasses after scene boundary");
             proof.begin(true, 1, 120, 80);
-            require(TemporalJitterProof.stats().frames()==2, "steady generation advances jitter");
+            require(TemporalJitterProof.stats().frames()==17, "steady generation advances jitter");
             proof.begin(true, 2, 120, 80);
             require(TemporalJitterProof.stats().frames()==1 && TemporalJitterProof.stats().jitterY()==firstProof.jitterY(),
                     "generation transition restarts jitter");

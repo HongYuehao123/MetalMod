@@ -32,6 +32,6 @@
     "modmenu": "*"
   },
   "custom": {
-    "metalmod:sodium_adapter_abi": 2
+    "metalmod:sodium_adapter_abi": 3
   }
 }

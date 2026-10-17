@@ -15,7 +15,16 @@ parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--extra-mod", type=Path, action="append", default=[], help="Additional mod JARs for this disposable copy only")
 parser.add_argument("--frame-generation", action="store_true")
 parser.add_argument("--delivery-check", action="store_true")
+parser.add_argument("--static-check", action="store_true", help="Only native/resize/static temporal image regression, without the full lifecycle suite")
+parser.add_argument("--lighting-check", action="store_true", help="Only native and lighting suppression/re-enable transitions")
+parser.add_argument("--dump-temporal-inputs", action="store_true", help="Save static ROI motion/reactivity inputs for projection diagnostics")
+parser.add_argument("--skip-timing", action="store_true", help="Omit benchmark-only stages while retaining lifecycle and image checks")
+parser.add_argument("--static-strength", type=int, choices=[25,33,50], default=50, help="Strength for --static-check image sequences")
 args = parser.parse_args()
+if sum([args.static_check, args.lighting_check, args.frame_generation]) > 1:
+    parser.error("--static-check, --lighting-check and --frame-generation are mutually exclusive")
+if args.static_strength != 50 and not args.static_check:
+    parser.error("--static-strength requires --static-check")
 for extra in args.extra_mod:
     if not extra.is_file() or extra.suffix != ".jar":
         parser.error("--extra-mod must be an existing JAR")
@@ -61,6 +70,11 @@ for extra in args.extra_mod:
         parser.error("extra mod name conflicts with copied mods: " + extra.name)
     shutil.copy2(extra, destination)
 command = [str(jdk / "bin/java"), "-XstartOnFirstThread", "-Xmx4G", "--enable-native-access=ALL-UNNAMED",
+           "-Dmetalmod.validationStaticOnly="+str(args.static_check).lower(),
+           "-Dmetalmod.validationLightingOnly="+str(args.lighting_check).lower(),
+           "-Dmetalmod.validationSkipTiming="+str(args.skip_timing).lower(),
+           "-Dmetalmod.validationStaticStrength="+str(args.static_strength),
+           "-Dmetalmod.validationDumpTemporalInputs="+str(args.dump_temporal_inputs).lower(),
            "-Dmetalmod.frameGenerationDeliveryValidation="+str(args.delivery_check).lower(), "-Dmetalmod.metalBackend=true", "-Dmetalmod.frameGenerationForce=true", "-Dmetalmod.dynamicLights=true", "-Dmetalmod.temporalInputValidation="+str(not args.frame_generation).lower(), "-Dmetalmod.frameGenerationValidation="+str(args.frame_generation).lower(), "-Dmetalmod.validationWorld="+args.world, "-Dmetalmod.validationFocus="+str(repo/"build/temporal-validation/focus.dylib"), "-cp", classpath,
            "net.fabricmc.loader.impl.launch.knot.KnotClient", "--username", "MetalFXTest",
            "--uuid", "00000000000000000000000000000001", "--accessToken", "0", "--version", "26.2",
@@ -83,6 +97,18 @@ result = output / "validation/result.txt"
 print(result.read_text() if result.exists() else f"No result; client exit={code}")
 if not (code == 0 and result.exists() and result.read_text().startswith("PASS\n")):
     raise SystemExit(1)
+
+if not args.frame_generation and not args.lighting_check:
+    # Contract/lifecycle PASS is insufficient: BUG-051 passed every runtime assertion while
+    # retaining coherent stationary jitter. Keep both results and fail the launcher on either.
+    image_gate = subprocess.run([sys.executable, str(repo / "tools/temporal_validation/analyze.py"),
+                                 str(output / "validation")])
+    (output / "validation/launcher-result.json").write_text(json.dumps(
+        {"runtime_pass": True, "image_gate_exit_code": image_gate.returncode,
+         "pass": image_gate.returncode == 0}, indent=2) + "\n")
+    if image_gate.returncode != 0:
+        raise SystemExit("Temporal image verification failed; runtime PASS is retained separately. "
+                         "Inspect validation/image-analysis.json and console output.")
 
 if args.delivery_check:
     subprocess.run([sys.executable,str(repo / "tools/temporal_validation/analyze_delivery.py"),str(output / "validation")],check=True)

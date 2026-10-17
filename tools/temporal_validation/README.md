@@ -28,7 +28,8 @@ native bypass, resource/pipeline/binding health and a one-native-pixel output ma
 are vertically restored after vanilla screenshot readback to show the native output orientation.
 
 The client exits automatically. Read `validation/result.txt`, `checks.txt`, stage `.txt` records,
-screenshots and `console.log` under the output directory. Exit 0 requires a PASS result. Additional stages check history reset after fast turns, teleporting, FOV changes, render gaps and
+screenshots and `console.log` under the output directory. Exit 0 requires both runtime PASS and
+the calibrated image gate (Python Pillow/NumPy required). Additional stages check history reset after fast turns, teleporting, FOV changes, render gaps and
 resource reload; repeated generation retirement is stressed. Static, camera-motion and rainy
 entity/item scenes save 16-image sequences. Native GPU smoke separately asserts camera/object
 vectors, pose refinement, rejection and static jitter stability. Screenshots/readbacks affect frame
@@ -85,3 +86,39 @@ only after checking and pressing the real active button. The test-only GUI mixin
 in normal MetalMod. Menu return explicitly restores the owned test window so a hidden title
 screen cannot be mistaken for an interpolation failure. Visible test windows may join Spaces
 alongside the normal full-screen client; no user window preferences are changed.
+
+## Independent image gate is required for visual acceptance
+
+The runtime `PASS` result checks contracts and lifecycle. The launcher now automatically runs
+`analyze.py` and fails on an image failure, retaining both results. Earlier launchers did not:
+the 2026-10-16
+whole-mod sweep found current Sodium passing all 385 runtime checks while failing calibrated
+static registration at 1.4100/1.4447 output pixels (limit 0.25); matched vanilla passes.
+This is tracked as **BUG-051**, and the archived October 4 Sodium sequence also fails.
+Do not treat runtime PASS alone as Sodium temporal visual acceptance. See
+[the whole-mod report](../../docs/performance/whole-mod-test-20261016.md).
+
+For a short projection/image regression use `--static-check`; this runs native, odd resize,
+static temporal and matched native/spatial/temporal quality sequences, omitting the full lifecycle
+and timing sweep. Add `--dump-temporal-inputs` to retain static ROI motion (RG16Float), reactive
+and coverage (R8Unorm), depth (Float32), and linear colour (RGBA16Float) binary data plus ROI sizes.
+These are test-only readbacks. Full runs also exercise empty/nonempty spectator suppression,
+disabled lighting and re-enabling, writing `lighting-transitions.csv` through the actual capture
+column mapping and checking fresh/zero extraction work.
+
+Use `--lighting-check` for only native and the seven lighting transitions (no image gate or
+timing sweep). This is mutually exclusive with `--static-check` and `--frame-generation`.
+The fixture requests the same renderer rebuild as the real settings UI and asserts disabled
+backend uploads/builds are zero as well as zero extraction work and no repeated empty publication.
+
+For lifecycle verification without benchmark-only stages, add `--skip-timing`; the image,
+quality, UI, motion, source transitions, resize, world travel, reload and reconnect stages remain.
+For a static-only strength sweep, use `--static-check --static-strength 25` (also 33 or 50).
+The default is 50 and lifecycle defaults are unchanged. These test controls never alter the
+production configuration defaults or image threshold.
+
+
+The native sampling-footprint correction now closes BUG-051 for the reported stationary-image
+case: strength 25/33/50 and repeated full-lifecycle static sequences pass the unchanged 0.25-pixel
+limit. The earlier projection-only follow-up was incomplete. See the
+[completed verification and GPU-cost limits](../../docs/performance/bug051-temporal-footprints-20261016.md).

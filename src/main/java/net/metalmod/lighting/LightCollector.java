@@ -40,10 +40,29 @@ public final class LightCollector {
         HELD.clear();
         dropped = 0;
         occluded = 0;
-        // The split is cleared with the set it belongs to: a suppressed or detached frame must not
-        // report the previous frame's breakdown, which is the one reading that would look plausible.
+        resetWorkStats();
+    }
+
+    /** Clear per-frame work independently of source publication and GPU upload generations. */
+    public static void resetWorkStats() {
+        examined = 0;
+        allocated = 0;
+        extractNanos = 0L;
         entityQueryNanos = 0L;
         blockIndexNanos = 0L;
+    }
+
+    /** A disabled/spectator extraction boundary does no work and publishes removal only once. */
+    public static void suppress() {
+        if (!current.lights().isEmpty()) {
+            clear();
+        } else {
+            resetWorkStats();
+            environment = EnvironmentRecord.UNKNOWN;
+            HELD.clear();
+            dropped = 0;
+            occluded = 0;
+        }
     }
 
     /** Publish a complete extraction result. Used by the extractor and offscreen rendering checks. */
@@ -101,7 +120,7 @@ public final class LightCollector {
      */
     public static int allocated() { return allocated; }
 
-    /** Wall time spent in {@link #extract} for the last frame, in nanoseconds. */
+    /** Wall time spent in {@link #extract} since the last presented-frame snapshot, in nanoseconds. */
     public static long extractNanos() { return extractNanos; }
 
     /**
@@ -127,6 +146,7 @@ public final class LightCollector {
      * offline checks drive.
      */
     public static void extract(ClientLevel level, Camera camera, float partialTick) {
+        resetWorkStats();
         long startedAt = System.nanoTime();
         try {
             extractInternal(level, camera, partialTick);

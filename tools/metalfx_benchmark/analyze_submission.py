@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize accepted native ABBA / spatial A/B captures from --submission-benchmark."""
+"""Summarize clean submission ABBA or fixed-renderer native/spatial/temporal captures."""
 import argparse
 import csv
 import json
@@ -13,6 +13,10 @@ def summarize(root):
     comparison = json.loads(comparison_path.read_text()) if comparison_path.exists() else {}
     if comparison.get('diagnostic_only') or comparison.get('gpu_stage_timing'):
         raise ValueError('diagnostic GPU profiling is not a throughput comparison')
+    if comparison.get('compare_temporal') and (not comparison.get('renderer') or comparison.get('native_only')
+                                               or comparison.get('offscreen_comparison')
+                                               or comparison.get('offscreen_property_comparison')):
+        raise ValueError('temporal comparison requires ordinary fixed-renderer native/spatial/temporal captures')
     runs = []
     excluded = []
     for line in (root / 'benchmark-index.tsv').read_text().splitlines():
@@ -37,6 +41,14 @@ def summarize(root):
             raise ValueError(f'compilation/census/MetalFX failure or recovery in capture: {capture}')
         if comparison.get('native_only') and any(int(row['sr_requested'])!=0 or int(row['sr_encodes'])!=0 for row in rows):
             raise ValueError(f'upscaling active in native-only performance capture: {capture}')
+        if comparison.get('compare_temporal'):
+            strength = 0 if name == comparison['renderer']+'-native' else 25
+            # Production telemetry uses code 2 for both temporal and plain recovery. Active
+            # strength/request state plus zero failures/recoveries distinguish this temporal run.
+            if any(int(row['sr_requested']) != (1 if strength else 0)
+                   or int(row['sr_strength']) != strength
+                   or (strength and int(row['sr_reason']) != 0) for row in rows):
+                raise ValueError(f'incorrect requested strength or inactive reconstruction: {capture}')
         if len({(row['width'], row['height']) for row in rows}) != 1:
             raise ValueError(f'resized during capture: {capture}')
         cpu_path = capture / 'render-thread-cpu.json'
@@ -56,11 +68,13 @@ def summarize(root):
                          max_sr_failures=max(int(row['sr_failures']) for row in rows)))
     if comparison.get('renderer'):
         renderer = comparison['renderer']
-        expected={renderer+'-native'} if comparison.get('native_only') else {renderer+'-native', renderer+'-sr25'}
-        if excluded or {run['name'] for run in runs} != expected or len(runs) != len(expected):
-            raise ValueError('renderer comparison requires its declared clean native/spatial captures')
-        if comparison.get('native_only') and any(run['effective_modes']!=[0] for run in runs):
-            raise ValueError('native-only capture used reconstruction')
+        expected={renderer+'-native':0}
+        if not comparison.get('native_only'): expected[renderer+'-sr25']=1
+        if comparison.get('compare_temporal'): expected[renderer+'-temporal25']=2
+        if excluded or {run['name'] for run in runs} != set(expected) or len(runs) != len(expected):
+            raise ValueError('renderer comparison requires its declared clean native/spatial/temporal captures')
+        if any(run['effective_modes'] != [expected[run['name']]] for run in runs):
+            raise ValueError('renderer capture used an incorrect effective reconstruction mode')
         return dict(comparison=comparison, runs=runs)
     expected_count=4 if comparison.get('native_only') else 6
     if len(runs) + len(excluded) != expected_count:

@@ -109,6 +109,16 @@ remain available on demand for consumers that declare them. Caller-supplied ligh
 the original lit path and take precedence over automatic bindings. Cache invalidation and resource
 reload retire both terrain representations. No geometry/material data is culled or removed.
 
-The core metadata marker `metalmod:sodium_adapter_abi=2` describes the separate adapter's Java
-selection API, not a change to these light-record byte layouts. Runtime temporal/FG features stay
+The current core metadata marker `metalmod:sodium_adapter_abi=3` covers the separate adapter's Java
+selection and scene-projection APIs (adapter 0.1.3), not a change to these light-record byte layouts. Runtime temporal/FG features stay
 Off in the performance captures; derived coverage pipelines are separately compile-checked.
+
+## Publication and telemetry fixes (2026-10-16)
+
+List/grid/data bindings reuse one publication generation: clustered mode encodes all three
+representations together, so alternating binding requests must not rebuild them (BUG-049).
+A changed snapshot within the frame still refreshes; the existing fenced ring lifetime remains.
+Suppression removes a nonempty set once, then resets extraction work without republishing empty
+sets. Present snapshots and consumes work for F3/capture, preventing stale time/allocation counts
+on later frames without extraction (BUG-050). Source layouts, coordinates and light-record ABI v1
+remain unchanged. See [fix evidence](performance/bugfix-lighting-sodium-temporal-20261016.md).

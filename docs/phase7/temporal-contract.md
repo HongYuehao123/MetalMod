@@ -31,6 +31,13 @@ conservative two-scene-pixel margin. First-person hands and screen effects rende
 resolution without jitter, after world reconstruction and the native hand-depth clear. They do
 not need fabricated world motion vectors. HUD and menus also stay native.
 
+Optional renderers that upload separate projection uniforms must consume that same scene sample.
+Adapter 0.1.3 applies it to Sodium 0.9.2's cached projection getter, whose unjittered copy is taken
+before vanilla's buffer upload is redirected. `TemporalProjectionAccess` shares the active sample
+without advancing its sequence or mutating camera/culling matrices; it bypasses after the scene
+interval closes. The native footprint correction then fixes the residual BUG-051 image failure;
+strength 25/33/50 and repeated static sequences pass. Broader release acceptance remains pending.
+
 ## Camera and independent objects
 
 `TemporalSceneMotion` captures the actual composed world projection and extracted render-time
@@ -59,8 +66,13 @@ as reactive. MAX blending preserves rejection through transparent layers; opaque
 overwrite occluded coverage. These variants compile for all 87 vanilla and 9 post pipelines,
 including dynamic/clustered lighting variants. The public Blaze3D attachment contract stays intact.
 
-Sky/no depth, disocclusion, changed opaque/animated appearance and uncertain object matches add
-compute rejection. Changed/new/removed dynamic-light influence volumes also reject history using
+Sky/no depth, disocclusion, changed appearance outside local sampling ranges and uncertain object
+matches add compute rejection. Previous depth must agree through a real finite positive sample
+in its 2×2 footprint; interpolating unrelated surface depths can falsely reject static edges.
+Jittered static appearance uses current/previous five-sample RGB and linear luminance/chroma ranges;
+the larger unexplained error in RGB units feeds the existing confidence thresholds. No-jitter and
+independent-object pose matching retain pointwise patch error. In-range appearance uses MetalFX's
+normal history evaluation, not forced reuse; explicit transient coverage still overrides it. Changed/new/removed dynamic-light influence volumes also reject history using
 Phase 6's existing published snapshot; its ABI and publication cadence are unchanged. Conservative
 rejection can reduce temporal detail in transient regions; it avoids using unsupported history.
 
@@ -93,5 +105,14 @@ Pixel checks distinguish preserved world depth from cleared native hand depth an
 recovery, denial and repeated preset/resize transitions. The separate gameplay add-on checks
 actual temporal/spatial/native modes, live UI persistence, hand/HUD composition, depth, turns,
 teleport, FOV, render gaps, reload and generation stress, and saves image sequences.
+The launcher also runs the calibrated static-image analyzer and returns failure if it fails,
+even when every runtime assertion passes. Use `--static-check` for a shorter image regression.
 
 Current evidence and acceptance limits: [gameplay results](temporal-gameplay/results.md).
+
+
+BUG-051 regression/evidence: [temporal sampling footprints](../performance/bug051-temporal-footprints-20261016.md).
+The native fixture checks false edge rejection alongside genuine colour/luminance changes,
+incompatible depth, missing previous depth and transient coverage. The calibrated image gate is
+unchanged. Complete-GPU-batch cost increased in a variable eight-run diagnostic and remains an
+optimization item; image acceptance is not a claim of overall FPS improvement.

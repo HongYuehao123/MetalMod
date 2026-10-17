@@ -50,7 +50,7 @@ ray tracing are the core later phases. **GLSL shaderpacks are optional future co
 ## Optional separate Sodium adapter
 
 The core `metalmod-1.0.0.jar` runs without Sodium. To use the experimental native integration,
-install **three JARs**: MetalMod, the optional `metalmod-sodium-0.1.2.jar`, and official Fabric
+install **three JARs**: MetalMod, the optional `metalmod-sodium-0.1.3.jar`, and official Fabric
 Sodium **0.9.2+mc26.2**. The adapter selects native factories only for Metal; other devices retain
 Sodium's own contexts. Restart after changing installed mods. Recommended Sodium Fluid Culling
 is **Default** to preserve the observed cave lava surfaces.

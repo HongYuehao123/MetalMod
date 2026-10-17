@@ -27,7 +27,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /** Verified 26.2 boundary: scene + outline + post chain, reconstruct, then native GUI. */
 @Mixin(GameRenderer.class)
-public abstract class SuperResolutionMixin {
+public abstract class SuperResolutionMixin implements net.metalmod.upscaling.TemporalProjectionAccess {
     @Shadow @Final @Mutable private RenderTarget mainRenderTarget;
     @Shadow @Final private Minecraft minecraft;
     @Shadow @Final private net.minecraft.client.renderer.state.GameRenderState gameRenderState;
@@ -43,6 +43,12 @@ public abstract class SuperResolutionMixin {
     @Unique private DeltaTracker metalmod$delta;
     @Unique private Vec3 metalmod$camera;
     @Unique private boolean metalmod$rgss;
+
+    @Override public org.joml.Matrix4fc metalmod$sceneProjection(org.joml.Matrix4fc projection) {
+        if (!this.metalmod$fx.jitterProof().active()) return projection;
+        Diagnostics.hook("TemporalProof.rendererProjection");
+        return this.metalmod$fx.jitterProof().sceneProjection(projection);
+    }
 
     @Redirect(method = "renderLevel", at = @At(value = "INVOKE", target =
             "Lnet/minecraft/client/renderer/ProjectionMatrixBuffer;getBuffer(Lorg/joml/Matrix4f;)Lcom/mojang/blaze3d/buffers/GpuBufferSlice;"), require = 1)

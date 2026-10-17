@@ -35,6 +35,7 @@ p.add_argument('--renderer-comparison',choices=['vanilla','sodium'],help='Fixed 
 p.add_argument('--offscreen-property-comparison',action='store_true',help='Compare the chosen property with all four runs offscreen and GPU-completion bounded')
 p.add_argument('--offscreen-comparison',action='store_true',help='Test-only bounded present/offscreen ABBA; real GPU completion fences in both modes')
 p.add_argument('--compare-spatial',action='store_true',help='Explicit feature experiment: also capture spatial MetalFX; default performance tests are native only')
+p.add_argument('--compare-temporal',action='store_true',help='Fixed-renderer feature comparison: native, spatial25 and temporal25, 30 seconds each')
 p.add_argument('--render-distance',type=int,default=32,help='Record explicit terrain distance; 32 is the existing stress fixture, mcopt footage uses 16')
 p.add_argument('--extra-mod',type=pathlib.Path,action='append',default=[])
 p.add_argument('--sodium-options',type=pathlib.Path,help='Copied-instance Sodium options override for controlled parity diagnostics')
@@ -45,6 +46,10 @@ a=p.parse_args()
 if a.window_width<=0 or a.window_height<=0:p.error('positive window dimensions required')
 if not 2<=a.render_distance<=32:p.error('render distance must be 2..32')
 if a.compare_spatial and not a.submission_benchmark:p.error('spatial comparison requires --submission-benchmark')
+if a.compare_temporal and (not a.submission_benchmark or not a.renderer_comparison):
+    p.error('temporal comparison requires --submission-benchmark and --renderer-comparison')
+if a.compare_temporal and (a.offscreen_comparison or a.offscreen_property_comparison or a.diagnostic_only or a.gpu_stage_timing):
+    p.error('temporal comparison cannot use offscreen or diagnostic modes')
 if a.offscreen_property_comparison and (not a.offscreen_comparison or a.renderer_comparison):
     p.error('offscreen property comparison requires --offscreen-comparison and no fixed renderer selection')
 if a.offscreen_comparison and (not a.submission_benchmark or a.compare_spatial or a.diagnostic_only or a.gpu_stage_timing):
@@ -98,8 +103,8 @@ if a.submission_benchmark:
         'diagnostic_only':a.diagnostic_only,'static_camera':a.static_camera,'anchor':dict(position=pos,rotation=rot),
         'source_world':str(source),'anchor_route':str(a.anchor_route) if a.anchor_route else None,
         'anchor_waypoint':a.anchor_waypoint,'gpu_stage_timing':a.gpu_stage_timing,
-        'renderer':a.renderer_comparison,'native_only':not a.compare_spatial,'render_distance':a.render_distance,
-        'vsync':False,'fps_limit':'unlimited (vanilla 260 sentinel)','frame_generation':False,'temporal_upscaling':False,
+        'renderer':a.renderer_comparison,'native_only':not (a.compare_spatial or a.compare_temporal),'compare_temporal':a.compare_temporal,'render_distance':a.render_distance,
+        'vsync':False,'fps_limit':'unlimited (vanilla 260 sentinel)','frame_generation':False,'temporal_upscaling':a.compare_temporal,
         'requested_display':a.display,'initial_logical_size':[a.window_width,a.window_height],'extra_mod_sha256':{j.name:hashlib.sha256(j.read_bytes()).hexdigest() for j in a.extra_mod},
         'sodium_options_sha256':hashlib.sha256(a.sodium_options.read_bytes()).hexdigest() if a.sodium_options else None,
         'jar_sha256':hashlib.sha256((out/'mods/metalmod-1.0.0.jar').read_bytes()).hexdigest()},indent=2))
@@ -110,7 +115,8 @@ cp=subprocess.check_output(['python3','scripts/build_classpath.py',str(instance)
 command=['/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/java','-XstartOnFirstThread','-Xmx4G','--enable-native-access=ALL-UNNAMED','-Dmetalmod.metalBackend=true','-Dmetalmod.motionBenchmark=true' if a.submission_benchmark else '-Dmetalmod.manualRecording=true','-Dmetalmod.capturePrep=false','-Dmetalmod.displayProbe='+str(probe),'-cp',cp,'net.fabricmc.loader.impl.launch.knot.KnotClient','--username','MetalFXTest','--uuid','00000000000000000000000000000001','--accessToken','0','--version','26.2','--gameDir',str(out),'--assetsDir',str(instance.parents[1]/'assets'),'--assetIndex','32','--width','2560','--height','1440','--quickPlaySingleplayer',a.world]
 command[command.index('--width')+1]=str(a.window_width)
 command[command.index('--height')+1]=str(a.window_height)
-command.insert(command.index('-cp'),'-Dmetalmod.benchmarkNativeOnly='+str(not a.compare_spatial).lower())
+command.insert(command.index('-cp'),'-Dmetalmod.benchmarkNativeOnly='+str(not (a.compare_spatial or a.compare_temporal)).lower())
+if a.compare_temporal:command.insert(command.index('-cp'),'-Dmetalmod.benchmarkCompareTemporal=true')
 if a.offscreen_property_comparison:
     command.insert(command.index('-cp'),'-Dmetalmod.offscreenPropertyComparison=true')
 if a.offscreen_comparison:

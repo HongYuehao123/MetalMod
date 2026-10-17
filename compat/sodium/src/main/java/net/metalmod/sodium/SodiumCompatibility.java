@@ -16,8 +16,8 @@ public final class SodiumCompatibility implements PreLaunchEntrypoint {
         var core = FabricLoader.getInstance().getModContainer("metalmod").orElseThrow();
         var abi = core.getMetadata().getCustomValue("metalmod:sodium_adapter_abi");
         if (abi == null || abi.getType() != net.fabricmc.loader.api.metadata.CustomValue.CvType.NUMBER
-                || abi.getAsNumber().intValue() != 2) {
-            throw new IllegalStateException("MetalMod Sodium adapter 0.1.2 requires core adapter ABI 2. "
+                || abi.getAsNumber().intValue() != 3) {
+            throw new IllegalStateException("MetalMod Sodium adapter 0.1.3 requires core adapter ABI 3. "
                     + "Install the core MetalMod and adapter JARs from the same build.");
         }
         FabricLoader.getInstance().getModContainer("sodium").ifPresent(sodium -> {

@@ -33,10 +33,10 @@ public class LevelExtractorLightMixin {
         LightingSettings.setSuppressed(spectating);
         if (LightingSettings.active() && MetalBackend.isEnabled()) {
             LightCollector.extract(minecraft.level, camera, partialTick);
-        } else if (!LightCollector.current().lights().isEmpty()) {
+        } else {
             // Drop what was published, once: a spectator's world carries no dynamic set, and an empty
             // snapshot need not be republished every frame.
-            LightCollector.clear();
+            LightCollector.suppress();
         }
     }
 

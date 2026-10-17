@@ -6,7 +6,7 @@ and MetalMod 1.0.0. The user restored separate packaging on 2026-10-05 after try
 Use the core MetalMod JAR alone for vanilla rendering. For Sodium, install **all three JARs**:
 
 1. `metalmod-1.0.0.jar` — core native Metal backend.
-2. `metalmod-sodium-0.1.2.jar` — optional compatibility adapter (including the fatal version gate).
+2. `metalmod-sodium-0.1.3.jar` — optional compatibility adapter (including the fatal version gate).
 3. Official `sodium-fabric-0.9.2+mc26.2.jar` — upstream Sodium itself.
 
 No Sodium classes are bundled into either MetalMod artifact. The core has no adapter classes,
@@ -27,13 +27,26 @@ Build the core and optional adapter against the actual tested release JAR:
 METALMOD_SODIUM_JAR=/path/to/sodium-fabric-0.9.2+mc26.2.jar ./scripts/build_mod.sh
 ```
 
-Outputs: `build/libs/metalmod-1.0.0.jar` and `build/libs/metalmod-sodium-0.1.2.jar`.
+Outputs: `build/libs/metalmod-1.0.0.jar` and `build/libs/metalmod-sodium-0.1.3.jar`.
 Nothing is installed into the normal Minecraft instance automatically.
 
 Official Sodium **0.9.3-alpha.1** is for Minecraft **26.3** (`minecraft: 26.3.x`), not 26.2.
 Supporting it requires the corresponding Minecraft/API port and verification, rather than a
 version whitelist edit. Release/artifact metadata was checked on 2026-10-05 and retained under
 `build/reports/sodium-separate-20261005/`.
+
+## Temporal sampling correction (BUG-051)
+
+The original whole-mod test passed runtime contracts while failing the calibrated static-image
+gate. Adapter **0.1.3** fixes Sodium's separate scene projection; the current core's native
+footprint-aware depth/appearance checks fix the residual rejection feedback. Final strength
+25/33/50 image gates and repeated strength-50 sequences pass without changing the 0.25-pixel limit.
+The launcher enforces both runtime and image verdicts. The native correction is in the **core**;
+the adapter API stays **3**, with no Sodium version change or new configuration default.
+
+Broader release quality/animation and performance selection remain separate. The GPU-only
+complete-batch diagnostic shows a variable cost increase, documented with every run in the
+[footprint fix report](../../docs/performance/bug051-temporal-footprints-20261016.md).
 
 ## Empty-light terrain specialization
 
@@ -44,14 +57,14 @@ lit path. This changes no geometry, texture filtering, baked lighting, fog, alph
 Both variants warm together and are retired together on reload/lighting changes. Use
 `-Dmetalmod.sodiumEmptyLights=false` to retain the original lit shader for comparison.
 
-Update the **core and adapter together**: this adapter requires core metadata
-`metalmod:sodium_adapter_abi=2` and rejects an older core in Fabric pre-launch. This is a Java
+Update the **core and adapter together**: the current adapter requires core metadata
+`metalmod:sodium_adapter_abi=3` and rejects an older core in Fabric pre-launch. This is a Java
 adapter API marker; the Phase 6 light-record ABI remains **v1** and its layouts are unchanged.
-Sodium remains **0.9.2+mc26.2**; adapter 0.1.2 is not Sodium 0.9.3 support.
+Sodium remains **0.9.2+mc26.2**; adapter 0.1.3 is not Sodium 0.9.3 support.
 
 See [controlled rendering and GPU-completion results](../../docs/performance/sodium-empty-lights-20261016.md).
 
-The adapter intercepts Sodium's draw-context and batch factories only for an actual `MetalDevice`.
+The adapter intercepts Sodium's draw-context, batch factories and scene projection getter only for an actual `MetalDevice`.
 OpenGL/Vulkan devices keep Sodium's own contexts. It preserves Sodium's compact 20-byte meshes,
 region arenas, culling and batch order, and issues direct indexed Metal draws. It does not
 advertise unsupported indirect-draw features or introduce a Vulkan translation layer.

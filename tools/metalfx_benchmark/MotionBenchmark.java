@@ -21,10 +21,13 @@ public final class MotionBenchmark implements ClientModInitializer {
     private final boolean staticCamera=Boolean.getBoolean("metalmod.benchmarkStaticCamera");
     private final String rendererComparison=System.getProperty("metalmod.rendererComparison", "");
     private final boolean nativeOnly=Boolean.getBoolean("metalmod.benchmarkNativeOnly");
+    private final boolean compareTemporal=Boolean.getBoolean("metalmod.benchmarkCompareTemporal");
     private final boolean offscreenComparison=Boolean.getBoolean("metalmod.offscreenComparison");
     private final boolean offscreenPropertyComparison=Boolean.getBoolean("metalmod.offscreenPropertyComparison");
     private final List<Run> requestedRuns=offscreenComparison && !offscreenPropertyComparison
         ? List.of(new Run("present01",0,false),new Run("offscreen02",0,false),new Run("offscreen03",0,false),new Run("present04",0,false))
+        : compareTemporal && !rendererComparison.isEmpty()
+        ? List.of(new Run(rendererComparison+"-native",0,false),new Run(rendererComparison+"-sr25",25,false),new Run(rendererComparison+"-temporal25",25,false))
         : !rendererComparison.isEmpty()
         ? List.of(new Run(rendererComparison+"-native",0,false),new Run(rendererComparison+"-sr25",25,false))
         : Boolean.getBoolean("metalmod.benchmarkDiagnostic")
@@ -168,6 +171,7 @@ public final class MotionBenchmark implements ClientModInitializer {
         var run=runs.get(index);
         if(offscreenComparison) OffscreenCompletion.mode(offscreenPropertyComparison || run.name().startsWith("offscreen"));
         if(submissionCheck && rendererComparison.isEmpty() && (!offscreenComparison || offscreenPropertyComparison)) System.setProperty(System.getProperty("metalmod.comparisonProperty","metalmod.commandBatching"),Boolean.toString(run.name().endsWith("-on")));
+        if(compareTemporal) TemporalJitterProof.chooseEnabled(run.name().endsWith("-temporal25"));
         UpscalingSettings.chooseEnabled(run.strength()>0);UpscalingSettings.chooseStrength(run.strength());
         System.setProperty("metalmod.fxAntialias","true");mc.options.enableVsync().set(run.vsync());
         new CaptureRoutePlayer(route).arm(mc);resetMotion(now);deadline=now+20_000_000_000L;state=2;
@@ -186,7 +190,8 @@ public final class MotionBenchmark implements ClientModInitializer {
     }
     private void image(Minecraft mc) throws Exception {
         var f=mc.gameRenderer.getClass().getDeclaredField("mainRenderTarget");f.setAccessible(true);
-        Path path=game.resolve("motion-quality/"+quality+"/"+String.format("%04d.png",qualityFrame++));Files.createDirectories(path.getParent());
+        String imageGroup=compareTemporal && !rendererComparison.isEmpty()?runs.get(index).name():Integer.toString(quality);
+        Path path=game.resolve("motion-quality/"+imageGroup+"/"+String.format("%04d.png",qualityFrame++));Files.createDirectories(path.getParent());
         Screenshot.takeScreenshot((RenderTarget)f.get(mc.gameRenderer),image->{
             int w=Math.min(1920,image.getWidth()),h=Math.min(900,image.getHeight());
             try(image;var roi=new NativeImage(w,h,false)) {

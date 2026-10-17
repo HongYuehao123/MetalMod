@@ -1,6 +1,7 @@
 package net.metalmod.upscaling;
 
 import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 import net.metalmod.config.MetalConfig;
 
 /** Scene-only temporal sampling; hand and GUI remain unjittered. */
@@ -51,6 +52,11 @@ public final class TemporalJitterProof {
     /** Returns the original object on the ordinary path; never mutates extracted camera matrices. */
     public Matrix4f projection(Matrix4f original, boolean hand) {
         if (!active || hand) return original;
+        return sceneProjection(original);
+    }
+    /** Optional terrain renderers share the same sample and scene-only lifetime as vanilla. */
+    public Matrix4f sceneProjection(Matrix4fc original) {
+        if (!active) return original instanceof Matrix4f matrix ? matrix : new Matrix4f(original);
         worldUploads++;
         Matrix4f copy = TemporalSampling.jitterProjection(original, jitter, width, height);
         publish();

@@ -4,7 +4,8 @@ Performance baseline policy (2026-10-05): `run_manual.py` now defaults to **exte
 Vsync Off, Unlimited FPS, native-only rendering**, with spatial/temporal upscaling and frame
 generation off in the disposable instance. Native submission ABBA has four captures; fixed-renderer
 mode has one native capture. `--compare-spatial` explicitly restores spatial comparisons described
-below. Historical feature-validation tools and archived results remain separate. Option 260 is
+below. Fixed-renderer runs can instead use `--compare-temporal` for native, spatial25 and temporal25.
+Historical feature-validation tools and archived results remain separate. Option 260 is
 the real client's Unlimited sentinel, not a 260-FPS cap. `--render-distance` records the distance;
 32 retains the dense stress fixture, while mcopt's linked demo labels distance 16.
 
@@ -150,6 +151,29 @@ percentiles. A terrain image is captured only after each timed export. Images an
 fixtures must be reviewed independently; lower CPU usage does not establish rendering parity.
 See `docs/performance/sodium-compatibility.md` for accepted evidence and current parity limits.
 
+### Optional temporal performance comparison
+
+Add `--compare-temporal` to a `--submission-benchmark --renderer-comparison vanilla` or
+`--renderer-comparison sodium` command. This explicitly selects three 30-second captures in order:
+`RENDERER-native`, `RENDERER-sr25`, `RENDERER-temporal25`. It includes spatial25 automatically;
+`--compare-spatial` is unnecessary. Each setting retains the existing 20-second warmup and
+five-second countdown after the 60-second initial scene warmup. Temporal is selected before its
+warmup; native/spatial runs have it disabled. Vsync and frame generation remain Off. The default
+native-only and existing spatial/property benchmarks are unchanged when the new flag is absent.
+
+The temporal flag requires a fixed renderer and rejects offscreen, diagnostic-only and GPU-stage
+timing combinations. `comparison.json` records `compare_temporal`, and post-capture images use
+separate mode-named folders under `motion-quality/`. No screenshot readbacks occur during timing.
+Both `analyze_submission.py` and the four-launch `analyze_renderer.py` require the declared names
+and effective modes; display comparison also includes the temporal mode when requested.
+
+The current production CSV uses `sr_effective=2` for both temporal and plain recovery. The new
+comparison therefore also requires strength25/requested-On, active reason0 and zero accumulated
+failures/recoveries for reduced captures. Mode2 alone cannot establish temporal acceptance.
+Reported GPU helper spans remain asynchronous submission durations, not total GPU frame time.
+A single three-mode launch is exploratory; use repeated matched launches for performance claims
+and the separate temporal validation fixture for quality and lifecycle checks.
+
 `--sodium-options /path/to/sodium-options.json` copies an explicit options override into the
 new diagnostic instance and records its SHA-256. Use this to isolate a quality option while
 keeping the same adapter/backend; the normal installation is never written. Lava parity
@@ -204,3 +228,14 @@ completion fences and at most two pending frames prevent enqueue-only FPS inflat
 with `analyze_offscreen.py <copied-game>`. The original `--offscreen-comparison` behavior still
 compares presentation against offscreen rendering when the property-comparison flag is absent.
 Legacy captures remain analyzable. Neither experiment measures input latency or physical refresh.
+
+The standalone analyzer regression needs only Python's standard library:
+
+```sh
+python3 tools/metalfx_benchmark/test_analyze_submission.py
+```
+
+It accepts native-only, native/spatial, and native/spatial/temporal fixtures and rejects
+recovery/failure, wrong mode/strength/request state, focus loss, and timed compilation.
+Fresh whole-mod scenario results and limits are recorded in
+[the 2026-10-16 report](../../docs/performance/whole-mod-test-20261016.md).
