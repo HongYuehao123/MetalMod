@@ -13,6 +13,8 @@ parser.add_argument("--source-game", type=Path, required=True)
 parser.add_argument("--world", required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--extra-mod", type=Path, action="append", default=[], help="Additional mod JARs for this disposable copy only")
+parser.add_argument("--backend-property", action="append", default=[], metavar="KEY=true|false",
+                    help="Explicit Stage 1 backend switch, recorded in launch.json")
 parser.add_argument("--frame-generation", action="store_true")
 parser.add_argument("--delivery-check", action="store_true")
 parser.add_argument("--static-check", action="store_true", help="Only native/resize/static temporal image regression, without the full lifecycle suite")
@@ -21,6 +23,17 @@ parser.add_argument("--dump-temporal-inputs", action="store_true", help="Save st
 parser.add_argument("--skip-timing", action="store_true", help="Omit benchmark-only stages while retaining lifecycle and image checks")
 parser.add_argument("--static-strength", type=int, choices=[25,33,50], default=50, help="Strength for --static-check image sequences")
 args = parser.parse_args()
+backend_properties = {}
+allowed_backend_properties = {"metalmod.fenceTickets", "metalmod.deferredClears", "metalmod.encoderContinuation",
+                              "metalmod.texelCache", "metalmod.nativeTexelBuffers", "metalmod.compileRegionDrop",
+                              "metalmod.skipBlackVignette", "metalmod.dumpVignetteProof"}
+for item in args.backend_property:
+    key, separator, value = item.partition("=")
+    if not separator or key not in allowed_backend_properties or value not in ("true", "false"):
+        parser.error("backend property must be a supported Stage 1 key with true or false")
+    if key in backend_properties:
+        parser.error("duplicate backend property: " + key)
+    backend_properties[key] = value
 if sum([args.static_check, args.lighting_check, args.frame_generation]) > 1:
     parser.error("--static-check, --lighting-check and --frame-generation are mutually exclusive")
 if args.static_strength != 50 and not args.static_check:
@@ -69,7 +82,7 @@ for extra in args.extra_mod:
     if destination.exists():
         parser.error("extra mod name conflicts with copied mods: " + extra.name)
     shutil.copy2(extra, destination)
-command = [str(jdk / "bin/java"), "-XstartOnFirstThread", "-Xmx4G", "--enable-native-access=ALL-UNNAMED",
+command = [os.environ.get("METALMOD_BENCHMARK_JAVA", str(jdk / "bin/java")), "-XstartOnFirstThread", "-Xmx4G", "--enable-native-access=ALL-UNNAMED",
            "-Dmetalmod.validationStaticOnly="+str(args.static_check).lower(),
            "-Dmetalmod.validationLightingOnly="+str(args.lighting_check).lower(),
            "-Dmetalmod.validationSkipTiming="+str(args.skip_timing).lower(),
@@ -80,6 +93,8 @@ command = [str(jdk / "bin/java"), "-XstartOnFirstThread", "-Xmx4G", "--enable-na
            "--uuid", "00000000000000000000000000000001", "--accessToken", "0", "--version", "26.2",
            "--gameDir", str(output), "--assetsDir", str(instance.parents[1] / "assets"), "--assetIndex", "32",
            "--width", "1280", "--height", "720", "--quickPlaySingleplayer", args.world]
+for key, value in backend_properties.items():
+    command.insert(command.index("-cp"), "-D" + key + "=" + value)
 (output / "launch.json").write_text(json.dumps(command, indent=2))
 environment = dict(os.environ, MTL_DEBUG_LAYER="1")
 with (output / "console.log").open("w") as log:

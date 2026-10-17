@@ -19,6 +19,14 @@ class Stage0Guards(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(message, result.stderr)
 
+    def test_backend_override_is_explicit_and_bounded(self):
+        self.reject(['--backend-property', 'unrelated.property=true'], 'supported Stage 1 key')
+        self.reject(['--backend-property', 'metalmod.fenceTickets=maybe'], 'true or false')
+
+    def test_duplicate_backend_override_is_rejected(self):
+        self.reject(['--backend-property', 'metalmod.fenceTickets=true',
+                     '--backend-property', 'metalmod.fenceTickets=false'], 'duplicate backend property')
+
     def test_explicit_world_and_route_required(self):
         self.reject(['--stage0-fixture', 'surface-rd16'], 'require --submission-benchmark')
 

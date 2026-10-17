@@ -74,7 +74,7 @@ public final class MetalShaderCompiler implements AutoCloseable {
     public record PairKey(net.minecraft.resources.Identifier vertex,
                           net.minecraft.resources.Identifier fragment,
                           net.minecraft.client.renderer.ShaderDefines defines,
-                          String variant, String vertexSource, String fragmentSource) {
+                          String variant, String vertexSource, String fragmentSource, boolean nativeTexels) {
     }
 
     private final Map<PairKey, CompiledPair> pairCache = new HashMap<>();
@@ -97,7 +97,7 @@ public final class MetalShaderCompiler implements AutoCloseable {
                                     net.minecraft.client.renderer.ShaderDefines defines,
                                     java.util.function.Supplier<String> vertexSource,
                                     java.util.function.Supplier<String> fragmentSource) {
-        return compilePair(vertexId, fragmentId, defines, "vanilla (lazy)", null, null, vertexSource, fragmentSource);
+        return compilePair(vertexId, fragmentId, defines, "vanilla (lazy)", null, null, vertexSource, fragmentSource, false);
     }
 
     /**
@@ -118,7 +118,15 @@ public final class MetalShaderCompiler implements AutoCloseable {
                                     net.minecraft.resources.Identifier fragmentId,
                                     net.minecraft.client.renderer.ShaderDefines defines,
                                     String variant, String vertexSource, String fragmentSource) {
-        return compilePair(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource, null, null);
+        return compilePair(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource, null, null, false);
+    }
+
+    public CompiledPair compilePair(net.minecraft.resources.Identifier vertexId,
+                                    net.minecraft.resources.Identifier fragmentId,
+                                    net.minecraft.client.renderer.ShaderDefines defines,
+                                    String variant, String vertexSource, String fragmentSource, boolean nativeTexels) {
+        return compilePair(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource,
+                null, null, nativeTexels);
     }
 
     private CompiledPair compilePair(net.minecraft.resources.Identifier vertexId,
@@ -126,8 +134,8 @@ public final class MetalShaderCompiler implements AutoCloseable {
                                      net.minecraft.client.renderer.ShaderDefines defines,
                                      String variant, String vertexSource, String fragmentSource,
                                      java.util.function.Supplier<String> lazyVertex,
-                                     java.util.function.Supplier<String> lazyFragment) {
-        PairKey key = new PairKey(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource);
+                                     java.util.function.Supplier<String> lazyFragment, boolean nativeTexels) {
+        PairKey key = new PairKey(vertexId, fragmentId, defines, variant, vertexSource, fragmentSource, nativeTexels);
         CompiledPair cached = this.pairCache.get(key);
         if (cached != null) {
             this.cacheHits++;
@@ -137,7 +145,7 @@ public final class MetalShaderCompiler implements AutoCloseable {
         CompiledPair compiled = compilePair(vertexId.toString(),
                 vertexSource != null ? vertexSource : lazyVertex.get(),
                 fragmentId.toString(),
-                fragmentSource != null ? fragmentSource : lazyFragment.get());
+                fragmentSource != null ? fragmentSource : lazyFragment.get(), nativeTexels);
         this.pairCache.put(key, compiled);
         return compiled;
     }
@@ -145,12 +153,17 @@ public final class MetalShaderCompiler implements AutoCloseable {
     /** Uncached pair compile, for callers that have no pipeline identity (tools, tests). */
     public CompiledPair compilePair(String vertexName, String vertexSource,
                                     String fragmentName, String fragmentSource) {
+        return compilePair(vertexName, vertexSource, fragmentName, fragmentSource, false);
+    }
+
+    public CompiledPair compilePair(String vertexName, String vertexSource,
+                                    String fragmentName, String fragmentSource, boolean nativeTexels) {
         int[] vertexWords = toSpirv(vertexName, vertexSource, ShaderType.VERTEX);
         int[] fragmentWords = toSpirv(fragmentName, fragmentSource, ShaderType.FRAGMENT);
         alignVaryings(vertexWords, fragmentWords);
         CompiledPair compiled = new CompiledPair(
-                translate(vertexName, vertexWords, ShaderType.VERTEX),
-                translate(fragmentName, fragmentWords, ShaderType.FRAGMENT));
+                translate(vertexName, vertexWords, ShaderType.VERTEX, nativeTexels),
+                translate(fragmentName, fragmentWords, ShaderType.FRAGMENT, nativeTexels));
         dumpIfRequested(vertexName, fragmentName, compiled);
         return compiled;
     }
@@ -319,6 +332,10 @@ public final class MetalShaderCompiler implements AutoCloseable {
     }
 
     private CompiledShader translate(String name, int[] words, ShaderType type) {
+        return translate(name, words, type, false);
+    }
+
+    private CompiledShader translate(String name, int[] words, ShaderType type, boolean nativeTexels) {
         normalizeBindings(words);
         Map<String, Integer> buffers = new HashMap<>();
         Map<String, Integer> textures = new HashMap<>();
@@ -345,7 +362,9 @@ public final class MetalShaderCompiler implements AutoCloseable {
                     Spvc.spvc_compiler_options_set_uint(options, Spvc.SPVC_COMPILER_OPTION_MSL_VERSION, 20100);
                     Spvc.spvc_compiler_options_set_uint(options, Spvc.SPVC_COMPILER_OPTION_MSL_PLATFORM,
                             Spvc.SPVC_MSL_PLATFORM_MACOS);
-                    // Metal has no buffer textures, so SPIRV-Cross emulates one as a 2D texture and
+                    Spvc.spvc_compiler_options_set_bool(options,
+                            Spvc.SPVC_COMPILER_OPTION_MSL_TEXTURE_BUFFER_NATIVE, nativeTexels);
+                    // The default compatibility path emulates a buffer as a 2D texture and
                     // emits `spvTexelBufferCoord(tc) { return uint2(tc % W, tc / W); }` with W baked
                     // in as a literal. Set W here rather than inheriting the default, so the width
                     // the shader divides by and the width the texture is laid out with cannot drift.

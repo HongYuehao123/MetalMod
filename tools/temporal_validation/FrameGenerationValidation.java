@@ -315,7 +315,10 @@ public final class FrameGenerationValidation {
         activate.invokeExact();GLFW.glfwFocusWindow(mc.getWindow().handle());
     }
     private static void finish(Minecraft mc) {
-        if(done)return;done=true;
+        if(done)return;
+        if(!Boolean.getBoolean("metalmod.sodiumAdapter"))
+            check("completed compile-task region lifetime policy",RegionLifetimeValidation.passed(),RegionLifetimeValidation.result());
+        done=true;
         try {Files.writeString(root.resolve("checks.txt"),String.join("\n",checks)+"\n");
             Files.writeString(root.resolve("result.txt"),(failures==0?"PASS\n":"FAIL\n")+"checks="+checks.size()+" failures="+failures+"\n");}
         catch(Exception e){throw new RuntimeException(e);}mc.stop();

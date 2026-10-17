@@ -39,13 +39,18 @@ public record PointLight(double x, double y, double z, float radius,
 
     /** Encode this light relative to a camera origin, in the std140 layout the shader declares. */
     public ByteBuffer relativeTo(double originX, double originY, double originZ) {
+        ByteBuffer out = ByteBuffer.allocateDirect(BYTES).order(ByteOrder.nativeOrder());
+        writeRelative(out, originX, originY, originZ);
+        return out.flip();
+    }
+
+    /** Append a record to caller-owned staging memory without allocating a per-light buffer. */
+    public void writeRelative(ByteBuffer out, double originX, double originY, double originZ) {
         float rx = relative(x, originX);
         float ry = relative(y, originY);
         float rz = relative(z, originZ);
-        return ByteBuffer.allocateDirect(BYTES).order(ByteOrder.nativeOrder())
-                .putFloat(rx).putFloat(ry).putFloat(rz).putFloat(radius)
-                .putFloat(red).putFloat(green).putFloat(blue).putFloat(intensity)
-                .flip();
+        out.putFloat(rx).putFloat(ry).putFloat(rz).putFloat(radius)
+                .putFloat(red).putFloat(green).putFloat(blue).putFloat(intensity);
     }
 
     private static float relative(double value, double origin) {

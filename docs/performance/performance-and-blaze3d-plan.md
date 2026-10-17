@@ -117,6 +117,15 @@ measured against exact counters on `349ef76`:
 
 ### Stage 1 — Low-Risk Backend & Lifecycle Wins Underneath Blaze3D (Effort: S–M)
 
+**Complete — 2026-10-17:** 1A–1D are implemented and qualified through all five offline gates,
+copied-world temporal/FG lifecycle and image checks, compile-region enabled/disabled controls,
+Sodium integration, and fresh-JVM performance qualification. Ticket fences, exact-content 2D
+texel caching, lighting staging reuse, fenced transient blocks, compile-task region release and
+the verified native-only vignette skip are enabled by default. The final rollout decision retains
+deferred clears, encoder continuation and native texel-buffer layouts as explicit opt-ins: the
+accepted dense gain is modest, and the surface comparison fails its workload-match gate.
+See [implementation, qualification and defaults](stage1-backend-lifecycle.md).
+
 These improvements optimize our `Blaze3D` implementation in `native/src/metalmod_metal.mm` and
 `src/main/java/net/metalmod/backend/` without changing terrain geometry or mod compatibility:
 
@@ -145,7 +154,7 @@ These improvements optimize our `Blaze3D` implementation in `native/src/metalmod
   2. Keep the native `MTLRenderCommandEncoder` open across consecutive `Blaze3D` `RenderPass`es that
      bind identical color/depth targets and compatible Y-flip orientation, resetting scissor/depth
      bias/stencil state at logical pass boundaries.
-- **Validation:** Verify pixel-identical output across all 368 core + Sodium `RenderCheck` assertions,
+- **Validation:** Verify pixel-identical output across all core + Sodium `RenderCheck` assertions (393 at closure),
   Y-flipped UI/atlas passes (`BUG-001` / `BUG-025`), and temporal/FG capture hooks. Measure render
   passes/frame and GPU fragment/tile time.
 
@@ -153,8 +162,9 @@ These improvements optimize our `Blaze3D` implementation in `native/src/metalmod
 - **Problem:** [MetalDevice.texelTexture](../../src/main/java/net/metalmod/backend/MetalDevice.java#L1030)
   re-uploads every texel-buffer uniform into a 4096-wide 2D texture on every bind.
 - **Change:**
-  1. Fix the 2D fallback cache key to include `slice.offset()` and content generation so unchanged
-     texel buffers (such as static cloud data between ticks) are not re-uploaded every frame.
+  1. Fix the 2D fallback cache key to include storage identity, absolute `slice.offset()` and range, tracking content generations so unchanged
+     texel buffers (such as static cloud data between ticks) are not re-uploaded every frame. Exact
+     byte comparison is required when retained mapped views prevent reliable write-generation tracking.
   2. For formats proven safe on Apple Silicon Metal (excluding `R8_SINT`, which triggered `BUG-013`),
      support native buffer-backed `MTLTexture` views (`newTextureWithDescriptor:offset:bytesPerRow:`)
      paired with `SPVC_COMPILER_OPTION_MSL_TEXTURE_BUFFER_NATIVE` on eligible shaders.

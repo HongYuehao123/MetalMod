@@ -539,8 +539,39 @@ static void test_fence(void) {
     }
     check("64 create/await cycles all completed", completed == 64, "");
 
+    // Polling must submit the pending utility work at creation, without relying on a blocking wait.
+    void* source = mmm_buffer_create(device, 64);
+    unsigned char upload[64] = {73};
+    mmm_capture_set_enabled(true);
+    mmm_write_buffer_bytes(queue, source, 0, upload, sizeof(upload));
+    void* polled = mmm_fence_create(queue);
+    void* adjacent = mmm_fence_create(queue);
+    void* closedEarly = mmm_fence_create(queue);
+    mmm_fence_release(closedEarly);
+    bool pollDone = false;
+    for (int i = 0; i < 5000 && !pollDone; ++i) {
+        pollDone = mmm_fence_wait(polled, 0);
+        if (!pollDone) usleep(1000);
+    }
+    check("poll-only fence completes pending upload", pollDone, "");
+    check("adjacent fence shares completed ticket", mmm_fence_wait(adjacent, 1), "");
+    check("completed ticket accepts infinite wait", mmm_fence_wait(polled, INT64_MAX), "");
+    uint64_t metrics[MMM_CAPTURE_METRIC_COUNT] = {};
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("three adjacent fences submit only the pending upload", metrics[MMM_CAPTURE_SUBMISSIONS] == 1, "");
+    mmm_capture_set_enabled(false);
+    mmm_fence_release(polled);
+    mmm_fence_release(adjacent);
+    void* legacy = mmm_fence_create_legacy(queue);
+    check("legacy rollback fence completes", mmm_fence_wait(legacy, 5000000000LL), "");
+    mmm_fence_release(legacy);
+    // Fences retain their timeline even after the owner releases the queue.
+    void* survivor = mmm_fence_create(queue);
+    mmm_buffer_release(source);
     mmm_texture_release(texture);
     mmm_queue_release(queue);
+    check("fence survives queue release", mmm_fence_wait(survivor, INT64_MAX), "");
+    mmm_fence_release(survivor);
     mmm_device_release(device);
 }
 
@@ -680,6 +711,52 @@ static void test_texture_buffer(void) {
 // emulated path (texture2d<int> + spvTexelBufferCoord), so the fix has to be an ordinary 2D R8Sint
 // texture holding the same bytes. Before wiring that up, check Metal actually accepts reading an
 // 8-bit signed 2D texture through a texture2d<int>.
+static void test_native_texel_views(void) {
+    printf("\n== native texel-buffer views (safe formats and offsets) ==\n");
+    void* device = mmm_device_create();
+    void* queue = mmm_queue_create(device);
+    int formats[] = {55, 53, 54, 125};
+    const char* types[] = {"float", "uint", "int", "float"};
+    for (int n = 0; n < 4; ++n) {
+        void* backing = mmm_buffer_create(device, 1024);
+        unsigned char* bytes = (unsigned char*)mmm_buffer_contents(backing);
+        memset(bytes, 0, 1024);
+        int stride = n == 3 ? 16 : 4;
+        if (n == 0 || n == 3) *(float*)(bytes + 256 + stride) = 0.75f;
+        else *(int*)(bytes + 256 + stride) = 191;
+        void* view = mmm_buffer_texture(backing, formats[n], 256, 2);
+        check("safe native format creates an offset view", view != NULL, "");
+        check("R8Sint is rejected before entering Metal", mmm_buffer_texture(backing, 14, 0, 2) == NULL, "");
+        check("unaligned native offset is rejected", mmm_buffer_texture(backing, formats[n], 1, 2) == NULL, "");
+        check("out-of-range native view is rejected", mmm_buffer_texture(backing, formats[n], 1024, 2) == NULL, "");
+        char msl[1024];
+        snprintf(msl, sizeof(msl), "#include <metal_stdlib>\nusing namespace metal;\n"
+            "vertex float4 vmain(uint id [[vertex_id]]) { float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return float4(p[id],0,1); }\n"
+            "fragment float4 fmain(texture_buffer<%s> data [[texture(0)]]) { return float4(float(data.read(1u).x)%s,0,0,1); }\n",
+            types[n], (n == 1 || n == 2) ? "/255.0" : "");
+        void* library = mmm_library_create(device, msl, strlen(msl));
+        void* pipeline = mmm_render_pipeline_create(device, library, "vmain", library, "fmain",
+                70, 15, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 1, 0, 0, 0, 0, NULL, 0, NULL, 0);
+        check("native texel shader/pipeline compile", pipeline != NULL, "");
+        void* target = mmm_texture_create_full(device, 70, 4, 4, 1, 1, 2, true, 5);
+        void* cb = mmm_command_buffer_create(queue);
+        void* colors[] = {target}; int loads[] = {0};
+        void* pass = mmm_render_pass_begin(cb, 1, colors, loads, NULL, NULL, 0, 0, 4, 4);
+        mmm_buffer_release(backing); // The texture and encoded draw must retain the source storage.
+        mmm_render_pass_set_pipeline(pass, pipeline);
+        mmm_render_pass_set_fragment_texture(pass, view, 0);
+        mmm_render_pass_draw(pass, 3, 0, 3, 1, 0);
+        mmm_render_pass_end(pass);
+        mmm_command_buffer_commit(cb); mmm_command_buffer_wait(cb); mmm_command_buffer_release(cb);
+        unsigned char pixels[64] = {};
+        mmm_texture_read_region(target, 0, 0, 0, 0, 4, 4, pixels, sizeof(pixels), 16);
+        check("native shader reads the correct offset and second texel", pixels[0] >= 190 && pixels[0] <= 192, "");
+        mmm_texture_release(view); mmm_texture_release(target);
+        mmm_render_pipeline_release(pipeline); mmm_library_release(library);
+    }
+    mmm_queue_release(queue); mmm_device_release(device);
+}
+
 static void test_texel_buffer_emulation(void) {
     printf("\n== texel-buffer emulation (2D R8Sint read as texture2d<int>) ==\n");
     void* device = mmm_device_create();
@@ -1042,7 +1119,7 @@ static void test_capture(void) {
     check("capture rejects undersized output", mmm_capture_read_reset(metrics, 1) == -1, "");
     check("capture schema length", mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT)
             == MMM_CAPTURE_METRIC_COUNT, "");
-    check("counts every submission including fence and sync", metrics[MMM_CAPTURE_SUBMISSIONS] == 3, "");
+    check("counts work and sync without a fence-only submission", metrics[MMM_CAPTURE_SUBMISSIONS] == 2, "");
     check("upload and copy share one submission", metrics[MMM_CAPTURE_BUFFER_WRITES] == 1
             && metrics[MMM_CAPTURE_BUFFER_COPIES] == 1, "");
     check("only CPU upload allocates staging", metrics[MMM_CAPTURE_STAGING_ALLOCATIONS] == 1, "");
@@ -1132,6 +1209,75 @@ static void test_utility_batching(void) {
 
 // Distinct Java encoders may own consecutive passes. Native ownership must outlive each
 // released lease, retain staged bytes and preserve interleaved write/copy/render ordering.
+static void test_pass_optimizations(void) {
+    printf("\n== deferred clears and encoder continuation ==\n");
+    void* device = mmm_device_create();
+    void* queue = mmm_queue_create(device);
+    void* target = mmm_texture_create(device, kBGRA8Unorm, 8, 8, true, 5);
+    mmm_backend_optimizations(true, true);
+    mmm_capture_set_enabled(true);
+    mmm_clear_textures(queue, target, true, 0, 0, 1, 1, NULL, false, 0);
+    void* colors[] = {target};
+    int loads[] = {0};
+    void* cb = mmm_command_buffer_batch_create(queue);
+    void* pass = mmm_render_pass_begin(cb, 1, colors, loads, NULL, NULL, 0, 0, 8, 8);
+    mmm_render_pass_set_scissor(pass, 1, 1, 1, 1);
+    mmm_render_pass_end(pass);
+    mmm_command_buffer_release(cb);
+    cb = mmm_command_buffer_batch_create(queue);
+    pass = mmm_render_pass_begin(cb, 1, colors, loads, NULL, NULL, 0, 0, 8, 8);
+    mmm_render_pass_end(pass);
+    mmm_command_buffer_release(cb);
+    void* fence = mmm_fence_create(queue);
+    check("continued pass completion", mmm_fence_wait(fence, INT64_MAX), "");
+    mmm_fence_release(fence);
+    uint64_t metrics[MMM_CAPTURE_METRIC_COUNT] = {};
+    mmm_capture_read_reset(metrics, MMM_CAPTURE_METRIC_COUNT);
+    check("clear and two logical passes use one native pass", metrics[MMM_CAPTURE_RENDER_PASSES] == 1, "");
+    check("clear and continued passes share one submission", metrics[MMM_CAPTURE_SUBMISSIONS] == 1, "");
+    unsigned char pixels[256] = {};
+    mmm_texture_read_region(target, 0, 0, 0, 0, 8, 8, pixels, sizeof(pixels), 32);
+    check("absorbed clear reaches all pixels", pixels[0] == 255 && pixels[252] == 255, "");
+    // A direct CPU write must first materialize and await the earlier GPU clear.
+    mmm_clear_textures(queue, target, true, 1, 0, 0, 1, NULL, false, 0);
+    unsigned char green[] = {0,255,0,255};
+    mmm_texture_replace_region(target, 0, 0, 2, 2, 1, 1, green, 4);
+    mmm_texture_read_region(target, 0, 0, 0, 0, 8, 8, pixels, sizeof(pixels), 32);
+    check("CPU upload follows pending clear", pixels[2] == 255 && pixels[(2*8+2)*4+1] == 255, "");
+    mmm_clear_textures(queue, target, true, 0, 1, 0, 1, NULL, false, 0);
+    mmm_texture_read_region(target, 0, 0, 0, 0, 8, 8, pixels, sizeof(pixels), 32);
+    check("CPU read materializes pending clear", pixels[1] == 255 && pixels[2] == 0, "");
+    // An equal-looking view of a different mip/slice must not absorb the base attachment clear.
+    void* array = mmm_texture_create_full(device, kBGRA8Unorm, 8, 8, 2, 2, 3, true, 5);
+    unsigned char greenPixels[256];
+    for (int i = 0; i < 64; ++i) memcpy(greenPixels + i*4, green, 4);
+    mmm_texture_replace_region(array, 1, 0, 0, 0, 4, 4, greenPixels, 16);
+    mmm_texture_replace_region(array, 0, 1, 0, 0, 8, 8, greenPixels, 32);
+    for (int kind = 0; kind < 2; ++kind) {
+        void* view = mmm_texture_create_view(array, kBGRA8Unorm, 2, kind == 0 ? 1 : 0, 1, kind == 0 ? 0 : 1, 1);
+        check("clear identity test view created", view != NULL, "");
+        mmm_clear_textures(queue, array, true, 0, 0, 1, 1, NULL, false, 0);
+        void* viewColors[] = {view};
+        cb = mmm_command_buffer_batch_create(queue);
+        pass = mmm_render_pass_begin(cb, 1, viewColors, loads, NULL, NULL, 0, 0, kind == 0 ? 4 : 8, kind == 0 ? 4 : 8);
+        mmm_render_pass_end(pass); mmm_command_buffer_release(cb);
+        fence = mmm_fence_create(queue); mmm_fence_wait(fence, INT64_MAX); mmm_fence_release(fence);
+        unsigned char pixel[4] = {};
+        mmm_texture_read_region(array, kind == 0 ? 1 : 0, kind == 0 ? 0 : 1, 0, 0, 1, 1, pixel, 4, 4);
+        check(kind == 0 ? "different mip does not consume base clear" : "different slice does not consume base clear",
+                pixel[1] == 255 && pixel[0] == 0, "");
+        mmm_texture_read_region(array, 0, 0, 0, 0, 1, 1, pixel, 4, 4);
+        check("unmatched base clear materializes before next pass", pixel[0] == 255 && pixel[1] == 0, "");
+        mmm_texture_release(view);
+    }
+    mmm_texture_release(array);
+    mmm_capture_set_enabled(false);
+    mmm_backend_optimizations(false, false);
+    mmm_texture_release(target);
+    mmm_queue_release(queue);
+    mmm_device_release(device);
+}
+
 static void test_render_batching(void) {
     printf("\n== ordinary render submission batching ==\n");
     void* device = mmm_device_create();
@@ -2304,6 +2450,7 @@ int main(void) {
         test_buffer_copy();
         test_texture_buffer();
         test_texel_buffer_emulation();
+        test_native_texel_views();
         test_base_instance();
         test_draw();
         test_surface();
@@ -2311,6 +2458,7 @@ int main(void) {
         test_capture();
         test_utility_batching();
         test_render_batching();
+        test_pass_optimizations();
         test_render_batch_uniform_versions();
         test_inline_uniform_versions();
         test_private_storage();

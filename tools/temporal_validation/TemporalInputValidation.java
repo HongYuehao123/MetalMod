@@ -457,6 +457,8 @@ public final class TemporalInputValidation implements ClientModInitializer {
             check("live hook "+hook,Diagnostics.hasHook(hook),"");
         if (Boolean.getBoolean("metalmod.sodiumAdapter"))
             check("live Sodium scene projection",Diagnostics.hasHook("TemporalProof.rendererProjection"),"");
+        if (!Boolean.getBoolean("metalmod.sodiumAdapter"))
+            check("completed compile-task region lifetime policy", RegionLifetimeValidation.passed(), RegionLifetimeValidation.result());
         done=true;
         Files.writeString(root.resolve("result.txt"),(failures==0?"PASS":"FAIL")+"\nchecks="+checks.size()
                 +" failures="+failures+" frames="+frames+"\n");

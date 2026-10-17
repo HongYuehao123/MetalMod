@@ -114,6 +114,15 @@ public final class MetalTexture extends GpuTexture {
         }
     }
 
+    /** Own a native texture-buffer view; the Metal texture retains its backing MTLBuffer. */
+    MetalTexture(MetalDevice device, GpuFormat format, int texels, MemorySegment handle) {
+        super(GpuTexture.USAGE_TEXTURE_BINDING, "native texel buffer", format, texels, 1, 1, 1);
+        this.device = device;
+        this.handle = handle;
+        this.ownsHandle = handle.address() != 0;
+        this.sharedStorage = true;
+    }
+
     /** False only when the CPU is refused access to this texture's contents. */
     public boolean isSharedStorage() {
         return this.sharedStorage;

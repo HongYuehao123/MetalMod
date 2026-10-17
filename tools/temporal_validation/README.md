@@ -17,6 +17,15 @@ and launches from that directory so the embedded native library is exercised. Th
 and normal Minecraft instance are untouched. It uses an offline test identity; authentication
 and Realms errors are expected. The copy receives a torch/creative mode and noon/clear weather.
 
+Repeat `--backend-property KEY=true|false` to exercise the Stage 1 backend paths explicitly
+(for example `metalmod.deferredClears`, `metalmod.encoderContinuation` and
+`metalmod.nativeTexelBuffers`). The bounded Stage 1 switch list rejects unknown or duplicate
+keys before copying. Values are preserved in `launch.json`, including saved-On restart commands.
+`METALMOD_BENCHMARK_JAVA` may select the existing approved test-app Java executable.
+The test add-on also samples up to 128 completed vanilla compile tasks and checks their region
+references after all return hooks have run; this checks reference release, not a fixed heap saving.
+That vanilla task gate is omitted with the optional Sodium renderer, which owns its compile tasks.
+
 Stages cover Off, strength 0 (native), ordinary spatial, temporal at strengths 25/33/50, odd window
 dimensions, inventory, pause with GUI scale 4, the Super Resolution settings screen and its actual temporal button (On/Off/native bypass), disabling
 temporal, native return and menu-only. UI choices are tested against opposite launch flags and persisted

@@ -183,6 +183,7 @@ public final class RenderCheck {
             check("textured pipeline compiled and registered", device.pipelineFor(textured) != null, "");
             if (device.pipelineFor(textured) != null) {
                 textureOrientationCheck(device, textured);
+                vignetteNoOpCheck(device, source);
 
                 // Mip selection. The terrain shader minifies the block atlas and samples it with
                 // textureGrad/textureLod, so mips are on the hottest path in the game - and every
@@ -248,6 +249,8 @@ public final class RenderCheck {
             // Texel buffers, which Metal has no primitive for. This is the regression test for the
             // crash on entering a world: a buffer big enough to need a second row.
             texelBufferTextureCheck(device);
+            texelCacheCheck(device);
+            nativeTexelShaderCheck(device);
 
             // The eight depth compare functions, as a truth table. Only GREATER_THAN_OR_EQUAL is
             // exercised anywhere else, and EQUAL is live for GLINT and the armour decals - a wrong
@@ -2341,6 +2344,45 @@ public final class RenderCheck {
      * If the Y axis is flipped anywhere along the way - which is what a sprite sampling the wrong
      * row looks like - the colours come back in the wrong quadrants.
      */
+    private static void vignetteNoOpCheck(MetalDevice device, ShaderSource source) throws Exception {
+        var pipeline = (RenderPipeline) Class.forName("net.minecraft.client.renderer.RenderPipelines").getField("VIGNETTE").get(null);
+        device.precompilePipeline(pipeline, source);
+        ByteBuffer bytes = uvVertices();
+        // Position(12), UV(8), Color(4); keep alpha opaque and zero just the RGB channels.
+        for (int vertex = 0; vertex < 4; vertex++) {
+            int color = vertex * 24 + 20;
+            bytes.put(color, (byte) 0).put(color + 1, (byte) 0).put(color + 2, (byte) 0);
+        }
+        var vertices = device.createBuffer(() -> "black vignette", GpuBuffer.USAGE_VERTEX | GpuBuffer.USAGE_MAP_WRITE, bytes);
+        var indices = device.createBuffer(() -> "black vignette indices", GpuBuffer.USAGE_INDEX | GpuBuffer.USAGE_MAP_WRITE, indexBytes());
+        var projection = device.createBuffer(() -> "Projection", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE, identityMat4());
+        var transform = device.createBuffer(() -> "DynamicTransforms", GpuBuffer.USAGE_UNIFORM | GpuBuffer.USAGE_MAP_WRITE,
+                dynamicTransforms(new float[]{1,1,1,1}));
+        var texture = device.createTexture("vignette proof", GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
+                GpuFormat.RGBA8_UNORM, 1, 1, 1, 1);
+        solid(texture, 191, 128, 64, 255);
+        var view = device.createTextureView(texture);
+        int[] pixel = renderQuad(device, pipeline, vertices, indices,
+                Map.of("Projection", projection, "DynamicTransforms", transform), Map.of("Sampler0", view),
+                false, "vignette no-op proof", new float[]{0.25f, 0.5f, 0.75f, 0.5f});
+        check("zero-RGB vanilla vignette preserves destination RGBA", java.util.Arrays.equals(pixel, new int[]{64,128,191,128}),
+                java.util.Arrays.toString(pixel));
+        // A replaced shader revokes the proof, even when its tint is still black.
+        net.metalmod.performance.VignetteNoOp.observe(pipeline, "replacement vertex", "replacement fragment");
+        check("shader replacements cannot inherit the vignette skip proof",
+                !net.metalmod.performance.VignetteNoOp.canSkip(pipeline, 0xff000000), "");
+        device.precompilePipeline(pipeline, source);
+        check("verified zero-RGB vignette enables the guarded skip",
+                net.metalmod.performance.VignetteNoOp.canSkip(pipeline, 0xff000000), "");
+        System.setProperty("metalmod.skipBlackVignette", "false");
+        check("vignette skip has an explicit rollback",
+                !net.metalmod.performance.VignetteNoOp.canSkip(pipeline, 0xff000000), "");
+        System.clearProperty("metalmod.skipBlackVignette");
+        check("nonzero/world-border vignette tint is retained",
+                !net.metalmod.performance.VignetteNoOp.canSkip(pipeline, 0xff000001), "");
+        vertices.close(); indices.close(); projection.close(); transform.close(); view.close(); texture.close();
+    }
+
     private static void textureOrientationCheck(MetalDevice device, RenderPipeline pipeline) {
         GpuTexture texture = device.createTexture("quadrants", GpuTexture.USAGE_TEXTURE_BINDING
                 | GpuTexture.USAGE_COPY_DST, GpuFormat.RGBA8_UNORM, 2, 2, 1, 1);
@@ -3303,6 +3345,89 @@ public final class RenderCheck {
      * past the device's 16384 limit (so a one-row texture cannot be allocated at all). Every texel is
      * read back and compared against where it should have landed.
      */
+    private static void texelCacheCheck(MetalDevice device) {
+        var buffer = (MetalBuffer) device.createBuffer(() -> "texel cache regression",
+                GpuBuffer.USAGE_UNIFORM_TEXEL_BUFFER | GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_COPY_DST, 128);
+        ByteBuffer retainedMap = buffer.mappedBytes();
+        retainedMap.put(0, (byte) 42).put(1, (byte) 73);
+        var first = device.texelTexture(buffer, 0, 32, GpuFormat.R8_SINT, 1);
+        var unchanged = device.texelTexture(buffer, 0, 32, GpuFormat.R8_SINT, 1);
+        check("unchanged texels reuse a texture generation", first == unchanged, "");
+        var shifted = device.texelTexture(buffer, 1, 32, GpuFormat.R8_SINT, 1);
+        check("equal-length texel slices at different offsets remain distinct", shifted != first, "");
+        var nested = MetalBuffer.sub(buffer.usage(), 64, MetalBuffer.sub(buffer.usage(), 96, buffer, 1), 0);
+        check("nested suballocation resolves to its absolute texel range",
+                device.texelTexture(nested, 0, 32, GpuFormat.R8_SINT, 1) == shifted, "");
+        retainedMap.put(0, (byte) 99);
+        var changed = device.texelTexture(buffer, 0, 32, GpuFormat.R8_SINT, 1);
+        check("retained mapped writes create a new immutable texel generation", changed != first, "");
+        try (var arena = java.lang.foreign.Arena.ofConfined()) {
+            var one = arena.allocate(1);
+            MetalNative.textureReadRegion(first.handle(), 0, 0, 0, 0, 1, 1, one, 1, 1);
+            check("earlier texel generation retains its original bytes", one.get(java.lang.foreign.ValueLayout.JAVA_BYTE, 0) == 42, "");
+            MetalNative.textureReadRegion(changed.handle(), 0, 0, 0, 0, 1, 1, one, 1, 1);
+            check("new texel generation contains the mapped update", one.get(java.lang.foreign.ValueLayout.JAVA_BYTE, 0) == 99, "");
+        }
+        buffer.close();
+    }
+
+    /** End-to-end GLSL/SPIRV-Cross/native layout agreement, including unaligned shadow fallback. */
+    private static void nativeTexelShaderCheck(MetalDevice device) {
+        String old = System.getProperty("metalmod.nativeTexelBuffers");
+        System.setProperty("metalmod.nativeTexelBuffers", "true");
+        try {
+            var group = com.mojang.blaze3d.pipeline.BindGroupLayout.builder()
+                    .withUniform("Values", com.mojang.blaze3d.shaders.UniformType.TEXEL_BUFFER, GpuFormat.R32_FLOAT).build();
+            var pipeline = RenderPipeline.builder().withLocation(Identifier.parse("metalmod:stage1_native_texel"))
+                    .withVertexShader(Identifier.parse("metalmod:stage1_native_texel"))
+                    .withFragmentShader(Identifier.parse("metalmod:stage1_native_texel"))
+                    .withBindGroupLayout(group).withCull(false)
+                    .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+                    .withColorTargetState(new ColorTargetState(Optional.empty(), GpuFormat.RGBA8_UNORM, 15)).build();
+            String vertex = "#version 330\nvoid main(){vec2 p[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));gl_Position=vec4(p[gl_VertexID],0,1);}";
+            String fragment = "#version 330\nuniform samplerBuffer Values;out vec4 fragColor;void main(){fragColor=vec4(texelFetch(Values,1).r,0,0,1);}";
+            device.precompilePipeline(pipeline, (id, type) -> type == ShaderType.VERTEX ? vertex : fragment);
+            var compiled = device.pipelineFor(pipeline);
+            check("native GLSL texel shader selects texture_buffer layout", compiled != null
+                    && compiled.texelBuffer("Values").nativeTexture(), "");
+            if (compiled == null) return;
+            var target = device.createTexture("native texel test", GpuTexture.USAGE_RENDER_ATTACHMENT | GpuTexture.USAGE_COPY_SRC,
+                    GpuFormat.RGBA8_UNORM, WIDTH, HEIGHT, 1, 1);
+            var view = device.createTextureView(target);
+            var buffer = (MetalBuffer) device.createBuffer(() -> "native texel source",
+                    GpuBuffer.USAGE_UNIFORM_TEXEL_BUFFER | GpuBuffer.USAGE_MAP_WRITE, 1024);
+            for (int offset : new int[]{256, 4}) {
+                buffer.mappedBytes().putFloat(offset + 4, 0.75f);
+                var encoder = device.createCommandEncoder();
+                var pass = encoder.createRenderPass(RenderPassDescriptor.create(() -> "native texels")
+                        .withColorAttachment(view, Optional.of(new Vector4f(0,0,0,1))));
+                pass.setPipeline(pipeline);
+                pass.setUniform("Values", buffer.slice(offset, 8));
+                pass.enableScissor(0,0,1,1);
+                pass.draw(3,1,0,0);
+                encoder.submitRenderPass(); encoder.submit();
+                encoder = device.createCommandEncoder();
+                pass = encoder.createRenderPass(RenderPassDescriptor.create(() -> "continued native texels")
+                        .withColorAttachment(view, Optional.empty()));
+                pass.setPipeline(pipeline);
+                pass.setUniform("Values", buffer.slice(offset, 8));
+                pass.draw(3,1,0,0);
+                encoder.submitRenderPass(); encoder.submit();
+                var readback = (MetalBuffer) device.createBuffer(() -> "native texel readback",
+                        GpuBuffer.USAGE_MAP_READ | GpuBuffer.USAGE_COPY_DST, (long)WIDTH * HEIGHT * 4);
+                encoder.copyTextureToBuffer(target, readback, 0, null, 0);
+                int red = readback.mappedBytes().get((HEIGHT/2 * WIDTH + WIDTH/2) * 4) & 255;
+                check("native texel " + (offset == 256 ? "aligned view" : "unaligned snapshot") + " reads correct pixel",
+                        Math.abs(red - 191) <= 1, "R" + red);
+                readback.close();
+            }
+            buffer.close(); view.close(); target.close();
+        } finally {
+            if (old == null) System.clearProperty("metalmod.nativeTexelBuffers");
+            else System.setProperty("metalmod.nativeTexelBuffers", old);
+        }
+    }
+
     private static void texelBufferTextureCheck(MetalDevice device) {
         final int texels = 20000;
         final int width = MetalShaderCompiler.TEXEL_BUFFER_WIDTH;

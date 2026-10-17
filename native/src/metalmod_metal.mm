@@ -13,6 +13,9 @@
 #include <string.h>
 #include <chrono>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
 
 // Capture stays on the render/calling thread: GPU completion handlers never touch these counters.
 // No clocks, allocations or atomics on the draw path, and no clocks at all when capture is off.
@@ -55,12 +58,65 @@ static id<MTLCommandBuffer> mmm_raw_command_buffer(id<MTLCommandQueue> queue) {
     return [queue commandBuffer];
 }
 
+// A queue owns one completion timeline. Completed handlers may arrive out of order, so only
+// advance the contiguous prefix: a later completed submission must never retire earlier storage.
+// No GPU event or signal-only command buffer is needed. State outlives the queue while a fence
+// or an outstanding completed handler holds it; it never retains the queue itself.
+@interface MMMSubmissionTimeline : NSObject {
+@public
+    std::mutex mutex;
+    std::condition_variable changed;
+    uint64_t submitted;
+    uint64_t completed;
+    std::deque<bool> pending;
+}
+@end
+@implementation MMMSubmissionTimeline
+@end
+static char submissionTimelineKey;
+static MMMSubmissionTimeline* mmm_submission_timeline(id<MTLCommandQueue> queue) {
+    @synchronized(queue) {
+        MMMSubmissionTimeline* state = objc_getAssociatedObject(queue, &submissionTimelineKey);
+        if (!state) {
+            state = [MMMSubmissionTimeline new];
+            objc_setAssociatedObject(queue, &submissionTimelineKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return state;
+    }
+}
+
 static void mmm_commit_command_buffer(id<MTLCommandBuffer> buffer) {
+    if (!buffer) return;
+    MMMSubmissionTimeline* state = mmm_submission_timeline(buffer.commandQueue);
+    // Registration and commit share the lock so tickets follow submission order even if a queue
+    // is used by more than one CPU thread. The callback cannot run before its slot exists.
+    std::lock_guard<std::mutex> lock(state->mutex);
+    uint64_t ticket = ++state->submitted;
+    state->pending.push_back(false);
+    [buffer addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        (void)done; // Error also means execution has ended and resource readers are retired.
+        {
+            std::lock_guard<std::mutex> completedLock(state->mutex);
+            state->pending[ticket - state->completed - 1] = true;
+            while (!state->pending.empty() && state->pending.front()) {
+                state->pending.pop_front();
+                ++state->completed;
+            }
+        }
+        state->changed.notify_all();
+    }];
     mmm_gpu_profile_commit(buffer);
     MMMCaptureTimer timer(MMM_CAPTURE_COMMIT_NS);
     [buffer commit];
-    if (buffer != nil) mmm_capture_count(MMM_CAPTURE_SUBMISSIONS);
+    mmm_capture_count(MMM_CAPTURE_SUBMISSIONS);
 }
+
+static bool g_DeferClears = false;
+static bool g_ContinueEncoders = false;
+static void mmm_flush_pending_clears(void);
+static void mmm_flush_foreign_clears(id<MTLCommandQueue> queue);
+static void mmm_materialize_cpu_clears(void);
+static void mmm_apply_pending_clears(id<MTLCommandBuffer> buffer, MTLRenderPassDescriptor* descriptor);
 
 // ---------------------------------------------------------------------------------------------
 // Utility submission batching
@@ -103,6 +159,13 @@ static id<MTLCommandQueue> g_BatchQueue = nil;
 static id<MTLCommandBuffer> g_BatchBuffer = nil;
 static id<MTLBlitCommandEncoder> g_BatchBlit = nil;
 static id<MTLRenderCommandEncoder> g_BatchEncoder = nil;
+static id<MTLRenderCommandEncoder> g_ContinuedEncoder = nil;
+static MTLRenderPassDescriptor* g_ContinuedAttachments = nil;
+static void mmm_end_continued_encoder(void) {
+    if (g_ContinuedEncoder) [g_ContinuedEncoder endEncoding];
+    g_ContinuedEncoder = nil;
+    g_ContinuedAttachments = nil;
+}
 static unsigned g_BatchPasses = 0;
 static bool g_BatchStaged = false;
 static void mmm_note_command_buffer_completion(id<MTLCommandBuffer> completed);
@@ -115,6 +178,7 @@ static void mmm_batch_flush(void) {
     // A caller cannot submit while a render encoder is open. Mid-pass utility writes use
     // the old separate utility buffer and are submitted after this pass at the next boundary.
     if (!g_BatchBuffer || g_BatchEncoder) return;
+    mmm_end_continued_encoder();
     mmm_batch_end_blit();
     if (g_BatchStaged) g_StagingReaders[g_StagingSlot] = g_BatchBuffer;
     [g_BatchBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
@@ -153,6 +217,8 @@ static void mmm_utility_flush(void) {
 /// The blit encoder of the pending utility command buffer, creating both on first use. A command
 /// buffer belongs to the queue it came from, so a queue switch commits what is pending first.
 static id<MTLBlitCommandEncoder> mmm_utility_blit(id<MTLCommandQueue> queue) {
+    mmm_flush_pending_clears();
+    mmm_end_continued_encoder();
     if (queue == g_BatchQueue && !g_BatchEncoder && !g_UtilityBuffer) {
         if (!mmm_batch_buffer()) return nil;
         if (!g_BatchBlit) g_BatchBlit = [g_BatchBuffer blitCommandEncoder];
@@ -205,6 +271,7 @@ static void* mmm_staging_reserve(id<MTLDevice> device, size_t length) {
 
 /// Retire the frame's staging slot. Called once per frame, at the start of drawable acquisition.
 void mmm_utility_end_frame(void) {
+    mmm_flush_pending_clears();
     mmm_batch_flush();
     mmm_utility_flush();
     g_StagingSlot = (g_StagingSlot + 1) % MMM_STAGING_SLOTS;
@@ -219,6 +286,7 @@ void mmm_utility_end_frame(void) {
 }
 
 static id<MTLCommandBuffer> mmm_make_command_buffer(id<MTLCommandQueue> queue) {
+    mmm_flush_pending_clears();
     // Anything already pending in the utility buffer must reach the queue first, or it would be
     // executed after work the caller is about to commit.
     mmm_batch_flush();
@@ -226,13 +294,44 @@ static id<MTLCommandBuffer> mmm_make_command_buffer(id<MTLCommandQueue> queue) {
     return mmm_raw_command_buffer(queue);
 }
 
+static bool g_EncoderReused = false;
 static id<MTLRenderCommandEncoder> mmm_make_render_encoder(id<MTLCommandBuffer> buffer,
                                                          MTLRenderPassDescriptor* descriptor) {
-    if (buffer == g_BatchBuffer) mmm_batch_end_blit();
+    g_EncoderReused = false;
+    if (buffer == g_BatchBuffer) {
+        mmm_batch_end_blit();
+        bool compatible = g_ContinueEncoders && g_ContinuedEncoder != nil;
+        for (int i = 0; i < 8 && compatible; ++i) {
+            auto next = descriptor.colorAttachments[i];
+            auto old = g_ContinuedAttachments.colorAttachments[i];
+            compatible = next.texture == old.texture && next.level == old.level
+                    && next.slice == old.slice && next.depthPlane == old.depthPlane
+                    && (!next.texture || next.loadAction == MTLLoadActionLoad);
+        }
+        auto nextDepth = descriptor.depthAttachment;
+        auto oldDepth = g_ContinuedAttachments.depthAttachment;
+        compatible = compatible && nextDepth.texture == oldDepth.texture
+                && nextDepth.level == oldDepth.level && nextDepth.slice == oldDepth.slice
+                && (!nextDepth.texture || nextDepth.loadAction == MTLLoadActionLoad);
+        // Only ordinary Blaze3D descriptors enter the continuation cache. Explicit FX/presentation
+        // buffers keep their independent encoder and synchronization boundaries.
+        if (compatible) {
+            g_EncoderReused = true;
+            g_BatchEncoder = g_ContinuedEncoder;
+            g_ContinuedEncoder = nil;
+            ++g_BatchPasses;
+            return g_BatchEncoder;
+        }
+        mmm_end_continued_encoder();
+    }
     mmm_gpu_profile_attach(buffer, descriptor);
     id<MTLRenderCommandEncoder> encoder = [buffer renderCommandEncoderWithDescriptor:descriptor];
     if (encoder != nil) mmm_capture_count(MMM_CAPTURE_RENDER_PASSES);
-    if (buffer == g_BatchBuffer) { g_BatchEncoder = encoder; ++g_BatchPasses; }
+    if (buffer == g_BatchBuffer) {
+        g_BatchEncoder = encoder;
+        g_ContinuedAttachments = [descriptor copy];
+        ++g_BatchPasses;
+    }
     return encoder;
 }
 
@@ -390,6 +489,7 @@ void* mmm_queue_create(void* device) {
 }
 
 void mmm_queue_release(void* queue) {
+    mmm_flush_pending_clears();
     if (queue == NULL) return;
     @autoreleasepool {
         if ((__bridge id<MTLCommandQueue>)queue == g_BatchQueue) {
@@ -441,6 +541,7 @@ int32_t mmm_texture_height(void* texture) {
 }
 
 int mmm_texture_read(void* texture, void* out, size_t capacity, size_t rowBytes) {
+    mmm_materialize_cpu_clears();
     id<MTLTexture> tex = mmm_texture(texture);
     if (tex == nil || out == NULL) return -1;
     if (tex.storageMode != MTLStorageModeShared) return -2;  // private textures are not CPU-readable
@@ -506,6 +607,7 @@ void* mmm_texture_create_view(void* texture, int64_t pixelFormat, int32_t textur
 int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
                                int32_t x, int32_t y, int32_t width, int32_t height,
                                const void* data, size_t bytesPerRow) {
+    mmm_materialize_cpu_clears();
     MMMCaptureTimer timer(MMM_CAPTURE_UPLOAD_API_NS);
     id<MTLTexture> tex = mmm_texture(texture);
     if (tex == nil || data == NULL || width <= 0 || height <= 0) return -1;
@@ -528,6 +630,7 @@ int mmm_texture_replace_region(void* texture, int32_t mipLevel, int32_t slice,
 int mmm_texture_read_region(void* texture, int32_t mipLevel, int32_t slice,
                             int32_t x, int32_t y, int32_t width, int32_t height,
                             void* out, size_t capacity, size_t bytesPerRow) {
+    mmm_materialize_cpu_clears();
     MMMCaptureTimer timer(MMM_CAPTURE_READBACK_API_NS);
     id<MTLTexture> tex = mmm_texture(texture);
     if (tex == nil || out == NULL || width <= 0 || height <= 0) return -1;
@@ -570,53 +673,122 @@ void mmm_queue_synchronize(void* queue) {
 // only *commits* work, so a fence that returns immediately let the CPU overwrite data the GPU was
 // still reading.
 //
-// A fence is an MTLSharedEvent plus a signal command buffer enqueued at creation time: command
-// buffers on one queue run in commit order, so when that signal fires, everything committed before
-// the fence was created has completed.
+// Creation submits pending work, so even polling-only clients make progress. Adjacent fences
+// snapshot the same ticket without a new submission. The legacy event path remains an A/B control.
 // ---------------------------------------------------------------------------------------------
+
+@interface MMMQueueFence : NSObject
+@property(nonatomic,strong) MMMSubmissionTimeline* timeline;
+@property(nonatomic,strong) id<MTLSharedEvent> event;
+@property(nonatomic,assign) uint64_t ticket;
+@end
+@implementation MMMQueueFence
+@end
 
 void* mmm_fence_create(void* queue) {
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
-    if (metalQueue == nil) return NULL;
+    if (!metalQueue) return NULL;
     @autoreleasepool {
         mmm_capture_count(MMM_CAPTURE_FENCE_CREATES);
-        id<MTLSharedEvent> event = [metalQueue.device newSharedEvent];
-        if (event == nil) return NULL;
-        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
-        commandBuffer.label = @"MetalMod fence signal";
-        [commandBuffer encodeSignalEvent:event value:1];
-        mmm_commit_command_buffer(commandBuffer);
-        return (__bridge_retained void*)event;
+        mmm_flush_pending_clears();
+        mmm_batch_flush();
+        mmm_utility_flush();
+        MMMQueueFence* fence = [MMMQueueFence new];
+        fence.timeline = mmm_submission_timeline(metalQueue);
+        std::lock_guard<std::mutex> lock(fence.timeline->mutex);
+        fence.ticket = fence.timeline->submitted;
+        return (__bridge_retained void*)fence;
     }
 }
 
-/// Wait for the fence. timeoutNanos <= 0 means do not wait; a very large value waits indefinitely.
-bool mmm_fence_wait(void* fence, int64_t timeoutNanos) {
+void* mmm_fence_create_legacy(void* queue) {
+    id<MTLCommandQueue> metalQueue = mmm_queue(queue);
+    if (!metalQueue) return NULL;
+    @autoreleasepool {
+        mmm_capture_count(MMM_CAPTURE_FENCE_CREATES);
+        MMMQueueFence* fence = [MMMQueueFence new];
+        fence.event = [metalQueue.device newSharedEvent];
+        if (!fence.event) return NULL;
+        id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
+        commandBuffer.label = @"MetalMod legacy fence signal";
+        [commandBuffer encodeSignalEvent:fence.event value:1];
+        mmm_commit_command_buffer(commandBuffer);
+        return (__bridge_retained void*)fence;
+    }
+}
+
+bool mmm_fence_wait(void* handle, int64_t timeoutNanos) {
     MMMCaptureTimer timer(MMM_CAPTURE_FENCE_WAIT_NS);
     mmm_capture_count(MMM_CAPTURE_FENCE_WAIT_CALLS);
-    id<MTLSharedEvent> event = (__bridge id<MTLSharedEvent>)fence;
-    if (event == nil) return true;
-    if (event.signaledValue >= 1) return true;
-    mmm_batch_flush();
-    // About to block. Hand the GPU the utility work this thread is still holding, or the queue
-    // drains and the wait covers a gap that the pending copies would have filled.
-    mmm_utility_flush();
-    uint64_t timeoutMs;
-    if (timeoutNanos <= 0) {
-        timeoutMs = 0;
-    } else if (timeoutNanos / 1000000LL > (int64_t)UINT32_MAX) {
-        timeoutMs = UINT64_MAX;   // effectively wait forever
-    } else {
-        timeoutMs = (uint64_t)(timeoutNanos / 1000000LL);
+    MMMQueueFence* fence = (__bridge MMMQueueFence*)handle;
+    if (!fence) return true;
+    if (fence.event) {
+        if (fence.event.signaledValue >= 1) return true;
+        uint64_t ms = timeoutNanos <= 0 ? 0 : (uint64_t)(timeoutNanos / 1000000LL);
+        if (ms > UINT32_MAX) ms = UINT64_MAX;
+        return [fence.event waitUntilSignaledValue:1 timeoutMS:ms];
     }
-    return [event waitUntilSignaledValue:1 timeoutMS:timeoutMs];
+    MMMSubmissionTimeline* state = fence.timeline;
+    std::unique_lock<std::mutex> lock(state->mutex);
+    auto complete = [&] { return state->completed >= fence.ticket; };
+    if (complete()) return true;
+    if (timeoutNanos <= 0) return false;
+    if (timeoutNanos == INT64_MAX) {
+        state->changed.wait(lock, complete);
+        return true;
+    }
+    return state->changed.wait_for(lock, std::chrono::nanoseconds(timeoutNanos), complete);
 }
 
 void mmm_fence_release(void* fence) {
-    if (fence == NULL) return;
+    if (!fence) return;
     @autoreleasepool {
-        id<MTLSharedEvent> released = (__bridge_transfer id<MTLSharedEvent>)fence;
+        MMMQueueFence* released = (__bridge_transfer MMMQueueFence*)fence;
         (void)released;
+    }
+}
+
+int64_t mmm_buffer_texture_alignment(void* device, int64_t pixelFormat) {
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
+    if (!dev) return 0;
+    switch ((MTLPixelFormat)pixelFormat) {
+        case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint:
+        case MTLPixelFormatR32Float: case MTLPixelFormatRGBA32Float: break;
+        default: return 0;
+    }
+    return std::max([dev minimumTextureBufferAlignmentForPixelFormat:(MTLPixelFormat)pixelFormat],
+                    [dev minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)pixelFormat]);
+}
+
+void* mmm_buffer_texture(void* buffer, int64_t pixelFormat, int64_t offset, int64_t texels) {
+    id<MTLBuffer> source = (__bridge id<MTLBuffer>)buffer;
+    if (!source || offset < 0 || texels <= 0) return NULL;
+    // Restrict to formats exercised by the native pixel checks. R8Sint must stay 2D (BUG-013).
+    NSUInteger stride;
+    switch ((MTLPixelFormat)pixelFormat) {
+        case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint: case MTLPixelFormatR32Float: stride = 4; break;
+        case MTLPixelFormatRGBA32Float: stride = 16; break;
+        default: return NULL;
+    }
+    NSUInteger alignment = (NSUInteger)mmm_buffer_texture_alignment((__bridge void*)source.device, pixelFormat);
+    if (!alignment || (NSUInteger)offset % alignment || (uint64_t)offset > source.length
+            || (uint64_t)texels > (source.length - (NSUInteger)offset) / stride
+            || (uint64_t)texels > 256ULL * 1024 * 1024) return NULL;
+    NSUInteger rowBytes = ((NSUInteger)texels * stride + alignment - 1) / alignment * alignment;
+    if (rowBytes > source.length - (NSUInteger)offset) return NULL;
+    @autoreleasepool {
+        MTLTextureDescriptor* descriptor = [MTLTextureDescriptor new];
+        descriptor.textureType = MTLTextureTypeTextureBuffer;
+        descriptor.pixelFormat = (MTLPixelFormat)pixelFormat;
+        descriptor.width = (NSUInteger)texels;
+        descriptor.height = 1;
+        descriptor.depth = 1;
+        descriptor.mipmapLevelCount = 1;
+        descriptor.arrayLength = 1;
+        descriptor.usage = MTLTextureUsageShaderRead;
+        descriptor.storageMode = source.storageMode;
+        id<MTLTexture> texture = [source newTextureWithDescriptor:descriptor offset:(NSUInteger)offset bytesPerRow:rowBytes];
+        return (__bridge_retained void*)texture;
     }
 }
 
@@ -968,8 +1140,30 @@ void* mmm_render_pass_begin(void* commandBuffer, int32_t colorCount, void* const
             }
         }
 
+        mmm_apply_pending_clears(buffer, descriptor);
         id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(buffer, descriptor);
         if (encoder == nil) return NULL;
+        // Reset all state exposed by our logical RenderPass API, including resource bindings. A new
+        // Java pass cannot inherit a missing binding or clipped scissor from the preceding pass.
+        if (g_EncoderReused) {
+            for (NSUInteger slot = 0; slot < 31; ++slot) {
+                [encoder setVertexBuffer:nil offset:0 atIndex:slot];
+                [encoder setFragmentBuffer:nil offset:0 atIndex:slot];
+                [encoder setVertexTexture:nil atIndex:slot];
+                [encoder setFragmentTexture:nil atIndex:slot];
+                if (slot < 16) {
+                    [encoder setVertexSamplerState:nil atIndex:slot];
+                    [encoder setFragmentSamplerState:nil atIndex:slot];
+                }
+            }
+            [encoder setScissorRect:(MTLScissorRect){0, 0, (NSUInteger)width, (NSUInteger)height}];
+            [encoder setDepthBias:0 slopeScale:0 clamp:0];
+            [encoder setStencilReferenceValue:0];
+            [encoder setBlendColorRed:0 green:0 blue:0 alpha:0];
+            [encoder setCullMode:MTLCullModeNone];
+            [encoder setTriangleFillMode:MTLTriangleFillModeFill];
+            [encoder setDepthStencilState:mmm_no_depth_state()];
+        }
         [encoder setViewport:(MTLViewport){0.0, 0.0, (double)width, (double)height, 0.0, 1.0}];
         [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
         return (__bridge_retained void*)encoder;
@@ -995,7 +1189,11 @@ void mmm_render_pass_end(void* encoder) {
     id<MTLRenderCommandEncoder> metalEncoder = (__bridge id<MTLRenderCommandEncoder>)encoder;
     if (metalEncoder == nil) return;
     @autoreleasepool {
-        [metalEncoder endEncoding];
+        if (g_ContinueEncoders && metalEncoder == g_BatchEncoder) {
+            g_ContinuedEncoder = metalEncoder;
+        } else {
+            [metalEncoder endEncoding];
+        }
         if (metalEncoder == g_BatchEncoder) g_BatchEncoder = nil;
         id<MTLRenderCommandEncoder> released = (__bridge_transfer id<MTLRenderCommandEncoder>)encoder;
         (void)released;
@@ -1250,7 +1448,7 @@ void mmm_render_pass_draw_indexed_uniform(void* encoder, int32_t topology, void*
         indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
 }
 
-int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
+static int mmm_clear_textures_now(void* queue, void* colorTexture, bool hasColor,
                        float r, float g, float b, float a,
                        void* depthTexture, bool hasDepth, double depthValue) {
     id<MTLCommandQueue> metalQueue = mmm_queue(queue);
@@ -1275,12 +1473,150 @@ int mmm_clear_textures(void* queue, void* colorTexture, bool hasColor,
         }
         id<MTLCommandBuffer> commandBuffer = mmm_make_command_buffer(metalQueue);
         commandBuffer.label = @"MetalMod clear";
-        mmm_capture_count(MMM_CAPTURE_CLEARS);
         id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(commandBuffer, descriptor);
         [encoder endEncoding];
         mmm_commit_command_buffer(commandBuffer);
     }
     return 0;
+}
+
+// Pending records retain the exact texture view and queue. Compare canonical subresources, not
+// dimensions or labels: atlas mip views and array slices must never absorb each other's clear.
+@interface MMMTextureClear : NSObject
+@property(nonatomic,strong) id<MTLTexture> texture;
+@property(nonatomic,strong) id<MTLCommandQueue> queue;
+@property(nonatomic,assign) BOOL depth;
+@property(nonatomic,assign) MTLClearColor color;
+@property(nonatomic,assign) double depthValue;
+@end
+@implementation MMMTextureClear
+@end
+static NSMutableArray<MMMTextureClear*>* g_PendingClears;
+
+static bool mmm_same_subresource(id<MTLTexture> a, id<MTLTexture> b, NSUInteger level, NSUInteger slice) {
+    if (!a || !b || a.pixelFormat != b.pixelFormat) return false;
+    NSUInteger aLevel = 0, aSlice = 0;
+    while (a.parentTexture) {
+        aLevel += a.parentRelativeLevel; aSlice += a.parentRelativeSlice; a = a.parentTexture;
+    }
+    while (b.parentTexture) {
+        level += b.parentRelativeLevel; slice += b.parentRelativeSlice; b = b.parentTexture;
+    }
+    return a == b && aLevel == level && aSlice == slice;
+}
+
+static void mmm_flush_pending_clears(void) {
+    if (!g_PendingClears.count) return;
+    NSArray<MMMTextureClear*>* pending = [g_PendingClears copy];
+    [g_PendingClears removeAllObjects]; // Detach before the immediate path reaches a boundary again.
+    for (MMMTextureClear* clear in pending) {
+        mmm_clear_textures_now((__bridge void*)clear.queue,
+                clear.depth ? NULL : (__bridge void*)clear.texture, !clear.depth,
+                clear.color.red, clear.color.green, clear.color.blue, clear.color.alpha,
+                clear.depth ? (__bridge void*)clear.texture : NULL, clear.depth, clear.depthValue);
+    }
+}
+
+static void mmm_flush_foreign_clears(id<MTLCommandQueue> queue) {
+    for (MMMTextureClear* clear in g_PendingClears) {
+        if (clear.queue != queue) { mmm_flush_pending_clears(); return; }
+    }
+}
+
+static void mmm_materialize_cpu_clears(void) {
+    if (!g_PendingClears.count) return;
+    NSArray<MMMTextureClear*>* pending = [g_PendingClears copy];
+    mmm_flush_pending_clears();
+    // A CPU upload/read cannot race a just-materialized GPU clear on the same storage.
+    for (MMMTextureClear* clear in pending) mmm_queue_synchronize((__bridge void*)clear.queue);
+}
+
+static void mmm_apply_pending_clears(id<MTLCommandBuffer> buffer, MTLRenderPassDescriptor* descriptor) {
+    id<MTLCommandQueue> queue = buffer.commandQueue;
+    for (MMMTextureClear* clear in [g_PendingClears copy]) {
+        if (clear.queue != queue) continue;
+        bool consumed = false;
+        if (clear.depth) {
+            auto attachment = descriptor.depthAttachment;
+            if (mmm_same_subresource(clear.texture, attachment.texture, attachment.level, attachment.slice)) {
+                if (attachment.loadAction != MTLLoadActionClear) {
+                    attachment.loadAction = MTLLoadActionClear;
+                    attachment.clearDepth = clear.depthValue;
+                }
+                consumed = true;
+            }
+        } else {
+            for (NSUInteger i = 0; i < 8; ++i) {
+                auto attachment = descriptor.colorAttachments[i];
+                if (mmm_same_subresource(clear.texture, attachment.texture, attachment.level, attachment.slice)) {
+                    if (attachment.loadAction != MTLLoadActionClear) {
+                        attachment.loadAction = MTLLoadActionClear;
+                        attachment.clearColor = clear.color;
+                    }
+                    consumed = true;
+                }
+            }
+        }
+        if (consumed) [g_PendingClears removeObjectIdenticalTo:clear];
+    }
+    // Unmatched targets may be sampled by this pass. Encode their clears into the SAME buffer:
+    // submitting it here would invalidate the caller's already-acquired command-buffer lease.
+    NSArray<MMMTextureClear*>* pending = [g_PendingClears copy];
+    [g_PendingClears removeAllObjects];
+    for (MMMTextureClear* clear in pending) {
+        MTLRenderPassDescriptor* flush = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (clear.depth) {
+            flush.depthAttachment.texture = clear.texture;
+            flush.depthAttachment.loadAction = MTLLoadActionClear;
+            flush.depthAttachment.storeAction = MTLStoreActionStore;
+            flush.depthAttachment.clearDepth = clear.depthValue;
+        } else {
+            flush.colorAttachments[0].texture = clear.texture;
+            flush.colorAttachments[0].loadAction = MTLLoadActionClear;
+            flush.colorAttachments[0].storeAction = MTLStoreActionStore;
+            flush.colorAttachments[0].clearColor = clear.color;
+        }
+        id<MTLRenderCommandEncoder> encoder = mmm_make_render_encoder(buffer, flush);
+        [encoder endEncoding];
+        if (buffer == g_BatchBuffer) g_BatchEncoder = nil;
+    }
+}
+
+int mmm_clear_textures(void* queue, void* color, bool hasColor, float r, float g, float b, float a,
+                       void* depth, bool hasDepth, double depthValue) {
+    mmm_capture_count(MMM_CAPTURE_CLEARS);
+    // A mid-pass caller can sample the clear target before another pass opens. Preserve the
+    // existing immediate path there instead of deferring past a consumer we cannot intercept.
+    if (!g_DeferClears || g_BatchEncoder)
+        return mmm_clear_textures_now(queue, color, hasColor, r, g, b, a, depth, hasDepth, depthValue);
+    if (!queue) return -1;
+    mmm_batch_flush();
+    mmm_utility_flush();
+    if (!g_PendingClears) g_PendingClears = [NSMutableArray new];
+    for (int kind = 0; kind < 2; ++kind) {
+        void* texture = kind == 0 ? (hasColor ? color : NULL) : (hasDepth ? depth : NULL);
+        if (!texture) continue;
+        MMMTextureClear* record = [MMMTextureClear new];
+        record.queue = (__bridge id<MTLCommandQueue>)queue;
+        record.texture = (__bridge id<MTLTexture>)texture;
+        record.depth = kind == 1;
+        record.color = MTLClearColorMake(r,g,b,a); record.depthValue = depthValue;
+        // With no intervening consumer only the last clear of this exact subresource matters.
+        for (MMMTextureClear* old in [g_PendingClears copy]) {
+            if (old.queue == record.queue && old.depth == record.depth
+                    && mmm_same_subresource(old.texture, record.texture, 0, 0))
+                [g_PendingClears removeObjectIdenticalTo:old];
+        }
+        [g_PendingClears addObject:record];
+    }
+    return 0;
+}
+
+void mmm_backend_optimizations(bool deferredClears, bool encoderContinuation) {
+    mmm_flush_pending_clears();
+    mmm_batch_flush();
+    g_DeferClears = deferredClears;
+    g_ContinueEncoders = encoderContinuation;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1682,6 +2018,7 @@ void* mmm_command_buffer_batch_create(void* queue) {
     if (!metalQueue) return NULL;
     @autoreleasepool {
         if (g_BatchEncoder) return NULL; // nested render passes are unsupported
+        mmm_flush_foreign_clears(metalQueue);
         if (g_BatchQueue != metalQueue || g_UtilityBuffer || g_BatchPasses >= 64) {
             mmm_batch_flush();
             mmm_utility_flush();

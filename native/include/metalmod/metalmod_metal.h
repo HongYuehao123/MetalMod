@@ -125,11 +125,20 @@ MMM_API void mmm_queue_synchronize(void* queue);
 // Fences
 // ---------------------------------------------------------------------------------------------
 
+/// Configure optional ordinary-pass optimizations at an idle render-thread boundary.
+MMM_API void mmm_backend_optimizations(bool deferredClears, bool encoderContinuation);
+
 /// Create a fence on the queue. Work committed before this call is complete once the fence signals.
 MMM_API void* mmm_fence_create(void* queue);
+/// Diagnostic rollback: a dedicated shared-event signal submission per fence.
+MMM_API void* mmm_fence_create_legacy(void* queue);
 /// Wait for the fence. timeoutNanos <= 0 polls once; a very large value waits indefinitely.
 MMM_API bool mmm_fence_wait(void* fence, int64_t timeoutNanos);
 MMM_API void mmm_fence_release(void* fence);
+
+/// A retained native texture-buffer view, or NULL for unsupported format/range/alignment.
+MMM_API int64_t mmm_buffer_texture_alignment(void* device, int64_t pixelFormat);
+MMM_API void* mmm_buffer_texture(void* buffer, int64_t pixelFormat, int64_t offset, int64_t texels);
 
 MMM_API void*   mmm_buffer_create(void* device, int64_t length);
 MMM_API void*   mmm_buffer_contents(void* buffer);

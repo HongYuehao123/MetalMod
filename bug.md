@@ -8,6 +8,32 @@ best guess at the cause. Add a screenshot under `docs/bugs/` when one exists.
 
 ---
 
+## BUG-053 — Texel emulation aliases slices and overwrites earlier texture generations
+
+**Status: FIXED (2026-10-17), Stage 1.** The fallback key mixed a native address, texel count and
+format into one arithmetic hash, omitting slice/sub-buffer offsets. Equal-length ranges could use
+one texture, and every bind rewrote its shared storage while earlier GPU consumers could still
+read it. Retained mapped views also make a map/unmap-only dirty counter insufficient.
+
+The key now contains storage-object identity, absolute offset, range, format and shader layout.
+Exact byte comparison detects mapped writes; unchanged contents reuse a generation, while changes
+publish an immutable replacement retained through consumer encoding. Pending GPU texel writes
+land before CPU fallback reads. Pixel checks cover shifted/nested slices, retained writes and
+both earlier/new texture contents. See [Stage 1 validation](docs/performance/stage1-backend-lifecycle.md).
+
+## BUG-052 — Transient arena wrap can overwrite pending GPU allocations
+
+**Status: FIXED (2026-10-17), Stage 1.** The old 64 MB arena reset its cursor to zero on overflow
+without fencing earlier readers; an allocation larger than the arena also exceeded its mapped
+range. This was identified in code review and reproduced with deliberately small test blocks,
+not established as the cause of a previously reported gameplay artifact.
+
+The engine block allocator now spills to new storage, handles minimum-size/size-multiple arguments,
+and recycles a frame's blocks only after its GPU completion ticket. Oversized/device-limit requests
+are guarded before native allocation. A forced-spill test verifies original CPU bytes, oversized
+blocks, partial allocations and 24 GPU-reader/recycling generations. Device shutdown retains the
+queue until transient retirement completes.
+
 ## BUG-051 — Sodium temporal output retains coherent stationary jitter
 
 **Status:** **FIXED for the reported stationary-image failure (2026-10-16).** Adapter 0.1.3

@@ -56,6 +56,25 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Performance Stage 1 complete (2026-10-17)
+
+Stage 1A–1D implements and qualifies queue completion-ticket fences, exact-content/offset-safe
+texel caching, reusable lighting staging, GPU-fenced transient blocks, compile-task region release
+and a shader/blend-proven native-only black-vignette skip. Deferred full clears, compatible render
+encoder continuation and native texel-buffer layouts are tested explicit opt-ins under the final
+rollout decision. Default paths preserve the R8_SINT fallback and light ABI v1.
+
+All five offline gates pass (976 native checks, 87+9 shaders, 393 core/Sodium pixel assertions,
+standalone tests). Follow-up copied-world temporal validation passes 476 checks and its independent
+image gate; FG passes 192 checks, 16 fresh-restart checks and 23 final-delivery checks plus images.
+Region controls show 128/128 released versus 128/128 retained; Sodium integration passes 114 checks.
+All 15 accepted follow-up JVMs exit successfully; all 691 normal-instance files remain unchanged.
+
+A matched dense optional-path ABBA reduces native passes 41.8%, submissions 17.2% and CPU 3.6%,
+with rendered FPS +1.4%. Surface draws vary 4.3%, so its gain ratio is rejected. Optional defaults
+stay off; no general speedup is claimed. Qualification is closed with these defaults. See
+[implementation, results and completion manifest](docs/performance/stage1-backend-lifecycle.md).
+
 ## Performance Stage 0 complete (2026-10-17)
 
 Opt-in `-Dmetalmod.resourceTelemetry=true` exports bounded resource/format bytes, CPU API time,
@@ -80,7 +99,7 @@ separate metrics. One interrupted dense diagnostic is retained and rejected befo
 
 Stage 0 started from `349ef76`; exact artifacts, fixture manifests, commands, scope and later-stage
 review corrections are in [the telemetry contract](docs/performance/stage0-resource-telemetry.md)
-and [live results](docs/performance/stage0-live-20261017.md). Stage 1+ remains unimplemented.
+and [live results](docs/performance/stage0-live-20261017.md). Stage 2+ remains unimplemented.
 
 ## BUG-051 stationary temporal instability fixed (2026-10-16)
 

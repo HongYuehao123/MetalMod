@@ -156,6 +156,9 @@ public final class MetalDevice implements GpuDeviceBackend {
         MetalBuffer grid;
         GpuTexture data;
         GpuTextureView dataView;
+        final ByteBuffer listStaging = ByteBuffer.allocateDirect(LightSnapshot.BYTES);
+        final ByteBuffer gridStaging = ByteBuffer.allocateDirect(16);
+        ByteBuffer textureStaging;
     }
 
     public boolean pointLightProofEnabled() { return this.pointLightProof; }
@@ -217,7 +220,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         }
         if (generation != this.uploadedLightGeneration) {
             LightSnapshot snapshot = LightCollector.current();
-            ByteBuffer encoded = snapshot.encode();
+            ByteBuffer encoded = snapshot.encodeInto(this.currentLightFrame.listStaging);
             upload(this.currentLightFrame.list, "MetalMod dynamic lights", encoded);
             this.frameUploads++;
             this.frameUploadBytes += encoded.capacity();
@@ -226,7 +229,7 @@ public final class MetalDevice implements GpuDeviceBackend {
                 this.clusterGrid.build(snapshot);
                 this.frameClusterBuilds++;
                 this.frameClusterNanos += System.nanoTime() - clusterStarted;
-                ByteBuffer grid = this.clusterGrid.encodeGridUniform();
+                ByteBuffer grid = this.clusterGrid.encodeGridUniformInto(this.currentLightFrame.gridStaging);
                 upload(this.currentLightFrame.grid, "MetalMod light grid", grid);
                 this.frameUploads++;
                 this.frameUploadBytes += grid.capacity();
@@ -244,13 +247,10 @@ public final class MetalDevice implements GpuDeviceBackend {
     private void uploadClusterTexture(LightSnapshot snapshot) {
         LightFrame frame = this.currentLightFrame;
         if (frame.data == null || frame.dataView == null) return;
-        float[] texels = this.clusterGrid.encodeTexels();
-        float[] records = this.clusterGrid.encodeRecords(snapshot);
-        System.arraycopy(records, 0, texels, LightClusterGrid.recordTexel(0) * 4, records.length);
-        java.nio.ByteBuffer bytes = java.nio.ByteBuffer.allocateDirect(texels.length * 4)
-                .order(java.nio.ByteOrder.nativeOrder());
-        bytes.asFloatBuffer().put(texels);
-        bytes.position(0).limit(texels.length * 4);
+        if (frame.textureStaging == null) {
+            frame.textureStaging = ByteBuffer.allocateDirect(this.clusterGrid.encodedBytes());
+        }
+        ByteBuffer bytes = this.clusterGrid.encodeTextureInto(snapshot, frame.textureStaging);
         try {
             CommandEncoderBackend encoder = createCommandEncoder();
             encoder.writeToTexture(frame.data, bytes, 0, 0, 0, 0,
@@ -376,6 +376,10 @@ public final class MetalDevice implements GpuDeviceBackend {
      * and a frame that never presents never leaves a buffer unfenced.
      */
     public void endDynamicLightFrame() {
+        this.transientMemory.endFrame();
+        // All logical passes are encoded; their command buffers retain bound texture generations.
+        for (MetalTexture texture : this.retiredTexelTextures) texture.close();
+        this.retiredTexelTextures.clear();
         // Snapshot before the early return: a frame with lighting off is exactly the frame whose
         // numbers matter for "the disabled path costs nothing", and it must report zeros rather than
         // leave the previous frame's figures standing.
@@ -903,6 +907,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         this.device = device;
         this.queue = queue;
         this.info = info;
+        MetalNative.configureBackendOptimizations();
         this.transientMemory = new MetalTransientMemory(this);
     }
 
@@ -992,10 +997,30 @@ public final class MetalDevice implements GpuDeviceBackend {
         return created;
     }
 
-    // One 2D texture per texel-buffer backing buffer, keyed by handle and size. The data changes
-    // every frame (the cloud faces are rebuilt), so the bytes are re-uploaded on each use while the
-    // texture itself is reused.
-    private final Map<Long, MetalTexture> texelTextures = new HashMap<>();
+    private record TexelKey(MetalBuffer storage, long offset, long bytes, GpuFormat format, boolean nativeTexture) {}
+    private static final class TexelEntry {
+        MetalTexture texture;
+        MemorySegment snapshot;
+        long generation;
+        boolean direct;
+        boolean valid;
+    }
+    private final Map<TexelKey, TexelEntry> texelTextures = new HashMap<>();
+    private final List<MetalTexture> retiredTexelTextures = new java.util.ArrayList<>();
+    private boolean gpuTexelWritesPending;
+
+    void noteGpuBufferWrite(MetalBuffer buffer) {
+        if (((buffer.usage() | buffer.storageOwner().usage()) & GpuBuffer.USAGE_UNIFORM_TEXEL_BUFFER) != 0)
+            this.gpuTexelWritesPending = true;
+    }
+
+    /** Emulated texels read CPU-visible storage; pending GPU copies must land before a pass opens. */
+    void prepareTexelReads() {
+        if (this.gpuTexelWritesPending) {
+            MetalNative.queueSynchronize(this.queue);
+            this.gpuTexelWritesPending = false;
+        }
+    }
 
     // Shared textures used to bring a private render target's contents back to the CPU. Small and
     // few (screenshots and diagnostics ask for one region size), so they are cached rather than
@@ -1023,62 +1048,100 @@ public final class MetalDevice implements GpuDeviceBackend {
         return texture;
     }
 
-    /**
-     * Present a texel-buffer uniform's bytes as a 2D texture the shader can read.
-     *
-     * <p>SPIRV-Cross emits {@code texture2d<T>} plus {@code spvTexelBufferCoord()} for these, not a
-     * native {@code texture_buffer<T>} — and Metal cannot view a buffer as a 2D texture anyway, so
-     * the bytes are copied in. Cached per backing buffer to avoid a texture allocation per frame.
-     */
+    /** Compatibility entry point: immutable, offset-safe 2D texel emulation, including R8_SINT. */
     public synchronized MetalTexture texelTexture(MetalBuffer buffer, long offset, long length,
                                                   GpuFormat format, int bytesPerTexel) {
-        int perTexel = Math.max(1, bytesPerTexel);
-        int texels = (int) Math.max(1L, length / perTexel);
-        long needed = (long) texels * perTexel;
-        if (buffer == null || !buffer.isMapped() || offset < 0
-                || offset + needed > buffer.data().byteSize()) {
-            return null;
-        }
-        // The shader flattens a linear texel index with `tc % W, tc / W` for a literal W
-        // (MetalShaderCompiler.TEXEL_BUFFER_WIDTH), so the texture has to be W wide and as tall as
-        // the data needs. It used to be `texels x 1`, which reads the wrong texels past W texels and
-        // is rejected by Metal outright once `texels` passes the device's 16384 limit - the cloud
-        // buffer reaches six figures, so entering a world aborted on texture creation.
-        int width = MetalShaderCompiler.TEXEL_BUFFER_WIDTH;
-        int height = (texels + width - 1) / width;
-        // Keyed by handle, texel count and format: two pipelines could present the same buffer with
-        // different formats, and the cached texture would then be the wrong one.
-        long key = buffer.handle().address() * 1_000_003L + texels * 31L + format.ordinal();
-        MetalTexture texture = this.texelTextures.get(key);
-        if (texture == null) {
-            // USAGE_COPY_DST is what this really is: the rows below are uploaded from the CPU, so the
-            // texture must keep shared storage. Declaring only USAGE_TEXTURE_BINDING would let the
-            // storage-mode rule make it private and silently drop every upload.
-            texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
-                    "texel buffer", format, width, height, 1, 1);
-            if (!texture.isValid()) {
-                return null;
+        return texelTexture(buffer, offset, length, format, bytesPerTexel, false);
+    }
+
+    public synchronized MetalTexture texelTexture(MetalBuffer buffer, long offset, long length,
+                                                  GpuFormat format, int bytesPerTexel, boolean nativeTexture) {
+        if (buffer == null || buffer.isClosed() || buffer.storageOwner().isClosed() || !buffer.isMapped()
+                || bytesPerTexel <= 0 || length < bytesPerTexel || offset < 0
+                || length > buffer.size() || offset > buffer.size() - length) return null;
+        if (nativeTexture && !MetalRenderPipeline.nativeTexelFormat(format))
+            throw new IllegalArgumentException("Unsupported native texel format " + format);
+        int texels = Math.toIntExact(length / bytesPerTexel);
+        long needed = (long) texels * bytesPerTexel;
+        TexelKey key = new TexelKey(buffer.storageOwner(), buffer.baseOffset() + offset, needed, format, nativeTexture);
+        var iterator = this.texelTextures.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var old = iterator.next();
+            if (old.getKey().storage().isClosed()) {
+                this.retiredTexelTextures.add(old.getValue().texture);
+                iterator.remove();
             }
-            this.texelTextures.put(key, texture);
         }
-        // Uploaded as whole rows plus a last partial one. Padding the tail to a full row would read
-        // past the end of the backing buffer, which is a ring allocation the engine owns.
-        long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
-        int fullRows = texels / width;
-        if (fullRows > 0) {
-            long bytes = (long) width * fullRows * perTexel;
-            MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, 0, width, fullRows,
-                    buffer.dataSlice(offset, bytes), (long) width * perTexel);
+        TexelEntry entry = this.texelTextures.get(key);
+        if (entry != null && entry.direct) return entry.texture;
+        if (this.gpuTexelWritesPending) {
+            throw new IllegalStateException("Texel GPU writes must finish before opening a render pass");
         }
-        int remainder = texels % width;
-        if (remainder > 0) {
-            long start = offset + (long) width * fullRows * perTexel;
-            long bytes = (long) remainder * perTexel;
-            MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, fullRows, remainder, 1,
-                    buffer.dataSlice(start, bytes), bytes);
+        MemorySegment source = buffer.dataSlice(offset, needed);
+        boolean cache = Boolean.parseBoolean(System.getProperty("metalmod.texelCache", "true"));
+        // Mapped memory may be mutated through a retained ByteBuffer, without map()/unmap() calls.
+        // Compare exact bytes instead of trusting a generation increment that cannot observe that.
+        if (cache && entry != null && entry.valid && source.mismatch(entry.snapshot) == -1) return entry.texture;
+        if (entry == null) entry = new TexelEntry();
+        MetalTexture texture = null;
+        boolean direct = false;
+        if (nativeTexture) {
+            MemorySegment view = MetalNative.bufferTexture(buffer.handle(), MetalFormat.mtlPixelFormat(format),
+                    key.offset(), texels);
+            direct = view.address() != 0;
+            if (direct) texture = new MetalTexture(this, format, texels, view);
         }
-        net.metalmod.debug.ResourceTelemetry.end(telemetry, "texture.texel-emulation",
-                buffer.diagnosticLabel(), format, needed);
+        if (!direct) {
+            entry.valid = false; // A failed replacement must not mark the old texture up to date.
+            if (entry.snapshot == null) entry.snapshot = MemorySegment.ofBuffer(ByteBuffer.allocateDirect(Math.toIntExact(needed)));
+            MemorySegment.copy(source, 0, entry.snapshot, 0, needed);
+            long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
+            if (nativeTexture) {
+                // An unaligned slice cannot be bound to a native shader as texture2d. Use an aligned
+                // immutable snapshot with the SAME texture_buffer layout, rather than misbinding it.
+                long alignment = MetalNative.bufferTextureAlignment(this.device, MetalFormat.mtlPixelFormat(format));
+                if (alignment <= 0) throw new IllegalStateException("Native texel format has no alignment");
+                long padded = Math.multiplyExact(Math.addExact(needed, alignment - 1) / alignment, alignment);
+                MemorySegment staging = MetalNative.bufferCreate(this.device, padded);
+                try {
+                    MemorySegment.copy(entry.snapshot, 0, MetalNative.bufferContents(staging, needed), 0, needed);
+                    MemorySegment view = MetalNative.bufferTexture(staging, MetalFormat.mtlPixelFormat(format), 0, texels);
+                    if (view.address() == 0) throw new IllegalStateException("Native texel snapshot creation failed");
+                    texture = new MetalTexture(this, format, texels, view);
+                } finally { MetalNative.bufferRelease(staging); }
+            } else {
+                int width = MetalShaderCompiler.TEXEL_BUFFER_WIDTH;
+                int height = (int) (((long) texels + width - 1) / width);
+                if (height > MetalNative.deviceMaxTextureSize(this.device)) {
+                    reportResourceFailure("Texel emulation exceeds texture height: " + height);
+                    return null;
+                }
+                texture = new MetalTexture(this, GpuTexture.USAGE_TEXTURE_BINDING | GpuTexture.USAGE_COPY_DST,
+                        "texel buffer", format, width, height, 1, 1);
+                if (!texture.isValid()) return null;
+                int fullRows = texels / width;
+                if (fullRows > 0 && MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, 0, width, fullRows,
+                        entry.snapshot.asSlice(0, (long) width * fullRows * bytesPerTexel), (long) width * bytesPerTexel) != 0)
+                    throw new IllegalStateException("Texel row upload failed");
+                int remainder = texels % width;
+                if (remainder > 0) {
+                    long start = (long) width * fullRows * bytesPerTexel;
+                    long bytes = (long) remainder * bytesPerTexel;
+                    if (MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, fullRows, remainder, 1,
+                            entry.snapshot.asSlice(start, bytes), bytes) != 0)
+                        throw new IllegalStateException("Texel tail upload failed");
+                }
+            }
+            net.metalmod.debug.ResourceTelemetry.end(telemetry,
+                    nativeTexture ? "buffer.texel-snapshot" : "texture.texel-emulation",
+                    buffer.diagnosticLabel(), format, needed);
+        }
+        if (entry.texture != null) this.retiredTexelTextures.add(entry.texture);
+        entry.texture = texture;
+        entry.direct = direct;
+        entry.valid = true;
+        ++entry.generation;
+        this.texelTextures.put(key, entry);
         return texture;
     }
 
@@ -1361,6 +1424,7 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     @Override
     public void clearPipelineCache() {
+        net.metalmod.performance.VignetteNoOp.reset();
         clearSodiumUnlitPipelines();
         for (MetalRenderPipeline compiled : this.pipelines.values()) {
             compiled.close();
@@ -1383,9 +1447,6 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (ACTIVE == this) {
             ACTIVE = null;
         }
-        if (this.queue != null && this.queue.address() != 0) {
-            MetalNative.queueRelease(this.queue);
-        }
         this.clearPipelineCache();
         if (this.pointLightProofBuffer != null) this.pointLightProofBuffer.close();
         // Every in-flight light buffer is fenced: wait before releasing the memory it holds.
@@ -1402,9 +1463,9 @@ public final class MetalDevice implements GpuDeviceBackend {
             if (frame.dataView != null) frame.dataView.close();
             if (frame.data != null) frame.data.close();
         }
-        for (MetalTexture texture : this.texelTextures.values()) {
-            texture.close();
-        }
+        for (TexelEntry entry : this.texelTextures.values()) entry.texture.close();
+        for (MetalTexture texture : this.retiredTexelTextures) texture.close();
+        this.retiredTexelTextures.clear();
         this.texelTextures.clear();
         for (MetalTexture texture : this.readbackStagingTextures.values()) {
             texture.close();
@@ -1412,6 +1473,9 @@ public final class MetalDevice implements GpuDeviceBackend {
         this.readbackStagingTextures.clear();
         this.shaderCompiler.close();
         this.transientMemory.close();
+        if (this.queue != null && this.queue.address() != 0) {
+            MetalNative.queueRelease(this.queue);
+        }
         if (this.device != null && this.device.address() != 0) {
             MetalNative.deviceRelease(this.device);
         }

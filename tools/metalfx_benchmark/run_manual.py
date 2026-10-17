@@ -22,9 +22,11 @@ def nbt(path):
 
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--world',required=True)
+p.add_argument('--backend-property',action='append',default=[],metavar='KEY=true|false',
+               help='Explicit Stage 1 backend switch, recorded with the copied-instance launch')
 p.add_argument('--output',type=pathlib.Path,required=True)
 p.add_argument('--submission-benchmark',action='store_true',help='Run automated 30s native ABBA; spatial A/B requires --compare-spatial')
-p.add_argument('--comparison-property',choices=['metalmod.commandBatching','metalmod.fusedDraws','metalmod.bufferOffsets','metalmod.lateDrawableAcquire','metalmod.sodiumEmptyLights'],default='metalmod.commandBatching')
+p.add_argument('--comparison-property',choices=['metalmod.fenceTickets','metalmod.texelCache','metalmod.skipBlackVignette','metalmod.commandBatching','metalmod.fusedDraws','metalmod.bufferOffsets','metalmod.lateDrawableAcquire','metalmod.sodiumEmptyLights'],default='metalmod.commandBatching')
 p.add_argument('--source-world',type=pathlib.Path,help='Read-only saved-world source override')
 p.add_argument('--anchor-route',type=pathlib.Path)
 p.add_argument('--anchor-waypoint',type=int,default=0)
@@ -45,6 +47,17 @@ p.add_argument('--display',choices=['current','internal','external'],default='ex
 p.add_argument('--window-width',type=int,default=2560,help='Initial logical content width')
 p.add_argument('--window-height',type=int,default=1440,help='Initial logical content height')
 a=p.parse_args()
+backend_properties={}
+allowed_backend_properties={'metalmod.fenceTickets','metalmod.deferredClears','metalmod.encoderContinuation',
+    'metalmod.texelCache','metalmod.nativeTexelBuffers','metalmod.compileRegionDrop',
+    'metalmod.skipBlackVignette','metalmod.dumpVignetteProof'}
+for item in a.backend_property:
+    key,separator,value=item.partition('=')
+    if not separator or key not in allowed_backend_properties or value not in ('true','false'):
+        p.error('backend property must be a supported Stage 1 key with true or false')
+    if key in backend_properties:p.error('duplicate backend property: '+key)
+    backend_properties[key]=value
+
 if a.stage0_fixture:
     if not a.submission_benchmark or not a.source_world or not a.anchor_route:
         p.error('Stage 0 fixtures require --submission-benchmark, --source-world and --anchor-route')
@@ -123,7 +136,7 @@ if a.submission_benchmark:
         'diagnostic_only':a.diagnostic_only,'static_camera':a.static_camera,'anchor':dict(position=pos,rotation=rot),
         'source_world':str(source),'anchor_route':str(a.anchor_route) if a.anchor_route else None,
         'anchor_waypoint':a.anchor_waypoint,'gpu_stage_timing':a.gpu_stage_timing,
-        'stage0_fixture':a.stage0_fixture,'resource_telemetry':a.resource_telemetry,
+        'stage0_fixture':a.stage0_fixture,'resource_telemetry':a.resource_telemetry,'backend_properties':backend_properties,
         'expected_pixels':[5120,2664] if a.stage0_fixture=='dense-rd32' else None,
         'git_head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),
         'git_status':subprocess.check_output(['git','status','--short'],cwd=repo,text=True),
@@ -140,6 +153,7 @@ r=out/'debug/metalmod/routes';r.mkdir(parents=True)
 (r/('minecraft.overworld.json' if a.submission_benchmark else 'unused-anchor.json')).write_text(json.dumps({'name':'minecraft.overworld','waypoints':[dict(dimension='minecraft:overworld',x=pos[0],y=pos[1],z=pos[2],yaw=rot[0],pitch=rot[1],dwellMs=60000)]},indent=2))
 cp=subprocess.check_output(['python3','scripts/build_classpath.py',str(instance)],cwd=repo,text=True).strip();cp=':'.join(x for x in cp.split(':') if '/mods/' not in x)
 command=[os.environ.get('METALMOD_BENCHMARK_JAVA','/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/java'),'-XstartOnFirstThread','-Xmx4G','--enable-native-access=ALL-UNNAMED','-Dmetalmod.metalBackend=true','-Dmetalmod.motionBenchmark=true' if a.submission_benchmark else '-Dmetalmod.manualRecording=true','-Dmetalmod.capturePrep=false','-Dmetalmod.displayProbe='+str(probe),'-cp',cp,'net.fabricmc.loader.impl.launch.knot.KnotClient','--username','MetalFXTest','--uuid','00000000000000000000000000000001','--accessToken','0','--version','26.2','--gameDir',str(out),'--assetsDir',str(instance.parents[1]/'assets'),'--assetIndex','32','--width','2560','--height','1440','--quickPlaySingleplayer',a.world]
+for key,value in backend_properties.items():command.insert(command.index('-cp'),'-D'+key+'='+value)
 command[command.index('--width')+1]=str(a.window_width)
 command[command.index('--height')+1]=str(a.window_height)
 command.insert(command.index('-cp'),'-Dmetalmod.benchmarkNativeOnly='+str(not (a.compare_spatial or a.compare_temporal)).lower())

@@ -66,6 +66,11 @@ public final class MetalBuffer extends GpuBuffer {
         return this.baseOffset;
     }
 
+    /** Stable storage identity, including nested suballocations, independent of recycled addresses. */
+    public MetalBuffer storageOwner() {
+        return this.owner instanceof MetalBuffer parent ? parent.storageOwner() : this;
+    }
+
     public MemorySegment handle() {
         return this.handle;
     }

@@ -1,0 +1,645 @@
+{
+  "artifact": {
+    "jar": "build/libs/metalmod-1.0.0.jar",
+    "sha256": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6"
+  },
+  "offline_gates": {
+    "build": {
+      "passed": true,
+      "log": "build/reports/stage1-build.log",
+      "sha256": "10c4f3636a5f53ad4bdd6e774623d982b2262c83caf1aa72fa2e04ce5ec99dc6"
+    },
+    "native_smoke": {
+      "passed": true,
+      "log": "build/reports/stage1-smoke.log",
+      "sha256": "661f651a1c5de8629172317176c1ce99e42fa0fd49be9e721d61c39766807ff2"
+    },
+    "shader_inventory": {
+      "passed": true,
+      "log": "build/reports/stage1-inventory.log",
+      "sha256": "cb4948bcbfe20b48b2b3518ef4dd3c7b2b8c2e91aac50b134684f886fa6e24de"
+    },
+    "render_default": {
+      "passed": true,
+      "log": "build/reports/stage1-render-default.log",
+      "sha256": "03633f2a0eaa4ca77284326548f523eae808a4b580cdeef0205a0f0240545985"
+    },
+    "render_all_options_sodium": {
+      "passed": true,
+      "log": "build/reports/stage1-render-sodium.log",
+      "sha256": "53b5240e1d5c54bc48a242691c0bcc6441047ed97d8ace2eb7cc1099d4b6de6c"
+    },
+    "standalone": {
+      "passed": true,
+      "log": "build/reports/stage1-standalone.log",
+      "sha256": "ed87067239f47b1fb43e5e3b9e91fef8c24a8c59a9103ee10ddae1f16bc8e17f"
+    },
+    "tool_tests": {
+      "passed": true,
+      "log": "build/reports/stage1-tool-tests.log",
+      "sha256": "e071f547d34c63ad0d039a6b3b9f01193a239650d424d7d42a19bd42b09fa3a2"
+    }
+  },
+  "offline_checks": {
+    "native": 976,
+    "core_pixels": 250,
+    "core_and_sodium_pixels": 393,
+    "python_unittests": 12,
+    "analyzer_checks": 11
+  },
+  "tool_checks": {
+    "unittests": 16,
+    "analyzer_checks": 11,
+    "log": "build/reports/stage1-completion-20261017/tool-tests-final.log",
+    "sha256": "78f0bb2ec1302aa56511310afeb615d40e853d2364c487612a490c81ade10462"
+  },
+  "live": {
+    "temporal-all-options": {
+      "result": "PASS\nchecks=476 failures=0 frames=10926",
+      "jar_sha256": {
+        "metalmod-1.0.0.jar": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6",
+        "fabric-api-0.161.0+26.2.jar": "e5b858ceb13290c274e31cb888ff5a1a40cb91067e7ffab0b5b775aec51e216a",
+        "temporal-input-validation.jar": "a98470397210b21118c1f37fe87717f1172944e7acce3af7e2e3393b2a7bdd3a",
+        "modmenu-20.0.2.jar": "1bf32f327b2257266e9dbd00b394800885c3a7c5ff86dc62be0dec129c1da482",
+        "placeholder-api-3.1.0-beta.1+26.2.jar": "c2ca2b5c397a0c198a32e7af68d2d0a011bc2c7baeae5cffd3996efd65c5069e"
+      },
+      "launch": "build/reports/stage1-completion-20261017/temporal-all-options/launch.json",
+      "console_sha256": "6f8edf1bfdbd5073b32a27d52b84c669e031c9f56931566071cefdbbb1e16b02"
+    },
+    "fg-all-options": {
+      "result": "PASS\nchecks=192 failures=0",
+      "jar_sha256": {
+        "metalmod-1.0.0.jar": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6",
+        "fabric-api-0.161.0+26.2.jar": "e5b858ceb13290c274e31cb888ff5a1a40cb91067e7ffab0b5b775aec51e216a",
+        "temporal-input-validation.jar": "4f4969266b4e2a49e1819b2c5020bd4f0465da2658073d0aa7c32db5df111a4b",
+        "modmenu-20.0.2.jar": "1bf32f327b2257266e9dbd00b394800885c3a7c5ff86dc62be0dec129c1da482",
+        "placeholder-api-3.1.0-beta.1+26.2.jar": "c2ca2b5c397a0c198a32e7af68d2d0a011bc2c7baeae5cffd3996efd65c5069e"
+      },
+      "launch": "build/reports/stage1-completion-20261017/fg-all-options/launch.json",
+      "console_sha256": "3b2d9a00157bab6aa41de7a06169695cc9f88ae283d9540f8043c00838717f5f",
+      "restart_result": "PASS\nchecks=16 failures=0"
+    },
+    "fg-delivery-all-options": {
+      "result": "PASS\nchecks=23 failures=0",
+      "jar_sha256": {
+        "metalmod-1.0.0.jar": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6",
+        "fabric-api-0.161.0+26.2.jar": "e5b858ceb13290c274e31cb888ff5a1a40cb91067e7ffab0b5b775aec51e216a",
+        "temporal-input-validation.jar": "9cb14c682db553a87ca95a944731f0712d8063b720690a0cad1386cd14f229f5",
+        "modmenu-20.0.2.jar": "1bf32f327b2257266e9dbd00b394800885c3a7c5ff86dc62be0dec129c1da482",
+        "placeholder-api-3.1.0-beta.1+26.2.jar": "c2ca2b5c397a0c198a32e7af68d2d0a011bc2c7baeae5cffd3996efd65c5069e"
+      },
+      "launch": "build/reports/stage1-completion-20261017/fg-delivery-all-options/launch.json",
+      "console_sha256": "441b068fb347060544e45d449a7f09eebb0ccbace4344d05c8cdc0aea0bbf72b"
+    },
+    "region-enabled": {
+      "result": "PASS\nchecks=114 failures=0 frames=2187",
+      "jar_sha256": {
+        "metalmod-1.0.0.jar": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6",
+        "fabric-api-0.161.0+26.2.jar": "e5b858ceb13290c274e31cb888ff5a1a40cb91067e7ffab0b5b775aec51e216a",
+        "temporal-input-validation.jar": "32bb3fbb4a81e5b55c064c8f8b0fc59d768b0e6fc50c870647656eef57d8baac",
+        "modmenu-20.0.2.jar": "1bf32f327b2257266e9dbd00b394800885c3a7c5ff86dc62be0dec129c1da482",
+        "placeholder-api-3.1.0-beta.1+26.2.jar": "c2ca2b5c397a0c198a32e7af68d2d0a011bc2c7baeae5cffd3996efd65c5069e"
+      },
+      "launch": "build/reports/stage1-completion-20261017/region-enabled/launch.json",
+      "console_sha256": "f524c6555815dbab20f0b89530e0de59d209da0918562ab26cd8551ebbb866f2"
+    },
+    "region-disabled-control": {
+      "result": "PASS\nchecks=114 failures=0 frames=2187",
+      "jar_sha256": {
+        "metalmod-1.0.0.jar": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6",
+        "fabric-api-0.161.0+26.2.jar": "e5b858ceb13290c274e31cb888ff5a1a40cb91067e7ffab0b5b775aec51e216a",
+        "temporal-input-validation.jar": "d82a397eb6ba096c7e1725b5cf4498cbf6117a621d87abe8180cc999e3316a06",
+        "modmenu-20.0.2.jar": "1bf32f327b2257266e9dbd00b394800885c3a7c5ff86dc62be0dec129c1da482",
+        "placeholder-api-3.1.0-beta.1+26.2.jar": "c2ca2b5c397a0c198a32e7af68d2d0a011bc2c7baeae5cffd3996efd65c5069e"
+      },
+      "launch": "build/reports/stage1-completion-20261017/region-disabled-control/launch.json",
+      "console_sha256": "2dea39bd839e272b9726d9a6508d3c8dafd9b67210c90074735d9826190775e1"
+    },
+    "sodium-all-options": {
+      "result": "PASS\nchecks=114 failures=0 frames=2130",
+      "jar_sha256": {
+        "sodium-fabric-0.9.2+mc26.2.jar": "16a5e91db49750f8c046ecca3b8f2af5a28ea6f9b6581b42f123ca8fda20864f",
+        "metalmod-1.0.0.jar": "941315e697c29b4d4474df83476eac1132bafac66d86962d7857c6dc920081d6",
+        "fabric-api-0.161.0+26.2.jar": "e5b858ceb13290c274e31cb888ff5a1a40cb91067e7ffab0b5b775aec51e216a",
+        "temporal-input-validation.jar": "1b88d7f39ae0cf1b2b9a43c027e1c590aec3011c2bf494e3b144b45ed132cd82",
+        "modmenu-20.0.2.jar": "1bf32f327b2257266e9dbd00b394800885c3a7c5ff86dc62be0dec129c1da482",
+        "placeholder-api-3.1.0-beta.1+26.2.jar": "c2ca2b5c397a0c198a32e7af68d2d0a011bc2c7baeae5cffd3996efd65c5069e",
+        "metalmod-sodium-0.1.3.jar": "36b02dc9e446386388fa8f40fb46a8d22f018f3ff5eb3f1bf15edd9eab8221a2"
+      },
+      "launch": "build/reports/stage1-completion-20261017/sodium-all-options/launch.json",
+      "console_sha256": "9c1483c24db30c02e3a92f9f388a71bd868f7c40ff1334e994512679a6d466fb"
+    },
+    "temporal_image_gate": {
+      "static": {
+        "frames": 16,
+        "unique_jitter_samples": 16,
+        "registration": "edge-gradient least squares after 1.5-pixel Gaussian low-pass; additive brightness fitted",
+        "shifts_xy_output_pixels": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.010164173875899088,
+            -0.009899259312014628
+          ],
+          [
+            0.005602823452796662,
+            -0.0011537383154862793
+          ],
+          [
+            0.0024012502981028906,
+            -0.0036044255042915517
+          ],
+          [
+            0.015862712653041736,
+            -0.006987127354656732
+          ],
+          [
+            0.004960914293747533,
+            -0.01228477999737341
+          ],
+          [
+            -0.007352029850325668,
+            0.0010886026468648097
+          ],
+          [
+            -3.7217861107926305e-07,
+            -0.0019812868645978955
+          ],
+          [
+            0.024685188019491502,
+            -0.0015216659682968702
+          ],
+          [
+            0.008575041061845569,
+            -0.00899695422426656
+          ],
+          [
+            0.024096481211148654,
+            -0.008610406755163148
+          ],
+          [
+            0.022866315878328557,
+            -0.014651780686129802
+          ],
+          [
+            -0.00938064107660634,
+            -0.0031538589097134103
+          ],
+          [
+            -0.004189855294954745,
+            -0.012623449894336239
+          ],
+          [
+            -0.0014772704785061535,
+            -0.004744126273205994
+          ],
+          [
+            -0.0020943936173747004,
+            -0.0014286723624126448
+          ]
+        ],
+        "range_xy_output_pixels": [
+          0.034065829096097844,
+          0.01574038333299461
+        ],
+        "one_pixel_x_control": [
+          -1.0012989505615144,
+          -0.005429688431091571
+        ],
+        "one_pixel_y_control": [
+          -0.004740214393561315,
+          -1.0074512665409516
+        ],
+        "pass": true,
+        "limit": "Measures coherent image movement in this opaque ROI; does not measure all alias shimmer or transient content"
+      },
+      "quality": {
+        "10n-native-quality-00.png": {
+          "rmse_rgb8_vs_native": 0.0,
+          "mean_rgb8_bias_vs_native": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "10o-spatial-quality-00.png": {
+          "rmse_rgb8_vs_native": 5.071773761497873,
+          "mean_rgb8_bias_vs_native": [
+            4.35498046875,
+            3.0463053385416665,
+            3.5224677191840277
+          ]
+        },
+        "10p-temporal-quality-00.png": {
+          "rmse_rgb8_vs_native": 6.034068273247766,
+          "mean_rgb8_bias_vs_native": [
+            5.974093967013889,
+            4.3009033203125,
+            4.840304904513889
+          ]
+        },
+        "limit": "One frozen scene at strength 50; reference aliasing means RMSE alone cannot rank perceived quality; readback frames are not performance samples"
+      }
+    },
+    "delivery_images": [
+      {
+        "stage": "limited-native-camera",
+        "moving_world_samples": 21683,
+        "raw_changed_fraction": 0.952266752755615,
+        "final_changed_fraction": 0.7990130516994881,
+        "gui_coverage_fraction": 0.015043402777777777,
+        "world_pose_errors": {
+          "0.0": 0.048981081332710896,
+          "0.5": 0.006733755591343994,
+          "1.0": 0.041946250659946484
+        },
+        "midpoint_matches": true,
+        "passed": true
+      },
+      {
+        "stage": "limited-spatial-camera",
+        "moving_world_samples": 7740,
+        "raw_changed_fraction": 0.9881136950904392,
+        "final_changed_fraction": 0.7444444444444445,
+        "gui_coverage_fraction": 0.0053125,
+        "world_pose_errors": {
+          "0.0": 0.03536744902197602,
+          "0.5": 0.010406077002328231,
+          "1.0": 0.030261940053066892
+        },
+        "midpoint_matches": true,
+        "passed": true
+      }
+    ]
+  },
+  "normal_instance": {
+    "before": 691,
+    "after": 691,
+    "changed": []
+  },
+  "defaults": {
+    "metalmod.fenceTickets": true,
+    "metalmod.texelCache": true,
+    "metalmod.compileRegionDrop": true,
+    "metalmod.skipBlackVignette": true,
+    "metalmod.deferredClears": false,
+    "metalmod.encoderContinuation": false,
+    "metalmod.nativeTexelBuffers": false
+  },
+  "qualification": "Complete with conservative optional-path defaults; dense gain scoped to one matched fixture; surface gain rejected by the workload guard.",
+  "performance_launches": [
+    {
+      "fixture": "dense",
+      "label": "a1",
+      "enabled": false,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/dense-guarded-a1"
+    },
+    {
+      "fixture": "dense",
+      "label": "b1",
+      "enabled": true,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/dense-guarded-b1"
+    },
+    {
+      "fixture": "dense",
+      "label": "b2",
+      "enabled": true,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/dense-guarded-b2"
+    },
+    {
+      "fixture": "dense",
+      "label": "a2",
+      "enabled": false,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/dense-guarded-a2"
+    },
+    {
+      "fixture": "surface",
+      "label": "a1",
+      "enabled": false,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/surface-guarded-a1"
+    },
+    {
+      "fixture": "surface",
+      "label": "b1",
+      "enabled": true,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/surface-guarded-b1"
+    },
+    {
+      "fixture": "surface",
+      "label": "b2",
+      "enabled": true,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/surface-guarded-b2"
+    },
+    {
+      "fixture": "surface",
+      "label": "a2",
+      "enabled": false,
+      "exit": 0,
+      "output": "/Users/hongyuehao/Projects/MetalMod/build/reports/stage1-completion-20261017/surface-guarded-a2"
+    }
+  ],
+  "dense_performance": {
+    "groups": {
+      "off": {
+        "mean_ms": 17.393733815793045,
+        "p95_ms": 24.299604000000002,
+        "p99_ms": 44.490770499999996,
+        "render_thread_cpu_ms": 11.316329852216748,
+        "submissions": 11.697654269626774,
+        "render_passes": 21.611850427055316,
+        "draws": 19171.322481081053,
+        "fps": 57.49196869346286
+      },
+      "on": {
+        "mean_ms": 17.149207911464416,
+        "p95_ms": 22.8026875,
+        "p99_ms": 40.284063,
+        "render_thread_cpu_ms": 10.911301559803064,
+        "submissions": 9.686509865142835,
+        "render_passes": 12.571551536514201,
+        "draws": 19169.647923631666,
+        "fps": 58.31173108184723
+      }
+    },
+    "change_percent": {
+      "mean_ms": -1.4058275636402273,
+      "p95_ms": -6.160250595030281,
+      "p99_ms": -9.4552363394111,
+      "render_thread_cpu_ms": -3.579148873380922,
+      "submissions": -17.192715378038837,
+      "render_passes": -41.8302862175272,
+      "draws": -0.008734699711199223,
+      "fps": 1.4258728775756513
+    },
+    "benchmark_addon_content_sha256": "5d3540295cc448ee83add51e8b3f980a65ad502f34ccbd9409272726b1937602",
+    "runs": [
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-151710-195-Metal-4773445202866185888",
+        "frames": 1735,
+        "mean_ms": 17.272319764841498,
+        "fps": 57.896102759488066,
+        "p95_ms": 24.336416,
+        "p99_ms": 42.700541,
+        "submissions": 11.69279538904899,
+        "create_ms": 0.03243255619596542,
+        "commit_ms": 0.06671733429394812,
+        "draws": 19171.311239193084,
+        "ffi_calls": 58026.302593659944,
+        "render_thread_cpu_ms": 11.115119704433496,
+        "cpu_samples": 2030,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "render_passes": 21.59365994236311,
+        "raw_sha256": {
+          "dense-guarded-a1/launch.json": "a220d533587d61c45b76321cd27f4fa233d614d5462faad25792558298a07a39",
+          "dense-guarded-a1/console.log": "8b378c8fe6ecb33302bc2ef82bc6cc86d09c8d418ce6f4d483c7a3267605bbe2",
+          "dense-guarded-a1/debug/metalmod/20261017-151710-195-Metal-4773445202866185888/frames.csv": "f4253208832679ad0f2ff509f9301dd6ac3b12daca3d2a857c440cf3841c6817",
+          "dense-guarded-a1/debug/metalmod/20261017-151710-195-Metal-4773445202866185888/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      },
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-151918-470-Metal-7598512098493551236",
+        "frames": 1741,
+        "mean_ms": 17.21298944572085,
+        "fps": 58.095661021194665,
+        "p95_ms": 22.582709,
+        "p99_ms": 41.465417,
+        "submissions": 9.689259046524986,
+        "create_ms": 0.02781651924181505,
+        "commit_ms": 0.061367819069500285,
+        "draws": 19169.9437105112,
+        "ffi_calls": 58020.404365307295,
+        "render_thread_cpu_ms": 10.91768470241023,
+        "cpu_samples": 2033,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "render_passes": 12.581849511774841,
+        "raw_sha256": {
+          "dense-guarded-b1/launch.json": "5b640fee46ba382648f1e0d294925447c7970a04e5e7239c864c4dccec305dd6",
+          "dense-guarded-b1/console.log": "c03983248c08b3bb788a3e6b8f265fe5b530c591ceb6f051f50e50080d75a220",
+          "dense-guarded-b1/debug/metalmod/20261017-151918-470-Metal-7598512098493551236/frames.csv": "fdc4461e24b27c309f7000f08e6b97646f6ed53eab71f906c8e5e104f6f02aa9",
+          "dense-guarded-b1/debug/metalmod/20261017-151918-470-Metal-7598512098493551236/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      },
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-152126-641-Metal-14632433898262781517",
+        "frames": 1755,
+        "mean_ms": 17.085426377207977,
+        "fps": 58.529414362992064,
+        "p95_ms": 23.022666,
+        "p99_ms": 39.102709,
+        "submissions": 9.683760683760683,
+        "create_ms": 0.026936867236467234,
+        "commit_ms": 0.06064483076923077,
+        "draws": 19169.352136752135,
+        "ffi_calls": 58016.746438746435,
+        "render_thread_cpu_ms": 10.904918417195896,
+        "cpu_samples": 2047,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "render_passes": 12.561253561253562,
+        "raw_sha256": {
+          "dense-guarded-b2/launch.json": "c3378c2d6bbd846b4ca5aa15e4079a96af33abf1ce1d139f43c89496d1cac262",
+          "dense-guarded-b2/console.log": "a18744d2179923a5ba12e73e7cf53729d5ee1e662aadb938fbb9201f946cd07f",
+          "dense-guarded-b2/debug/metalmod/20261017-152126-641-Metal-14632433898262781517/frames.csv": "70b996a3445f652bb8b45d254f083fbae049f624082bdc9fc3abb47511f43450",
+          "dense-guarded-b2/debug/metalmod/20261017-152126-641-Metal-14632433898262781517/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      },
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-152335-143-Metal-3686640415586426963",
+        "frames": 1711,
+        "mean_ms": 17.51514786674459,
+        "fps": 57.09343749810217,
+        "p95_ms": 24.262792,
+        "p99_ms": 46.281,
+        "submissions": 11.70251315020456,
+        "create_ms": 0.03471592402104033,
+        "commit_ms": 0.06954342548217417,
+        "draws": 19171.333722969022,
+        "ffi_calls": 58030.26651081239,
+        "render_thread_cpu_ms": 11.51754,
+        "cpu_samples": 2000,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "render_passes": 21.630040911747518,
+        "raw_sha256": {
+          "dense-guarded-a2/launch.json": "0510ce2bdcd41fc7c350aea6b561912a2c53c1f71cf60de323833ce380f7756b",
+          "dense-guarded-a2/console.log": "18ff07c11313ae0ccfc3cd1a905863694996136bb01e111b518aad318832458d",
+          "dense-guarded-a2/debug/metalmod/20261017-152335-143-Metal-3686640415586426963/frames.csv": "98c91af1ab69933a3defd3a8ab0bbb033fd0f39722a4296e1351b57f08067c09",
+          "dense-guarded-a2/debug/metalmod/20261017-152335-143-Metal-3686640415586426963/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      }
+    ]
+  },
+  "surface_performance": {
+    "accepted_performance_comparison": false,
+    "reason": "draw workload differs by more than 1%",
+    "draw_spread_percent": 4.303162737409044,
+    "scope": "All four captures are clean individually. Draw workload differs; no group speedup or CPU-gain ratio is accepted.",
+    "runs": [
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-152544-794-Metal-1522218914543950255",
+        "frames": 1740,
+        "mean_ms": 17.288958740229887,
+        "fps": 57.840383277281354,
+        "p95_ms": 28.466792,
+        "p99_ms": 39.793292,
+        "submissions": 11.691954022988506,
+        "create_ms": 0.04303595689655172,
+        "commit_ms": 0.09096604425287357,
+        "draws": 2109.2436781609194,
+        "ffi_calls": 6778.8022988505745,
+        "render_thread_cpu_ms": 3.173378937007874,
+        "cpu_samples": 2032,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "raw_sha256": {
+          "surface-guarded-a1/launch.json": "c0963bc983f4b5658996cff9d42216a8fc35e432b7d2a452374b054bca7b8163",
+          "surface-guarded-a1/console.log": "c3ed870c94272c79a7a4cca93c991445c644beb252105eda0f1eac03321cad3e",
+          "surface-guarded-a1/debug/metalmod/20261017-152544-794-Metal-1522218914543950255/frames.csv": "cd4e563bcabe00a43d25e475208e24342b5ff6a79bb55c0df3b7977db443b4cd",
+          "surface-guarded-a1/debug/metalmod/20261017-152544-794-Metal-1522218914543950255/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      },
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-152752-750-Metal-860764030649685311",
+        "frames": 1755,
+        "mean_ms": 17.14131915954416,
+        "fps": 58.33856721833497,
+        "p95_ms": 26.366042,
+        "p99_ms": 42.00875,
+        "submissions": 9.687179487179487,
+        "create_ms": 0.03772026780626781,
+        "commit_ms": 0.09195396923076923,
+        "draws": 2169.71452991453,
+        "ffi_calls": 6958.498005698006,
+        "render_thread_cpu_ms": 3.339289614822038,
+        "cpu_samples": 2051,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "raw_sha256": {
+          "surface-guarded-b1/launch.json": "b85aaeb01ca6278f6e9aa41ec5f2e64e84d1852be40f285cfe6830fb64bab705",
+          "surface-guarded-b1/console.log": "aadc4bf3eea65ff40917331dc3b92ce90b35201d9abaddd366f5462f5aff4bfe",
+          "surface-guarded-b1/debug/metalmod/20261017-152752-750-Metal-860764030649685311/frames.csv": "a6f4b75da093fff30d751e57c391c8603a8477cf852a04a0cb9640b4c79ec1cb",
+          "surface-guarded-b1/debug/metalmod/20261017-152752-750-Metal-860764030649685311/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      },
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-153001-345-Metal-3856617396278534950",
+        "frames": 1693,
+        "mean_ms": 17.71103979621973,
+        "fps": 56.461958840691075,
+        "p95_ms": 33.987125,
+        "p99_ms": 56.20825,
+        "submissions": 9.70407560543414,
+        "create_ms": 0.036079830478440635,
+        "commit_ms": 0.09093231305375074,
+        "draws": 2188.4831659775546,
+        "ffi_calls": 7021.863555818074,
+        "render_thread_cpu_ms": 3.174096379398266,
+        "cpu_samples": 1961,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "raw_sha256": {
+          "surface-guarded-b2/launch.json": "a9ecf40fb030486767b1a5aad5b5003227842e9fd631803c97dae4fb37b1c3d7",
+          "surface-guarded-b2/console.log": "9b47745879b84b7886bbb3965d37c7d9b9a5aad05cd74d0f9d437821d572bee7",
+          "surface-guarded-b2/debug/metalmod/20261017-153001-345-Metal-3856617396278534950/frames.csv": "e25329de401f68fe8d4f283f59a1e2239bcbecf89b5e6f2590f159c53d2048d4",
+          "surface-guarded-b2/debug/metalmod/20261017-153001-345-Metal-3856617396278534950/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      },
+      {
+        "name": "vanilla-native",
+        "capture": "20261017-153210-109-Metal-10841358457936379604",
+        "frames": 1754,
+        "mean_ms": 17.09515718814139,
+        "fps": 58.49609857309077,
+        "p95_ms": 24.698375,
+        "p99_ms": 40.686208,
+        "submissions": 11.685290763968073,
+        "create_ms": 0.044001167046750285,
+        "commit_ms": 0.09819735689851766,
+        "draws": 2202.51425313569,
+        "ffi_calls": 7055.9076396807295,
+        "render_thread_cpu_ms": 3.407428013665202,
+        "cpu_samples": 2049,
+        "width": 5120,
+        "height": 2664,
+        "effective_modes": [
+          0
+        ],
+        "max_sr_failures": 0,
+        "raw_sha256": {
+          "surface-guarded-a2/launch.json": "b48271869a9661c4e9bfd9c796a4372419f66dab5d84f86b4717df491c520b45",
+          "surface-guarded-a2/console.log": "21a918764f415ae097d5d3c931c2a0ab4b36fee4e3700ea28331920f1db14d20",
+          "surface-guarded-a2/debug/metalmod/20261017-153210-109-Metal-10841358457936379604/frames.csv": "9db2fd865c9c9ecbe66c9e165ff0b7eb57051202f3698485df41b45eab73c248",
+          "surface-guarded-a2/debug/metalmod/20261017-153210-109-Metal-10841358457936379604/benchmark-controls.json": "0875d484ec64c7efac43da386945c7c3a42b0d6f82e503a337f168e5a229e255"
+        }
+      }
+    ]
+  },
+  "backend_health_maxima": {
+    "failures": 0,
+    "pipelineFailures": 0,
+    "unboundBindings": 0,
+    "missingVertexAttributes": 0,
+    "slotCollisions": 0,
+    "bindingKindMismatches": 0
+  },
+  "accepted_jvm_launches": 15,
+  "excluded_performance_attempts": [
+    {
+      "name": "dense-a1",
+      "reason": "superseded by overlay-guarded fixture",
+      "exit": 0
+    },
+    {
+      "name": "dense-b1",
+      "reason": "F3 changed during warmup; stopped before accepted measurement",
+      "exit": 143
+    }
+  ],
+  "offline_gate_source": "build/reports/stage1-20261017/verification.json"
+}

@@ -13,6 +13,7 @@ public final class LightClusterTest {
 
     public static int runTests() {
         try {
+            reusedTextureMatchesAbi();
             windowCoversTheSearchRadius();
             cellMappingIsStableUnderCameraMovement();
             lightsLandInTheCellsTheirVolumeTouches();
@@ -26,6 +27,26 @@ public final class LightClusterTest {
         } catch (AssertionError error) {
             error.printStackTrace();
             return 1;
+        }
+    }
+
+    private static void reusedTextureMatchesAbi() {
+        LightClusterGrid grid = new LightClusterGrid();
+        var staging = ByteBuffer.allocateDirect(grid.encodedBytes());
+        for (var snapshot : List.of(new LightSnapshot(10, 20, 30, List.of(
+                new PointLight(12, 23, 34, 8, 1, 0.5f, 0.25f, 1))), LightSnapshot.empty())) {
+            grid.build(snapshot);
+            float[] expected = grid.encodeTexels();
+            float[] records = grid.encodeRecords(snapshot);
+            System.arraycopy(records, 0, expected, LightClusterGrid.recordTexel(0) * 4, records.length);
+            grid.encodeTextureInto(snapshot, staging);
+            for (int i = 0; i < expected.length; i++) {
+                require(staging.getFloat(i * 4) == expected[i], "reused texture preserves every ABI texel");
+            }
+            var uniform = grid.encodeGridUniformInto(ByteBuffer.allocateDirect(16));
+            require(java.lang.foreign.MemorySegment.ofBuffer(uniform).mismatch(
+                    java.lang.foreign.MemorySegment.ofBuffer(grid.encodeGridUniform())) == -1,
+                    "reused grid uniform preserves ABI");
         }
     }
 

@@ -53,6 +53,7 @@ public final class MotionBenchmark implements ClientModInitializer {
     private String surface;
     private final java.lang.management.ThreadMXBean cpu = java.lang.management.ManagementFactory.getThreadMXBean();
     private long previousCpu=-1,cpuNanos,cpuFrames;
+    private long debugOverlayFrames;
     @Override public void onInitializeClient() {
         if(!Boolean.getBoolean("metalmod.motionBenchmark")) return;
         active=this;
@@ -64,6 +65,19 @@ public final class MotionBenchmark implements ClientModInitializer {
     public static void beforeExtract() {
         var a=active;var mc=Minecraft.getInstance();
         if(a==null || a.anchor==null || a.state==99 || mc.player==null) return;
+        if(a.submissionCheck) {
+            var overlay=mc.getDebugOverlay();
+            boolean profiler=overlay.showProfilerChart(), fps=overlay.showFpsCharts();
+            boolean network=overlay.showNetworkCharts(), lightmap=overlay.showLightmapTexture();
+            if(mc.debugEntries.isOverlayVisible() || profiler || fps || network || lightmap) {
+                if(a.state==3 && PerformanceCapture.isRecording()) a.debugOverlayFrames++;
+                if(profiler)overlay.toggleProfilerChart();
+                if(fps)overlay.toggleFpsCharts();
+                if(network)overlay.toggleNetworkCharts();
+                if(lightmap)overlay.toggleLightmapTexture();
+                mc.debugEntries.setOverlayVisible(false);
+            }
+        }
         // Diagnostic addon only: CPU consumed between camera extractions, excluding blocked
         // presentation/GPU waits. Keep this separate from F8 wall-clock frame intervals.
         if(a.submissionCheck && a.cpu.isCurrentThreadCpuTimeSupported() && a.cpu.isThreadCpuTimeEnabled()) {
@@ -127,7 +141,7 @@ public final class MotionBenchmark implements ClientModInitializer {
             if(config.presentMode()!=expected) throw new IllegalStateException("surface mode mismatch "+config);
             surface=config.toString();DisplayProbe.activate();GLFW.glfwFocusWindow(mc.getWindow().handle());
             previous=captures();DisplayProbe.reset();PerformanceCapture.toggle(mc);resetMotion(now+5_000_000_000L);
-            previousCpu=-1;cpuNanos=0;cpuFrames=0;
+            previousCpu=-1;cpuNanos=0;cpuFrames=0;debugOverlayFrames=0;
             state=3;deadline=now+90_000_000_000L;
             System.out.println("[MotionBenchmark] capture "+runs.get(index)+" effective "+surface);return;
         }
@@ -143,7 +157,9 @@ public final class MotionBenchmark implements ClientModInitializer {
                 interrupted=lines.skip(1).filter(l->{var c=l.split(",",7);
                     return !c[3].equals("0") || !c[4].equals("0") || !c[5].equals("1");}).count();
             }
-            if(interrupted>0) {Files.writeString(folder.resolve("REJECTED.txt"),"paused/menu/unfocused intervals "+interrupted);if(++retries>=3)throw new IllegalStateException("three interrupted captures");index--;next(mc,now);return;}
+            Files.writeString(folder.resolve("benchmark-controls.json"),
+                    "{\"debug_overlay_guard\":true,\"debug_overlay_frames\":"+debugOverlayFrames+"}\n");
+            if(interrupted>0 || debugOverlayFrames>0) {Files.writeString(folder.resolve("REJECTED.txt"),"paused/menu/unfocused intervals "+interrupted+" debug-overlay frames "+debugOverlayFrames);if(++retries>=3)throw new IllegalStateException("three interrupted captures");index--;next(mc,now);return;}
             retries=0;DisplayProbe.save(folder);var run=runs.get(index);
             if(offscreenComparison) {
                 OffscreenCompletion.save(folder);

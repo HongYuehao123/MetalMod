@@ -350,7 +350,7 @@ public final class MetalRenderPassBackend implements RenderPassBackend {
                 this.pipeline == null ? null : this.pipeline.texelBuffer(name);
         if (texel != null && slice.buffer() instanceof MetalBuffer buffer) {
             MetalTexture texture = this.owner.device().texelTexture(buffer, slice.offset(),
-                    slice.length(), texel.format(), Math.max(1, texel.format().blockSize()));
+                    slice.length(), texel.format(), Math.max(1, texel.format().blockSize()), texel.nativeTexture());
             if (texture != null) {
                 this.textures.put(name, new MetalTextureView(texture, 0, texture.getMipLevels()));
                 this.dirtyTextures.add(name);

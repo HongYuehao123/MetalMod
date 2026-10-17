@@ -311,6 +311,34 @@ public final class LightClusterGrid {
         return texels;
     }
 
+    /** Encode the complete RGBA32F table directly into a reusable staging slot (ABI v1). */
+    public ByteBuffer encodeTextureInto(LightSnapshot snapshot, ByteBuffer out) {
+        if (out.capacity() < encodedBytes()) throw new IllegalArgumentException("Cluster staging too small");
+        out.clear().limit(encodedBytes());
+        out.order(ByteOrder.nativeOrder());
+        while (out.hasRemaining()) out.putLong(0L);
+        out.putFloat(0, this.lightCount);
+        out.putFloat(4, CLUSTERS_PER_AXIS);
+        out.putFloat(8, this.lightCount == 0 ? -ENTRIES_PER_CELL : ENTRIES_PER_CELL);
+        out.putFloat(12, (float) CLUSTER_SIZE);
+        int bound = Math.max(0, this.lightCount - 1);
+        for (int cell = 0; cell < CELLS; cell++) {
+            int base = HEADER_SLOTS + cell * CELL_STRIDE;
+            int start = cellBase(cell) * 16;
+            int used = this.slots[base];
+            out.putFloat(start, used);
+            for (int entry = 0; entry < used; entry++) {
+                out.putFloat(start + (1 + entry) * 16,
+                        Math.max(0, Math.min(bound, this.slots[base + 1 + entry])));
+            }
+        }
+        out.position(recordTexel(0) * 16);
+        for (PointLight light : snapshot.lights()) {
+            light.writeRelative(out, snapshot.cameraX(), snapshot.cameraY(), snapshot.cameraZ());
+        }
+        return out.position(0).limit(encodedBytes());
+    }
+
     /** Bytes one published table occupies on the GPU, for the scaling record's upload accounting. */
     public int encodedBytes() {
         return TEXELS * 16;
@@ -352,8 +380,13 @@ public final class LightClusterGrid {
      * camera-relative position directly - at any world coordinate, including one of order 3e7.
      */
     public ByteBuffer encodeGridUniform() {
-        return ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
-                .putFloat((float) this.baseRelativeX)
+        return encodeGridUniformInto(ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder()));
+    }
+
+    public ByteBuffer encodeGridUniformInto(ByteBuffer out) {
+        out.clear().limit(16);
+        out.order(ByteOrder.nativeOrder());
+        return out.putFloat((float) this.baseRelativeX)
                 .putFloat((float) this.baseRelativeY)
                 .putFloat((float) this.baseRelativeZ)
                 .putFloat((float) CLUSTER_SIZE)

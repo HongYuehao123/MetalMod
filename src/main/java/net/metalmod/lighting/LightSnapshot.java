@@ -33,11 +33,17 @@ public record LightSnapshot(double cameraX, double cameraY, double cameraZ,
 
     /** std140: ivec4(count, version, reserved, reserved), then two vec4s per light. */
     public ByteBuffer encode() {
-        ByteBuffer out = ByteBuffer.allocateDirect(BYTES).order(ByteOrder.nativeOrder());
+        return encodeInto(ByteBuffer.allocateDirect(BYTES).order(ByteOrder.nativeOrder()));
+    }
+
+    /** Reuse a ring slot; unused records are cleared when the light count shrinks. */
+    public ByteBuffer encodeInto(ByteBuffer out) {
+        if (out.capacity() < BYTES) throw new IllegalArgumentException("Light staging too small");
+        out.clear().limit(BYTES);
+        out.order(ByteOrder.nativeOrder());
         out.putInt(lights.size()).putInt(ABI_VERSION).putInt(0).putInt(0);
-        for (PointLight light : lights) out.put(light.relativeTo(cameraX, cameraY, cameraZ));
-        out.position(0);
-        out.limit(BYTES);
-        return out;
+        for (PointLight light : lights) light.writeRelative(out, cameraX, cameraY, cameraZ);
+        while (out.hasRemaining()) out.putLong(0L);
+        return out.flip();
     }
 }

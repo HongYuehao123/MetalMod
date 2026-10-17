@@ -5,7 +5,7 @@ import com.mojang.blaze3d.buffers.GpuFence;
 import java.lang.foreign.MemorySegment;
 
 /**
- * A real fence over an {@code MTLSharedEvent}.
+ * A fence over the contiguous completed-submission prefix of a Metal command queue.
  *
  * <p>Minecraft uses a fence to decide when a ring-buffer slot may be overwritten, and waits on it
  * with an unbounded timeout — {@code MappableRingBuffer.rotate} calls

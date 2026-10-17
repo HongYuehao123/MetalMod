@@ -274,3 +274,24 @@ complete completion controls, and exact resource/native clear counts. Rejected a
 the artifact tree and are listed separately. Drawable timestamps include countdown/export tails;
 zero and duplicate timestamps are excluded from the event rate and disclosed separately.
 See [Stage 0 coverage and procedure](../../docs/performance/stage0-resource-telemetry.md).
+
+Stage 1 backend experiments accept explicit `--backend-property KEY=true|false` arguments (repeat
+for several switches). Launch arguments and `comparison.json` retain these overrides. Supported
+keys cover ticket fences, deferred clears, encoder continuation, texel cache/native layouts,
+compile-region release and the guarded vignette skip. See
+[Stage 1 defaults and validation](../../docs/performance/stage1-backend-lifecycle.md).
+
+`--comparison-property metalmod.fenceTickets` compares the retained event control with tickets;
+`metalmod.texelCache` and `metalmod.skipBlackVignette` are also runtime comparison switches.
+Deferred clears/encoder continuation require startup configuration, and native texel layouts are
+chosen at pipeline compilation: use fresh JVMs for those comparisons. Do not infer a throughput
+win from an instrumented capture or from fewer native submissions alone.
+
+For the three optional startup switches, run four fresh fixed-renderer native-only JVMs with
+all three false/true/true/false, holding the source, static camera, distance and dimensions fixed.
+`python3 tools/metalfx_benchmark/analyze_backend.py A1 B1 B2 A2` checks those controls, the
+actual benchmark add-on contents, zero F3/chart interruptions, clean captures and a 1% draw-workload
+bound. It reports CPU, frame-time tails and operation counts for the group. Submission benchmarks
+close debug overlays during warmup and reject/retry any capture where an overlay is toggled;
+`benchmark-controls.json` preserves that check. The result does not isolate individual switches
+or measure GPU time, tile bandwidth or latency.

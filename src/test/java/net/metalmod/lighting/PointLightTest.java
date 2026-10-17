@@ -39,6 +39,14 @@ public final class PointLightTest {
             // Every record is camera-relative, so record 2's x is 12 - 10 = 2 and its radius is 5.
             require(two.getInt(0) == 2 && two.getFloat(48) == 2 && two.getFloat(60) == 5,
                     "second record starts at 16 + 32 and is camera-relative too");
+            var reused = java.nio.ByteBuffer.allocateDirect(LightSnapshot.BYTES);
+            snapshot.encodeInto(reused);
+            require(java.lang.foreign.MemorySegment.ofBuffer(packet).mismatch(
+                    java.lang.foreign.MemorySegment.ofBuffer(reused)) == -1, "reused packet matches ABI");
+            LightSnapshot.empty().encodeInto(reused);
+            for (int i = 16; i < LightSnapshot.BYTES; i++) {
+                require(reused.get(i) == 0, "reused packet clears removed light records");
+            }
             rejected(() -> new LightSnapshot(0, 0, 0, java.util.Collections.nCopies(
                     LightSnapshot.CAPACITY + 1, new PointLight(0, 0, 0, 1, 1, 1, 1, 1))));
             // The published bound, pinned here so a change to it is a decision rather than a slip, and

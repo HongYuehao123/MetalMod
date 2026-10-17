@@ -8,58 +8,96 @@ import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.ArrayDeque;
+import com.mojang.blaze3d.util.TransientBlockAllocator;
 
 /**
- * Phase 2 transient memory: a real shared MTLBuffer used as a bump arena.
- *
- * <p>The engine streams vertices and uniforms through this each frame. Allocations are sub-buffers
- * of one MTLBuffer (sharing its handle), so a slice is a genuine GPU resource while remaining
- * CPU-writable. The cursor wraps when the arena is exhausted; a wrap can only invalidate data
- * nothing has consumed yet.
+ * Shared transient blocks. A full block spills instead of wrapping within a frame. Blocks rotate
+ * only at a frame boundary and return to the free list after that frame's GPU ticket completes.
+ * The engine allocator also implements the minimum-size and size-multiple allocation contract.
  */
-public final class MetalTransientMemory implements TransientMemory {
-
+public final class MetalTransientMemory implements TransientMemory, AutoCloseable {
     private static final long CAPACITY = 64L << 20;
-
-    private final MetalBuffer arena;
-    private long cursor;
+    private final MetalDevice device;
+    private final long maxBlockSize;
+    private final TransientBlockAllocator<MetalBuffer> blocks;
+    private final ArrayDeque<Retirement> retirements = new ArrayDeque<>();
+    private boolean used;
     private boolean closed;
+    private record Retirement(MemorySegment fence, Runnable recycle) {}
 
-    public MetalTransientMemory(MetalDevice device) {
-        // The final uniform suballocation also needs space for an MSL struct tail (BUG-028).
-        MemorySegment handle = MetalNative.bufferCreate(device.deviceHandle(), CAPACITY + 16);
-        MemorySegment data = (handle.address() == 0)
-                ? MemorySegment.NULL
-                : MetalNative.bufferContents(handle, CAPACITY);
-        if (handle.address() == 0 || data.address() == 0) {
-            MetalDevice.reportResourceFailure("transient arena " + CAPACITY + " bytes");
-        }
-        this.arena = new MetalBuffer(GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_COPY_DST,
-                CAPACITY, handle, data, true, null).diagnosticLabel("transient staging arena");
+    public MetalTransientMemory(MetalDevice device) { this(device, CAPACITY); }
+
+    MetalTransientMemory(MetalDevice device, long capacity) {
+        this.device = device;
+        this.maxBlockSize = MetalNative.deviceMaxBufferSize(device.deviceHandle()) - 16;
+        this.blocks = new TransientBlockAllocator<>(capacity, 1L << 20,
+                TransientBlockAllocator.Allocator.create(this::createBlock, MetalBuffer::close));
     }
 
-    private synchronized MetalBuffer allocate(long size, long alignment, int usage) {
-        long safeSize = Math.max(1L, size);
-        long align = alignment <= 1L ? 1L : alignment;
-        long aligned = (this.cursor + align - 1L) & -align;
-        if (aligned + safeSize > CAPACITY) {
-            this.cursor = 0L;
-            aligned = 0L;
+    private MetalBuffer createBlock(long capacity) {
+        if (capacity <= 0 || capacity > this.maxBlockSize)
+            throw new IllegalArgumentException("Transient block exceeds device limit: " + capacity);
+        MemorySegment handle = MetalNative.bufferCreate(this.device.deviceHandle(), capacity + 16);
+        MemorySegment data = handle.address() == 0 ? MemorySegment.NULL
+                : MetalNative.bufferContents(handle, capacity);
+        if (handle.address() == 0 || data.address() == 0) {
+            if (handle.address() != 0) MetalNative.bufferRelease(handle);
+            throw new IllegalStateException("Could not allocate transient block: " + capacity);
         }
-        this.cursor = aligned + safeSize;
+        return new MetalBuffer(GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_COPY_DST,
+                capacity, handle, data, true, null).diagnosticLabel("transient staging arena");
+    }
+
+    private synchronized MetalBuffer allocate(long size, long alignment, int usage,
+                                              long minimumSize, long sizeMultiple) {
+        if (this.closed) throw new IllegalStateException("Transient memory is closed");
+        if (size < 0 || size > this.maxBlockSize || minimumSize < 0 || minimumSize > size || sizeMultiple <= 0
+                || alignment <= 0 || (alignment & (alignment - 1)) != 0) {
+            throw new IllegalArgumentException("Invalid transient allocation bounds/alignment");
+        }
+        var allocation = this.blocks.allocate(Math.max(1L, size), alignment,
+                Math.max(1L, minimumSize), sizeMultiple);
+        this.used = true;
         int effective = usage != 0 ? usage : (GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_UNIFORM);
-        return MetalBuffer.sub(effective, safeSize, this.arena, aligned);
+        return MetalBuffer.sub(effective, allocation.size(), allocation.block(), allocation.offset());
+    }
+
+    /** The caller has finished encoding every buffer consumer for this frame. */
+    public synchronized void endFrame() {
+        if (this.closed) return;
+        while (!this.retirements.isEmpty() && MetalNative.fenceWait(this.retirements.peek().fence(), 0)) {
+            recycleOldest();
+        }
+        if (!this.used) return;
+        MemorySegment fence = MetalNative.fenceCreate(this.device.queueHandle());
+        if (fence.address() == 0) throw new IllegalStateException("Could not fence transient blocks");
+        this.retirements.add(new Retirement(fence, this.blocks.rotate()));
+        this.used = false;
+        // Bound retained generations without ever overwriting a pending reader.
+        if (this.retirements.size() >= 3) {
+            if (!MetalNative.fenceWait(this.retirements.peek().fence(), Long.MAX_VALUE)) {
+                throw new IllegalStateException("Transient retirement did not complete");
+            }
+            recycleOldest();
+        }
+    }
+
+    private void recycleOldest() {
+        Retirement retired = this.retirements.remove();
+        MetalNative.fenceRelease(retired.fence());
+        retired.recycle().run();
     }
 
     @Override
-    public ByteBuffer allocateCpu(long size, long alignment, long lifetime, long flags) {
-        return allocate(size, alignment, 0).data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
+    public ByteBuffer allocateCpu(long size, long alignment, long minimumSize, long sizeMultiple) {
+        return allocate(size, alignment, 0, minimumSize, sizeMultiple).data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder());
     }
 
     @Override
     public GpuBufferSlice.MappedView allocateStaging(long size, long alignment, int usage,
-                                                     long lifetime, long flags) {
-        MetalBuffer buffer = allocate(size, alignment, usage);
+                                                     long minimumSize, long sizeMultiple) {
+        MetalBuffer buffer = allocate(size, alignment, usage, minimumSize, sizeMultiple);
         GpuBufferSlice slice = buffer.slice(0L, buffer.size());
         return new GpuBufferSlice.MappedView(slice,
                 buffer.data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder()), () -> {
@@ -68,27 +106,28 @@ public final class MetalTransientMemory implements TransientMemory {
 
     @Override
     public GpuBufferSlice allocateGpu(long size, long alignment, int usage,
-                                      long lifetime, long flags) {
-        MetalBuffer buffer = allocate(size, alignment, usage);
+                                      long minimumSize, long sizeMultiple) {
+        MetalBuffer buffer = allocate(size, alignment, usage, minimumSize, sizeMultiple);
         return buffer.slice(0L, buffer.size());
     }
 
     @Override
     public GpuBufferSlice.MappedView allocateGpuMapped(long size, long alignment, int usage,
-                                                       long lifetime, long flags) {
-        MetalBuffer buffer = allocate(size, alignment, usage);
+                                                       long minimumSize, long sizeMultiple) {
+        MetalBuffer buffer = allocate(size, alignment, usage, minimumSize, sizeMultiple);
         GpuBufferSlice slice = buffer.slice(0L, buffer.size());
         return new GpuBufferSlice.MappedView(slice,
                 buffer.data().asByteBuffer().order(java.nio.ByteOrder.nativeOrder()), () -> {
         });
     }
 
-    private GpuBufferSlice upload(List<ByteBuffer> data, long alignment, int usage) {
+    private GpuBufferSlice upload(List<ByteBuffer> data, long alignment, int usage,
+                                  long minimumSize, long sizeMultiple) {
         long total = 0L;
         for (ByteBuffer buffer : data) {
-            total += buffer.remaining();
+            total = Math.addExact(total, buffer.remaining());
         }
-        MetalBuffer target = allocate(total, alignment, usage);
+        MetalBuffer target = allocate(total, alignment, usage, total, 1);
         if (target.isMapped()) {
             long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
             ByteBuffer view = target.mappedBytes();
@@ -103,21 +142,21 @@ public final class MetalTransientMemory implements TransientMemory {
 
     @Override
     public GpuBufferSlice uploadStaging(List<ByteBuffer> data, long alignment, int usage,
-                                        long lifetime, long flags) {
-        return upload(data, alignment, usage);
+                                        long minimumSize, long sizeMultiple) {
+        return upload(data, alignment, usage, minimumSize, sizeMultiple);
     }
 
     @Override
     public GpuBufferSlice uploadGpu(List<ByteBuffer> data, long alignment, int usage,
-                                    long lifetime, long flags) {
-        return upload(data, alignment, usage);
+                                    long minimumSize, long sizeMultiple) {
+        return upload(data, alignment, usage, minimumSize, sizeMultiple);
     }
 
     @Override
     public List<GpuBufferSlice> multiUploadStaging(List<ByteBuffer> data, long alignment, int usage) {
         List<GpuBufferSlice> slices = new ArrayList<>(data.size());
         for (ByteBuffer buffer : data) {
-            slices.add(upload(List.of(buffer), alignment, usage));
+            slices.add(upload(List.of(buffer), alignment, usage, buffer.remaining(), 1));
         }
         return slices;
     }
@@ -126,16 +165,19 @@ public final class MetalTransientMemory implements TransientMemory {
     public List<GpuBufferSlice> multiUploadGpu(List<ByteBuffer> data, long alignment, int usage) {
         List<GpuBufferSlice> slices = new ArrayList<>(data.size());
         for (ByteBuffer buffer : data) {
-            slices.add(upload(List.of(buffer), alignment, usage));
+            slices.add(upload(List.of(buffer), alignment, usage, buffer.remaining(), 1));
         }
         return slices;
     }
 
-    public void close() {
-        if (this.closed) {
-            return;
+    public synchronized void close() {
+        if (this.closed) return;
+        MetalNative.queueSynchronize(this.device.queueHandle());
+        while (!this.retirements.isEmpty()) {
+            MetalNative.fenceWait(this.retirements.peek().fence(), Long.MAX_VALUE);
+            recycleOldest();
         }
+        this.blocks.close();
         this.closed = true;
-        this.arena.close();
     }
 }

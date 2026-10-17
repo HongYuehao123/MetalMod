@@ -92,6 +92,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
 
     @Override
     public RenderPassBackend createRenderPass(RenderPassDescriptor descriptor) {
+        this.device.prepareTexelReads();
         MemorySegment cb = ensureCommandBuffer();
         List<RenderPassDescriptor.Attachment<Optional<Vector4fc>>> colors = descriptor.colorAttachments();
         int count = colors.size();
@@ -399,6 +400,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             // fence, so a direct write races the previous frame still drawing from the same buffer while
             // the camera moves. A shift of a fraction of a block opens a dark seam at section borders,
             // which is glaring on a large flat water plane (BUG-023).
+            this.device.noteGpuBufferWrite(buffer);
             long offset = buffer.baseOffset() + slice.offset();
             if (buffer.handle().address() != 0) {
                 MemorySegment bytes = MemorySegment.ofBuffer(data.duplicate());
@@ -451,6 +453,7 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             // previous frame's reads of that region. A CPU copy writes shared memory the instant it is
             // called, so the GPU can still be reading the old mesh: a section renders with the next
             // section's vertices, which is the transient, motion-correlated patch in BUG-023.
+            this.device.noteGpuBufferWrite(dst);
             long sourceOffset = src.baseOffset() + source.offset();
             long targetOffset = dst.baseOffset() + target.offset();
             if (src.handle().address() != 0 && dst.handle().address() != 0) {

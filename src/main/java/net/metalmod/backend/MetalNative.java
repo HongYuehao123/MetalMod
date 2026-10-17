@@ -58,7 +58,9 @@ public final class MetalNative {
     private static MethodHandle mhBufferCreate, mhBufferContents, mhBufferLength, mhBufferRelease,
             mhWriteBufferBytes;
     private static MethodHandle mhSamplerCreate, mhSamplerRelease, mhClearTextures, mhClearTexturesRegion;
-    private static MethodHandle mhFenceCreate, mhFenceWait, mhFenceRelease;
+    private static MethodHandle mhBufferTexture, mhBufferTextureAlignment;
+    private static MethodHandle mhBackendOptimizations;
+    private static MethodHandle mhFenceCreate, mhFenceCreateLegacy, mhFenceWait, mhFenceRelease;
     private static MethodHandle mhCommandBufferBatchCreate, mhCommandBufferCreate, mhCommandBufferCommit, mhCommandBufferWait,
             mhCommandBufferRelease;
     private static MethodHandle mhDrawIndexedUniform;
@@ -151,7 +153,15 @@ public final class MetalNative {
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D));
         mhClearTexturesRegion = linker.downcallHandle(symbol(lookup, "mmm_clear_textures_region"),
                 FunctionDescriptor.of(I, A, A, B, F, F, F, F, A, B, D, I, I, I, I));
+        mhBufferTextureAlignment = lookup.find("mmm_buffer_texture_alignment")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(L, A, L))).orElse(null);
+        mhBufferTexture = lookup.find("mmm_buffer_texture")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(A, A, L, L, L))).orElse(null);
+        mhBackendOptimizations = lookup.find("mmm_backend_optimizations")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.ofVoid(B, B))).orElse(null);
         mhFenceCreate = linker.downcallHandle(symbol(lookup, "mmm_fence_create"), FunctionDescriptor.of(A, A));
+        mhFenceCreateLegacy = lookup.find("mmm_fence_create_legacy")
+                .map(s -> linker.downcallHandle(s, FunctionDescriptor.of(A, A))).orElse(null);
         mhFenceWait = linker.downcallHandle(symbol(lookup, "mmm_fence_wait"), FunctionDescriptor.of(B, A, L));
         mhFenceRelease = linker.downcallHandle(symbol(lookup, "mmm_fence_release"), FunctionDescriptor.ofVoid(A));
 
@@ -473,7 +483,22 @@ public final class MetalNative {
         return i(mhTextureReadRegion, tex, mip, slice, x, y, w, h, out, cap, rowBytes);
     }
     private static MethodHandle mhQueueSynchronize;
-    public static MemorySegment fenceCreate(MemorySegment queue) { return addr(mhFenceCreate, queue); }
+    public static long bufferTextureAlignment(MemorySegment device, long format) {
+        return mhBufferTextureAlignment == null ? 0 : l(mhBufferTextureAlignment, device, format);
+    }
+    public static boolean nativeTexelBuffersAvailable() { return mhBufferTexture != null && mhBufferTextureAlignment != null; }
+    public static MemorySegment bufferTexture(MemorySegment buffer, long format, long offset, long texels) {
+        return mhBufferTexture == null ? MemorySegment.NULL : addr(mhBufferTexture, buffer, format, offset, texels);
+    }
+    public static void configureBackendOptimizations() {
+        if (mhBackendOptimizations != null) v(mhBackendOptimizations,
+                Boolean.getBoolean("metalmod.deferredClears"),
+                Boolean.getBoolean("metalmod.encoderContinuation"));
+    }
+    public static MemorySegment fenceCreate(MemorySegment queue) {
+        return addr(mhFenceCreateLegacy != null && !Boolean.parseBoolean(
+                System.getProperty("metalmod.fenceTickets", "true")) ? mhFenceCreateLegacy : mhFenceCreate, queue);
+    }
     public static boolean fenceWait(MemorySegment fence, long timeoutNanos) {
         ffiCalls++;
         try {

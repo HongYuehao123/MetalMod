@@ -53,10 +53,9 @@ public final class MetalRenderPipeline {
     private final java.util.Set<String> declaredBuffers;
     private final java.util.Set<String> declaredTextures;
     private final java.util.Set<String> declaredSamplers;
-    // Uniforms the pipeline declares TEXEL_BUFFER. The engine binds those with a GpuBuffer, but
-    // SPIRV-Cross emits the emulated path (texture2d<T> + spvTexelBufferCoord), so the buffer's
-    // bytes have to be presented as an ordinary 2D texture. Metal's native buffer texture is not an
-    // option: creating one with the declared R8_SINT aborts (BUG-013).
+    // TEXEL_BUFFER declarations retain their shader layout: 2D emulation by default, native
+    // texture_buffer for an opt-in pipeline whose entire format set is verified. R8_SINT keeps
+    // the compatibility path (BUG-013), including in pipelines mixing safe and unsafe formats.
     private final Map<String, TexelBuffer> texelBuffers;
     private final int topology;
     // Cached per pipeline rather than recomputed per draw. setPipeline runs once per draw, and
@@ -179,13 +178,14 @@ public final class MetalRenderPipeline {
                     device.reportPointLightFallback(pipeline.getLocation().toString());
                 }
             }
+            boolean nativeTexels = nativeTexelPipeline(pipeline);
             MetalShaderCompiler.CompiledPair pair = compiler.compilePair(
                     pipeline.getVertexShader(), pipeline.getFragmentShader(), pipeline.getShaderDefines(),
                     variant,
                     com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
                             vertex, pipeline.getShaderDefines()),
                     com.mojang.blaze3d.preprocessor.GlslPreprocessor.injectDefines(
-                            fragment, pipeline.getShaderDefines()));
+                            fragment, pipeline.getShaderDefines()), nativeTexels);
             MetalShaderCompiler.CompiledShader vs = pair.vertex();
             MetalShaderCompiler.CompiledShader fs = pair.fragment();
             verifyBindingKinds(pipeline, vs, fs);
@@ -307,12 +307,13 @@ public final class MetalRenderPipeline {
                 MetalRenderPipeline result=new MetalRenderPipeline(pipe, vlib, flib,
                         vs.vertexBuffers(), fs.fragmentBuffers(),
                         vs.textures(), fs.textures(), vs.samplers(), fs.samplers(), topology,
-                        collectTexelBuffers(pipeline, vs, fs),
+                        collectTexelBuffers(pipeline, vs, fs, nativeTexels),
                         pipeline.getLocation().toString(),
                         "minecraft:core/screenquad".equals(pipeline.getVertexShader().toString()),
                         isPointLightVariant(variant),
                         isDynamicVariant(variant),
                         isClusteredVariant(variant));
+                net.metalmod.performance.VignetteNoOp.observe(pipeline, vs.msl(), fs.msl());
                 result.nativeDevice=device.deviceHandle();
                 result.temporalFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad,false);
                 result.generationFragmentSource=reactiveFragment(fs.msl(),pipeline.getLocation().toString(),blendEnabled!=0,result.screenquad,true);
@@ -427,10 +428,28 @@ public final class MetalRenderPipeline {
         return null;
     }
 
+    static boolean nativeTexelFormat(GpuFormat format) {
+        return format == GpuFormat.R32_FLOAT || format == GpuFormat.R32_UINT
+                || format == GpuFormat.R32_SINT || format == GpuFormat.RGBA32_FLOAT;
+    }
+
+    private static boolean nativeTexelPipeline(RenderPipeline pipeline) {
+        if (!Boolean.getBoolean("metalmod.nativeTexelBuffers") || !MetalNative.nativeTexelBuffersAvailable()) return false;
+        boolean found = false;
+        for (BindGroupLayout layout : pipeline.getBindGroupLayouts()) {
+            for (var uniform : layout.getUniforms()) {
+                if (uniform.type() != UniformType.TEXEL_BUFFER) continue;
+                if (!nativeTexelFormat(uniform.gpuFormat())) return false;
+                found = true;
+            }
+        }
+        return found;
+    }
+
     /** Describe every uniform the pipeline declares TEXEL_BUFFER, with the slot the shader reads it at. */
     private static Map<String, TexelBuffer> collectTexelBuffers(RenderPipeline pipeline,
                                                                MetalShaderCompiler.CompiledShader vs,
-                                                               MetalShaderCompiler.CompiledShader fs) {
+                                                               MetalShaderCompiler.CompiledShader fs, boolean nativeTexels) {
         Map<String, TexelBuffer> found = new java.util.HashMap<>();
         for (BindGroupLayout layout : pipeline.getBindGroupLayouts()) {
             for (BindGroupLayout.UniformDescription uniform : layout.getUniforms()) {
@@ -440,9 +459,9 @@ public final class MetalRenderPipeline {
                 Integer vertexSlot = vs.textures().get(uniform.name());
                 Integer fragmentSlot = fs.textures().get(uniform.name());
                 if (vertexSlot != null) {
-                    found.put(uniform.name(), new TexelBuffer(uniform.gpuFormat(), vertexSlot, true));
+                    found.put(uniform.name(), new TexelBuffer(uniform.gpuFormat(), vertexSlot, true, nativeTexels));
                 } else if (fragmentSlot != null) {
-                    found.put(uniform.name(), new TexelBuffer(uniform.gpuFormat(), fragmentSlot, false));
+                    found.put(uniform.name(), new TexelBuffer(uniform.gpuFormat(), fragmentSlot, false, nativeTexels));
                 }
             }
         }
@@ -511,7 +530,7 @@ public final class MetalRenderPipeline {
      */
     public static final int MAX_COLOR_ATTACHMENTS = 1;
 
-    public record TexelBuffer(GpuFormat format, int textureSlot, boolean vertexStage) {
+    public record TexelBuffer(GpuFormat format, int textureSlot, boolean vertexStage, boolean nativeTexture) {
     }
 
     /** How to present a texel-buffer uniform, or null when the pipeline does not use one. */
