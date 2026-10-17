@@ -22,6 +22,14 @@ public final class MetalBuffer extends GpuBuffer {
     @SuppressWarnings("unused")
     private final Object owner;
     private boolean closed;
+    private String diagnosticLabel = "unnamed buffer";
+
+    public String diagnosticLabel() { return this.diagnosticLabel; }
+
+    MetalBuffer diagnosticLabel(String label) {
+        this.diagnosticLabel = label == null ? "unnamed buffer" : label;
+        return this;
+    }
 
     public MetalBuffer(int usage, long size, MemorySegment handle, MemorySegment data,
                        boolean ownsHandle, Object owner) {
@@ -43,7 +51,7 @@ public final class MetalBuffer extends GpuBuffer {
                 ? MemorySegment.NULL
                 : parent.data.asSlice(offset, size);
         return new MetalBuffer(usage, size, parent.handle, slice, false, parent,
-                parent.baseOffset + offset);
+                parent.baseOffset + offset).diagnosticLabel(parent.diagnosticLabel);
     }
 
     /**

@@ -117,6 +117,10 @@ public final class MotionBenchmark implements ClientModInitializer {
         }
         if(state==1 && now>=deadline) {next(mc,now);return;}
         if(state==2 && now>=deadline) {
+            String expectedPixels=System.getProperty("metalmod.benchmarkExpectedPixels", "");
+            String actualPixels=mc.getWindow().getWidth()+"x"+mc.getWindow().getHeight();
+            if(!expectedPixels.isEmpty() && !expectedPixels.equals(actualPixels))
+                throw new IllegalStateException("fixture pixel dimensions mismatch: expected "+expectedPixels+", actual "+actualPixels);
             var f=mc.getClass().getDeclaredField("windowSurface");f.setAccessible(true);
             var config=((GpuSurface)f.get(mc)).currentConfiguration().orElseThrow();
             var expected=runs.get(index).vsync()?GpuSurface.PresentMode.FIFO:GpuSurface.PresentMode.IMMEDIATE;

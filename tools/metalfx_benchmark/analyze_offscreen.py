@@ -5,12 +5,18 @@ import csv
 import json
 from pathlib import Path
 import statistics
+import re
 
 
-def summarize(game):
+def summarize(game, *, moving_reference=False):
     metadata=json.loads((game/'comparison.json').read_text())
     if not metadata.get('offscreen_comparison') or not metadata.get('native_only'):
         raise ValueError('requires explicit native-only offscreen experiment')
+    if metadata.get('resource_telemetry'):
+        raise ValueError('resource attribution is diagnostic; collect separate completion controls')
+    if moving_reference and (metadata.get('stage0_fixture') != 'surface-rd16'
+                             or metadata.get('static_camera') or metadata.get('offscreen_property_comparison')):
+        raise ValueError('moving reference requires the explicit Stage 0 surface fixture, no property A/B')
     root=game/'debug/metalmod'
     index=[line.split('\t',2) for line in (root/'benchmark-index.tsv').read_text().splitlines()]
     property_comparison=metadata.get('offscreen_property_comparison',False)
@@ -20,6 +26,7 @@ def summarize(game):
     runs=[]
     for name,folder,_ in index:
         capture=root/folder
+        if (capture/'resources.csv').exists(): raise ValueError('resource attribution in completion control')
         if (capture/'REJECTED.txt').exists(): raise ValueError('rejected capture')
         with (capture/'frames.csv').open() as stream: rows=list(csv.DictReader(stream))
         if not rows: raise ValueError('empty capture')
@@ -29,6 +36,17 @@ def summarize(game):
             if any(int(row[key]) for key in ('pipeline_compiles','census_active','sr_failures',
                                              'sr_recoveries','sr_requested','sr_encodes','sr_effective')):
                 raise ValueError('non-native, compilation or diagnostic work in capture')
+        if moving_reference:
+            motion=(capture/'motion.txt').read_text()
+            yaw=re.search(r'Yaw range: ([-+0-9.eE]+)\.\.([-+0-9.eE]+)',motion)
+            if not yaw or 'Smooth sinusoid: 30s period' not in motion:
+                raise ValueError('missing canonical moving-camera evidence')
+            low,high=map(float,yaw.groups())
+            center=metadata['anchor']['rotation'][0]
+            if abs((high-low)-24)>0.1 or abs((high+low)/2-center)>0.1:
+                raise ValueError('incomplete or incorrect camera yaw cycle')
+            if len({row['player_x'] for row in rows})<5 or len({row['player_z'] for row in rows})<3:
+                raise ValueError('incomplete camera translation cycle')
         dimensions={(int(row['width']),int(row['height'])) for row in rows}
         if len(dimensions)!=1: raise ValueError('resized capture')
         completion=json.loads((capture/'gpu-completion.json').read_text())
@@ -43,7 +61,15 @@ def summarize(game):
                          height=next(iter(dimensions))[1],cpu_ms=cpu['mean_ms'],draws=average('draws'),
                          frame_loop_fps=1e9/average('frame_ns'),drawable_wait_ms=average('drawable_wait_ns')/1e6))
     if len({(r['width'],r['height']) for r in runs})!=1: raise ValueError('unmatched output resolution')
-    if max(r['draws'] for r in runs)/min(r['draws'] for r in runs)>1.01:
+    draw_ratio=max(r['draws'] for r in runs)/min(r['draws'] for r in runs)
+    if moving_reference:
+        return dict(metadata=metadata,runs=runs,moving_reference=True,workload_matched=False,
+                    draw_variation_percent=100*(draw_ratio-1),
+                    scope='Canonical moving-camera reference rates with completion fences and a two-frame bound. '
+                          'Each capture covers its full yaw/translation cycle. Per-frame draw averages vary with '
+                          'pose sampling and tick-driven work; these are not matched-workload timing ratios. '
+                          'No aggregate throughput increase or isolated presentation-overhead claim is computed.')
+    if draw_ratio>1.01:
         raise ValueError('draw workload differs by more than 1%')
     if property_comparison:
         off=statistics.mean(r['completed_fps'] for r in runs if r['name'].endswith('-off'))
@@ -66,4 +92,7 @@ def summarize(game):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game',type=Path)
-    print(json.dumps(summarize(parser.parse_args().game),indent=2))
+    parser.add_argument('--moving-stage0-reference',action='store_true',
+                        help='Raw per-run Stage 0 surface reference; validates motion, computes no performance-gain ratio')
+    args=parser.parse_args()
+    print(json.dumps(summarize(args.game,moving_reference=args.moving_stage0_reference),indent=2))

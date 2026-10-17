@@ -35,7 +35,7 @@ public final class MetalTransientMemory implements TransientMemory {
             MetalDevice.reportResourceFailure("transient arena " + CAPACITY + " bytes");
         }
         this.arena = new MetalBuffer(GpuBuffer.USAGE_MAP_WRITE | GpuBuffer.USAGE_COPY_DST,
-                CAPACITY, handle, data, true, null);
+                CAPACITY, handle, data, true, null).diagnosticLabel("transient staging arena");
     }
 
     private synchronized MetalBuffer allocate(long size, long alignment, int usage) {
@@ -90,10 +90,13 @@ public final class MetalTransientMemory implements TransientMemory {
         }
         MetalBuffer target = allocate(total, alignment, usage);
         if (target.isMapped()) {
+            long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
             ByteBuffer view = target.mappedBytes();
             for (ByteBuffer buffer : data) {
                 view.put(buffer.duplicate());
             }
+            net.metalmod.debug.ResourceTelemetry.end(telemetry, "buffer.transient-upload",
+                    target.diagnosticLabel(), "buffer", total);
         }
         return target.slice(0L, target.size());
     }

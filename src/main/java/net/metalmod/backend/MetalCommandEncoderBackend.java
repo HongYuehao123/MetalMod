@@ -1,5 +1,7 @@
 package net.metalmod.backend;
 
+import net.metalmod.debug.ResourceTelemetry;
+
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.buffers.GpuFence;
@@ -162,8 +164,19 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
                 targetLabel = colors.get(0).textureView().texture().getLabel();
             }
 
+            long telemetry = ResourceTelemetry.begin();
             MemorySegment encoder = MetalNative.renderPassBegin(cb, nativeCount, colorTextures, loadClear,
                     clearColors, depthTexture, depthClear, depthValue, Math.max(1, width), Math.max(1, height));
+            if (telemetry != 0) {
+                ResourceTelemetry.end(telemetry, "pass.begin", targetLabel, "pass", 0);
+                for (int i = 0; i < count; i++) {
+                    GpuTextureView view = colors.get(i).textureView();
+                    if (view == null) continue;
+                    recordAttachment(telemetry, view, loadClear.getAtIndex(ValueLayout.JAVA_INT, i) != 0);
+                }
+                if (depth != null && depth.textureView() != null)
+                    recordAttachment(telemetry, depth.textureView(), depthClear);
+            }
             boolean atlasTarget = needsYFlip(targetLabel);
             noteRenderTarget(targetLabel, atlasTarget,
                     loadClear.getAtIndex(ValueLayout.JAVA_INT, 0) != 0, depthClear);
@@ -289,8 +302,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         recordClear(color);
         MetalTexture metal = textureOf(colorTexture);
         if (metal != null) {
+            long telemetry = ResourceTelemetry.begin();
             MetalNative.clearTextures(this.device.queueHandle(), metal.handle(), true,
                     color.x(), color.y(), color.z(), color.w(), MemorySegment.NULL, false, 0.0);
+            recordClearTelemetry(telemetry, colorTexture, null, false, 0, 0, 0, 0);
         }
     }
 
@@ -300,11 +315,13 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         recordClear(color);
         MetalTexture colorMetal = textureOf(colorTexture);
         MetalTexture depthMetal = textureOf(depthTexture);
+        long telemetry = ResourceTelemetry.begin();
         MetalNative.clearTextures(this.device.queueHandle(),
                 colorMetal == null ? MemorySegment.NULL : colorMetal.handle(), colorMetal != null,
                 color == null ? 0f : color.x(), color == null ? 0f : color.y(),
                 color == null ? 0f : color.z(), color == null ? 0f : color.w(),
                 depthMetal == null ? MemorySegment.NULL : depthMetal.handle(), depthMetal != null, depth);
+        recordClearTelemetry(telemetry, colorTexture, depthTexture, false, 0, 0, 0, 0);
     }
 
     @Override
@@ -317,21 +334,52 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         recordClear(color);
         MetalTexture colorMetal = textureOf(colorTexture);
         MetalTexture depthMetal = textureOf(depthTexture);
+        long telemetry = ResourceTelemetry.begin();
         MetalNative.clearTexturesRegion(this.device.queueHandle(),
                 colorMetal == null ? MemorySegment.NULL : colorMetal.handle(), colorMetal != null,
                 color == null ? 0f : color.x(), color == null ? 0f : color.y(),
                 color == null ? 0f : color.z(), color == null ? 0f : color.w(),
                 depthMetal == null ? MemorySegment.NULL : depthMetal.handle(), depthMetal != null,
                 depth, x, y, width, height);
+        recordClearTelemetry(telemetry, colorTexture, depthTexture, true, x, y, width, height);
     }
 
     @Override
     public void clearDepthTexture(GpuTexture depthTexture, double depth) {
         MetalTexture metal = textureOf(depthTexture);
         if (metal != null) {
+            long telemetry = ResourceTelemetry.begin();
             MetalNative.clearTextures(this.device.queueHandle(), MemorySegment.NULL, false,
                     0f, 0f, 0f, 0f, metal.handle(), true, depth);
+            recordClearTelemetry(telemetry, null, depthTexture, false, 0, 0, 0, 0);
         }
+    }
+
+    private static void recordAttachment(long start, GpuTextureView view, boolean clear) {
+        GpuTexture texture = view.texture();
+        long bytes = texture instanceof MetalTexture metal
+                ? (long) view.getWidth(0) * view.getHeight(0) * metal.bytesPerPixel() : 0;
+        ResourceTelemetry.attachment(start, clear ? "pass.attachment-clear.full" : "pass.attachment-load",
+                texture.getLabel(), texture.getFormat(), bytes);
+    }
+
+    private static void recordClearTelemetry(long start, GpuTexture color, GpuTexture depth,
+                                              boolean region, int x, int y, int width, int height) {
+        if (start == 0) return;
+        boolean full = !region || (x == 0 && y == 0 && (color != null || depth != null)
+                && (color == null || (width == color.getWidth(0) && height == color.getHeight(0)))
+                && (depth == null || (width == depth.getWidth(0) && height == depth.getHeight(0))));
+        long bytes = 0;
+        for (GpuTexture texture : new GpuTexture[] {color, depth}) {
+            if (texture instanceof MetalTexture metal) {
+                long w = region ? Math.max(0, Math.min((long) x + width, texture.getWidth(0)) - Math.max(0, x)) : texture.getWidth(0);
+                long h = region ? Math.max(0, Math.min((long) y + height, texture.getHeight(0)) - Math.max(0, y)) : texture.getHeight(0);
+                bytes += w * h * metal.bytesPerPixel();
+            }
+        }
+        ResourceTelemetry.end(start, full ? "clear.full" : "clear.partial",
+                (color == null ? "-" : color.getLabel()) + " / " + (depth == null ? "-" : depth.getLabel()),
+                (color == null ? "-" : color.getFormat()) + " / " + (depth == null ? "-" : depth.getFormat()), bytes);
     }
 
     // Copies -------------------------------------------------------------------------------------
@@ -343,38 +391,43 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
             return;
         }
         int length = data.remaining();
-        MetalDevice.countCopy();
-        // GPU-ordered, not a CPU memcpy: the engine rewrites its per-frame uniform buffers (Globals -
-        // which carries CameraBlockPos/CameraOffset - plus lighting, projection and weather) with no
-        // fence, so a direct write races the previous frame still drawing from the same buffer while
-        // the camera moves. A shift of a fraction of a block opens a dark seam at section borders,
-        // which is glaring on a large flat water plane (BUG-023).
-        long offset = buffer.baseOffset() + slice.offset();
-        if (buffer.handle().address() != 0) {
-            MemorySegment bytes = MemorySegment.ofBuffer(data.duplicate());
-            int result;
-            if (bytes.isNative()) {
-                result = MetalNative.writeBufferBytes(this.device.queueHandle(), buffer.handle(),
-                        offset, bytes, length);
-            } else {
-                try (Arena arena = Arena.ofConfined()) {
-                    MemorySegment copy = arena.allocate(Math.max(1, length));
-                    MemorySegment.copy(bytes, 0L, copy, 0L, length);
+        long telemetry = ResourceTelemetry.begin();
+        try {
+            MetalDevice.countCopy();
+            // GPU-ordered, not a CPU memcpy: the engine rewrites its per-frame uniform buffers (Globals -
+            // which carries CameraBlockPos/CameraOffset - plus lighting, projection and weather) with no
+            // fence, so a direct write races the previous frame still drawing from the same buffer while
+            // the camera moves. A shift of a fraction of a block opens a dark seam at section borders,
+            // which is glaring on a large flat water plane (BUG-023).
+            long offset = buffer.baseOffset() + slice.offset();
+            if (buffer.handle().address() != 0) {
+                MemorySegment bytes = MemorySegment.ofBuffer(data.duplicate());
+                int result;
+                if (bytes.isNative()) {
                     result = MetalNative.writeBufferBytes(this.device.queueHandle(), buffer.handle(),
-                            offset, copy, length);
+                            offset, bytes, length);
+                } else {
+                    try (Arena arena = Arena.ofConfined()) {
+                        MemorySegment copy = arena.allocate(Math.max(1, length));
+                        MemorySegment.copy(bytes, 0L, copy, 0L, length);
+                        result = MetalNative.writeBufferBytes(this.device.queueHandle(), buffer.handle(),
+                                offset, copy, length);
+                    }
                 }
+                if (result == 0) {
+                    return;
+                }
+                MetalDevice.reportResourceFailure("writeToBuffer returned " + result
+                        + " length " + length);
             }
-            if (result == 0) {
+            // Fall back to the CPU path only when the native blit is unavailable (e.g. a stale dylib).
+            if (!buffer.isMapped()) {
                 return;
             }
-            MetalDevice.reportResourceFailure("writeToBuffer returned " + result
-                    + " length " + length);
+            buffer.dataSlice(slice.offset(), length).asByteBuffer().put(data.duplicate());
+        } finally {
+            if (telemetry != 0) ResourceTelemetry.end(telemetry, "buffer.write", buffer.diagnosticLabel(), "buffer", length);
         }
-        // Fall back to the CPU path only when the native blit is unavailable (e.g. a stale dylib).
-        if (!buffer.isMapped()) {
-            return;
-        }
-        buffer.dataSlice(slice.offset(), length).asByteBuffer().put(data.duplicate());
     }
 
     @Override
@@ -388,30 +441,36 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         if (length <= 0) {
             return;
         }
-        MetalDevice.countCopy();
-        // A GPU blit on the device queue, not a CPU memcpy. The engine frees and immediately reuses
-        // a mesh region in its staging->uber-buffer upload, and on Vulkan the copy is a
-        // vkCmdCopyBuffer recorded into the frame, so the queue serialises the overwrite behind the
-        // previous frame's reads of that region. A CPU copy writes shared memory the instant it is
-        // called, so the GPU can still be reading the old mesh: a section renders with the next
-        // section's vertices, which is the transient, motion-correlated patch in BUG-023.
-        long sourceOffset = src.baseOffset() + source.offset();
-        long targetOffset = dst.baseOffset() + target.offset();
-        if (src.handle().address() != 0 && dst.handle().address() != 0) {
-            int result = MetalNative.copyBufferToBuffer(this.device.queueHandle(),
-                    src.handle(), sourceOffset, dst.handle(), targetOffset, length);
-            if (result == 0) {
+
+        long telemetry = ResourceTelemetry.begin();
+        try {
+            MetalDevice.countCopy();
+            // A GPU blit on the device queue, not a CPU memcpy. The engine frees and immediately reuses
+            // a mesh region in its staging->uber-buffer upload, and on Vulkan the copy is a
+            // vkCmdCopyBuffer recorded into the frame, so the queue serialises the overwrite behind the
+            // previous frame's reads of that region. A CPU copy writes shared memory the instant it is
+            // called, so the GPU can still be reading the old mesh: a section renders with the next
+            // section's vertices, which is the transient, motion-correlated patch in BUG-023.
+            long sourceOffset = src.baseOffset() + source.offset();
+            long targetOffset = dst.baseOffset() + target.offset();
+            if (src.handle().address() != 0 && dst.handle().address() != 0) {
+                int result = MetalNative.copyBufferToBuffer(this.device.queueHandle(),
+                        src.handle(), sourceOffset, dst.handle(), targetOffset, length);
+                if (result == 0) {
+                    return;
+                }
+                MetalDevice.reportResourceFailure("copyToBuffer returned " + result
+                        + " length " + length);
+            }
+            // Fall back to the CPU path only when the native blit is unavailable (e.g. a stale dylib).
+            if (!src.isMapped() || !dst.isMapped()) {
                 return;
             }
-            MetalDevice.reportResourceFailure("copyToBuffer returned " + result
-                    + " length " + length);
+            MemorySegment.copy(src.dataSlice(source.offset(), length), 0L,
+                    dst.dataSlice(target.offset(), length), 0L, length);
+        } finally {
+            if (telemetry != 0) ResourceTelemetry.end(telemetry, "buffer.copy", src.diagnosticLabel() + " -> " + dst.diagnosticLabel(), "buffer", length);
         }
-        // Fall back to the CPU path only when the native blit is unavailable (e.g. a stale dylib).
-        if (!src.isMapped() || !dst.isMapped()) {
-            return;
-        }
-        MemorySegment.copy(src.dataSlice(source.offset(), length), 0L,
-                dst.dataSlice(target.offset(), length), 0L, length);
     }
 
     @Override
@@ -435,8 +494,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         int safeY = Math.max(0, Math.min(y, mipHeight - 1));
         int safeWidth = Math.max(1, Math.min(width, mipWidth - safeX));
         int safeHeight = Math.max(1, Math.min(height, mipHeight - safeY));
+        long telemetry = ResourceTelemetry.begin();
         MetalNative.textureReplaceRegion(metal.handle(), mipLevel, slice, safeX, safeY,
                 safeWidth, safeHeight, data.duplicate(), (long) safeWidth * metal.bytesPerPixel());
+        if (telemetry != 0) ResourceTelemetry.end(telemetry, "texture.write", texture.getLabel(), texture.getFormat(), (long) safeWidth * safeHeight * metal.bytesPerPixel());
     }
 
     @Override
@@ -482,8 +543,10 @@ public final class MetalCommandEncoderBackend implements CommandEncoderBackend {
         }
         int layers = Math.max(1, target.getDepthOrLayers());
         int slice = layers > 1 ? Math.max(0, Math.min(targetDepthOrLayers, layers - 1)) : 0;
+        long telemetry = ResourceTelemetry.begin();
         MetalNative.textureReplaceRegionRaw(dst.handle(), targetMipLevel, slice, safeX, safeY,
                 safeWidth, safeHeight, src.dataSlice(offsetBytes, needed), rowBytes);
+        if (telemetry != 0) ResourceTelemetry.end(telemetry, "texture.buffer-upload", target.getLabel(), target.getFormat(), (long) safeWidth * safeHeight * bytesPerPixel);
     }
 
     @Override

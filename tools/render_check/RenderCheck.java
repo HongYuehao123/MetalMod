@@ -33,6 +33,9 @@ import org.joml.Vector4f;
 import org.joml.Vector4fc;
 
 import java.io.InputStream;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -295,6 +298,7 @@ public final class RenderCheck {
             itemLightCheck(source);
             blockLightCheck(source);
             lightingSettingsCheck(source, terrain);
+            resourceTelemetryCheck(device);
         } finally {
             device.close();
         }
@@ -302,6 +306,54 @@ public final class RenderCheck {
         String sodiumJar = System.getProperty("metalmod.sodiumJar");
         if (sodiumJar != null) sodiumTerrainCheck(Paths.get(sodiumJar));
         report();
+    }
+
+    /** Exercise attribution at real backend call sites, including cloud-format emulation. */
+    private static void resourceTelemetryCheck(MetalDevice device) throws Exception {
+        net.metalmod.debug.ResourceTelemetry.start(true);
+        GpuBuffer source = device.createBuffer(() -> "telemetry chunk staging", GpuBuffer.USAGE_COPY_SRC | GpuBuffer.USAGE_MAP_WRITE, 32);
+        GpuBuffer target = device.createBuffer(() -> "telemetry chunk target", GpuBuffer.USAGE_COPY_DST | GpuBuffer.USAGE_MAP_WRITE, 32);
+        GpuTexture texture = device.createTexture("telemetry atlas", GpuTexture.USAGE_COPY_DST | GpuTexture.USAGE_RENDER_ATTACHMENT,
+                GpuFormat.RGBA8_UNORM, 4, 4, 1, 1);
+        GpuTextureView view = device.createTextureView(texture);
+        try {
+            CommandEncoderBackend encoder = device.createCommandEncoder();
+            encoder.writeToBuffer(source.slice(0, 16), ByteBuffer.allocateDirect(16));
+            encoder.copyToBuffer(source.slice(0, 16), target.slice(0, 16));
+            encoder.writeToTexture(texture, ByteBuffer.allocateDirect(64), 0, 0, 0, 0, 4, 4);
+            encoder.copyBufferToTexture(source.slice(), 0, 0, 2, 2, texture, 0, 0, 2, 2, 0, 0);
+            device.texelTexture((MetalBuffer) source, 0, 32, GpuFormat.R8_SINT, 1);
+            encoder.clearColorTexture(texture, new Vector4f(0, 0, 1, 1));
+            encoder.clearColorAndDepthTextures(texture, new Vector4f(1, 0, 0, 1), null, 1, 1, 1, 2, 2);
+            MetalNative.queueSynchronize(device.queueHandle());
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment pixels = arena.allocate(64);
+                int rc = MetalNative.textureReadRegion(((MetalTexture) texture).handle(), 0, 0, 0, 0, 4, 4, pixels, 64, 16);
+                check("resource telemetry preserves full and partial clear pixels", rc == 0
+                        && (pixels.get(ValueLayout.JAVA_BYTE, 2) & 255) == 255
+                        && (pixels.get(ValueLayout.JAVA_BYTE, 20) & 255) == 255, "");
+            }
+            encoder.createRenderPass(RenderPassDescriptor.create(() -> "telemetry pass")
+                    .withColorAttachment(view, Optional.of(new Vector4f(0, 1, 0, 1))));
+            encoder.submitRenderPass();
+            MetalNative.queueSynchronize(device.queueHandle());
+            var snapshot = net.metalmod.debug.ResourceTelemetry.stop();
+            String[] operations = {"buffer.write", "buffer.copy", "texture.write", "texture.buffer-upload",
+                    "texture.texel-emulation", "clear.full", "clear.partial", "pass.begin", "pass.attachment-clear.full"};
+            long[] bytes = {16, 16, 64, 16, 32, 64, 16, 0, 64};
+            for (int i = 0; i < operations.length; i++) {
+                String operation = operations[i];
+                var rows = snapshot.rows().stream().filter(r -> r.operation().equals(operation)).toList();
+                check("resource attribution " + operation, rows.size() == 1
+                        && rows.getFirst().calls() == 1 && rows.getFirst().bytes() == bytes[i], rows.toString());
+            }
+            check("resource attribution retains R8_SINT cloud format", snapshot.rows().stream()
+                    .anyMatch(r -> r.operation().equals("texture.texel-emulation") && r.format().equals("R8_SINT")
+                            && r.label().equals("telemetry chunk staging")), "");
+        } finally {
+            net.metalmod.debug.ResourceTelemetry.stop();
+            view.close();texture.close();source.close();target.close();
+        }
     }
 
     /** Optional release-pinned Sodium fixtures: real compressed vertices, region/fade ABI and lights. */

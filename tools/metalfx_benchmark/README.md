@@ -239,3 +239,38 @@ It accepts native-only, native/spatial, and native/spatial/temporal fixtures and
 recovery/failure, wrong mode/strength/request state, focus loss, and timed compilation.
 Fresh whole-mod scenario results and limits are recorded in
 [the 2026-10-16 report](../../docs/performance/whole-mod-test-20261016.md).
+
+## Stage 0 baseline suite
+
+`run_manual.py --submission-benchmark --stage0-fixture surface-rd16|dense-rd32
+--renderer-comparison vanilla` selects the canonical native-only fixtures. Both require explicit
+`--source-world` and `--anchor-route`. Surface uses smooth motion and distance 16; dense requires
+`--anchor-waypoint 13 --static-camera` and validates actual pixels at 5120×2664. Use fresh output
+directories and two ordinary launches per fixture. Add `--resource-telemetry` in a separate
+attribution launch, and `--offscreen-comparison` in a separate completion-control launch.
+Resource diagnostics are refused by the offscreen throughput analyzer. For the moving surface
+completion fixture, use `analyze_offscreen.py GAME --moving-stage0-reference`: this validates the
+full camera yaw/translation cycle and emits raw completed rates without an optimization-gain ratio.
+The default analyzer retains the strict 1% draw-workload gate for fixed-scene comparisons.
+
+The optional `METALMOD_BENCHMARK_JAVA` environment variable overrides only the benchmark Java
+executable. This supports a disposable app-bundled copy of the installed launcher when Computer
+needs a unique application identity; the default remains the installed JDK 26 executable.
+`launch.json` preserves the exact executable and arguments. Normal HMCL instance paths continue
+to supply the client/libraries/config, and worlds are copied before opening.
+
+Arrange accepted launches as `surface-baseline-1`, `surface-baseline-2`, `surface-attribution`,
+`surface-completion`, and the corresponding four `dense-*` directories under one root. Run:
+
+```sh
+python3 tools/metalfx_benchmark/analyze_stage0.py ROOT > ROOT/baseline-manifest.json
+python3 tools/metalfx_benchmark/test_analyze_stage0.py
+python3 tools/metalfx_benchmark/test_stage0_fixtures.py
+```
+
+The suite analyzer enforces native-only clean captures, matching fixture/source/JAR/mod payloads,
+external display and actual resolution, zero native health errors, disabled FG/SR/temporal settings,
+complete completion controls, and exact resource/native clear counts. Rejected attempts remain in
+the artifact tree and are listed separately. Drawable timestamps include countdown/export tails;
+zero and duplicate timestamps are excluded from the event rate and disclosed separately.
+See [Stage 0 coverage and procedure](../../docs/performance/stage0-resource-telemetry.md).

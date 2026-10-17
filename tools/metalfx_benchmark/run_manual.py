@@ -36,13 +36,33 @@ p.add_argument('--offscreen-property-comparison',action='store_true',help='Compa
 p.add_argument('--offscreen-comparison',action='store_true',help='Test-only bounded present/offscreen ABBA; real GPU completion fences in both modes')
 p.add_argument('--compare-spatial',action='store_true',help='Explicit feature experiment: also capture spatial MetalFX; default performance tests are native only')
 p.add_argument('--compare-temporal',action='store_true',help='Fixed-renderer feature comparison: native, spatial25 and temporal25, 30 seconds each')
-p.add_argument('--render-distance',type=int,default=32,help='Record explicit terrain distance; 32 is the existing stress fixture, mcopt footage uses 16')
+p.add_argument('--resource-telemetry',action='store_true',help='F8 resources.csv attribution; instrumented, excluded from throughput claims')
+p.add_argument('--stage0-fixture',choices=['surface-rd16','dense-rd32'],help='Canonical native-only fixture; requires explicit saved-world and anchor route')
+p.add_argument('--render-distance',type=int,default=None,help='Record explicit terrain distance; 32 is the existing stress fixture, mcopt footage uses 16')
 p.add_argument('--extra-mod',type=pathlib.Path,action='append',default=[])
 p.add_argument('--sodium-options',type=pathlib.Path,help='Copied-instance Sodium options override for controlled parity diagnostics')
 p.add_argument('--display',choices=['current','internal','external'],default='external',help='Place only the copied benchmark window on the selected screen before warmup; internal fits visible screen')
 p.add_argument('--window-width',type=int,default=2560,help='Initial logical content width')
 p.add_argument('--window-height',type=int,default=1440,help='Initial logical content height')
 a=p.parse_args()
+if a.stage0_fixture:
+    if not a.submission_benchmark or not a.source_world or not a.anchor_route:
+        p.error('Stage 0 fixtures require --submission-benchmark, --source-world and --anchor-route')
+    if a.compare_spatial or a.compare_temporal or a.diagnostic_only or a.gpu_stage_timing or a.offscreen_property_comparison:
+        p.error('Stage 0 fixtures require native-only fixed settings (optional resource telemetry or offscreen controls)')
+    distance = 16 if a.stage0_fixture == 'surface-rd16' else 32
+    if a.render_distance is not None and a.render_distance != distance:
+        p.error('render distance conflicts with Stage 0 fixture')
+    if a.stage0_fixture == 'dense-rd32' and (a.anchor_waypoint != 13 or not a.static_camera):
+        p.error('dense-rd32 requires --anchor-waypoint 13 --static-camera')
+    if a.stage0_fixture == 'surface-rd16' and a.static_camera:
+        p.error('surface-rd16 uses the existing smooth 30-second motion, omit --static-camera')
+    if not a.renderer_comparison:
+        p.error('Stage 0 requires explicit --renderer-comparison vanilla or sodium')
+    a.render_distance = distance
+if a.render_distance is None: a.render_distance = 32
+if a.resource_telemetry and a.offscreen_comparison:
+    p.error('collect resource attribution and offscreen throughput controls in separate launches')
 if a.window_width<=0 or a.window_height<=0:p.error('positive window dimensions required')
 if not 2<=a.render_distance<=32:p.error('render distance must be 2..32')
 if a.compare_spatial and not a.submission_benchmark:p.error('spatial comparison requires --submission-benchmark')
@@ -103,6 +123,13 @@ if a.submission_benchmark:
         'diagnostic_only':a.diagnostic_only,'static_camera':a.static_camera,'anchor':dict(position=pos,rotation=rot),
         'source_world':str(source),'anchor_route':str(a.anchor_route) if a.anchor_route else None,
         'anchor_waypoint':a.anchor_waypoint,'gpu_stage_timing':a.gpu_stage_timing,
+        'stage0_fixture':a.stage0_fixture,'resource_telemetry':a.resource_telemetry,
+        'expected_pixels':[5120,2664] if a.stage0_fixture=='dense-rd32' else None,
+        'git_head':subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo,text=True).strip(),
+        'git_status':subprocess.check_output(['git','status','--short'],cwd=repo,text=True),
+        'tracked_diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=repo)).hexdigest(),
+        'anchor_route_sha256':hashlib.sha256(a.anchor_route.read_bytes()).hexdigest() if a.anchor_route else None,
+        'source_level_sha256':hashlib.sha256((source/'level.dat').read_bytes()).hexdigest(),
         'renderer':a.renderer_comparison,'native_only':not (a.compare_spatial or a.compare_temporal),'compare_temporal':a.compare_temporal,'render_distance':a.render_distance,
         'vsync':False,'fps_limit':'unlimited (vanilla 260 sentinel)','frame_generation':False,'temporal_upscaling':a.compare_temporal,
         'requested_display':a.display,'initial_logical_size':[a.window_width,a.window_height],'extra_mod_sha256':{j.name:hashlib.sha256(j.read_bytes()).hexdigest() for j in a.extra_mod},
@@ -112,10 +139,12 @@ shutil.copy2(repo/'build/metalfx-benchmark/spatial-benchmark.jar',out/'mods/move
 r=out/'debug/metalmod/routes';r.mkdir(parents=True)
 (r/('minecraft.overworld.json' if a.submission_benchmark else 'unused-anchor.json')).write_text(json.dumps({'name':'minecraft.overworld','waypoints':[dict(dimension='minecraft:overworld',x=pos[0],y=pos[1],z=pos[2],yaw=rot[0],pitch=rot[1],dwellMs=60000)]},indent=2))
 cp=subprocess.check_output(['python3','scripts/build_classpath.py',str(instance)],cwd=repo,text=True).strip();cp=':'.join(x for x in cp.split(':') if '/mods/' not in x)
-command=['/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/java','-XstartOnFirstThread','-Xmx4G','--enable-native-access=ALL-UNNAMED','-Dmetalmod.metalBackend=true','-Dmetalmod.motionBenchmark=true' if a.submission_benchmark else '-Dmetalmod.manualRecording=true','-Dmetalmod.capturePrep=false','-Dmetalmod.displayProbe='+str(probe),'-cp',cp,'net.fabricmc.loader.impl.launch.knot.KnotClient','--username','MetalFXTest','--uuid','00000000000000000000000000000001','--accessToken','0','--version','26.2','--gameDir',str(out),'--assetsDir',str(instance.parents[1]/'assets'),'--assetIndex','32','--width','2560','--height','1440','--quickPlaySingleplayer',a.world]
+command=[os.environ.get('METALMOD_BENCHMARK_JAVA','/Library/Java/JavaVirtualMachines/jdk-26.jdk/Contents/Home/bin/java'),'-XstartOnFirstThread','-Xmx4G','--enable-native-access=ALL-UNNAMED','-Dmetalmod.metalBackend=true','-Dmetalmod.motionBenchmark=true' if a.submission_benchmark else '-Dmetalmod.manualRecording=true','-Dmetalmod.capturePrep=false','-Dmetalmod.displayProbe='+str(probe),'-cp',cp,'net.fabricmc.loader.impl.launch.knot.KnotClient','--username','MetalFXTest','--uuid','00000000000000000000000000000001','--accessToken','0','--version','26.2','--gameDir',str(out),'--assetsDir',str(instance.parents[1]/'assets'),'--assetIndex','32','--width','2560','--height','1440','--quickPlaySingleplayer',a.world]
 command[command.index('--width')+1]=str(a.window_width)
 command[command.index('--height')+1]=str(a.window_height)
 command.insert(command.index('-cp'),'-Dmetalmod.benchmarkNativeOnly='+str(not (a.compare_spatial or a.compare_temporal)).lower())
+if a.resource_telemetry:command.insert(command.index('-cp'),'-Dmetalmod.resourceTelemetry=true')
+if a.stage0_fixture=='dense-rd32':command.insert(command.index('-cp'),'-Dmetalmod.benchmarkExpectedPixels=5120x2664')
 if a.compare_temporal:command.insert(command.index('-cp'),'-Dmetalmod.benchmarkCompareTemporal=true')
 if a.offscreen_property_comparison:
     command.insert(command.index('-cp'),'-Dmetalmod.offscreenPropertyComparison=true')

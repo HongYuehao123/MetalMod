@@ -266,7 +266,10 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     private static void upload(MetalBuffer buffer, String label, java.nio.ByteBuffer data) {
         if (!buffer.isMapped()) throw new IllegalStateException(label + " is unmapped");
+        long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
+        int bytes = data.remaining();
         buffer.mappedBytes().put(data);
+        net.metalmod.debug.ResourceTelemetry.end(telemetry, "buffer.light-mapped-write", label, "buffer", bytes);
     }
 
     /** Wait for this slot's previous frame, then hand back the buffer set to write into. */
@@ -1060,6 +1063,7 @@ public final class MetalDevice implements GpuDeviceBackend {
         }
         // Uploaded as whole rows plus a last partial one. Padding the tail to a full row would read
         // past the end of the backing buffer, which is a ring allocation the engine owns.
+        long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
         int fullRows = texels / width;
         if (fullRows > 0) {
             long bytes = (long) width * fullRows * perTexel;
@@ -1073,6 +1077,8 @@ public final class MetalDevice implements GpuDeviceBackend {
             MetalNative.textureReplaceRegionRaw(texture.handle(), 0, 0, 0, fullRows, remainder, 1,
                     buffer.dataSlice(start, bytes), bytes);
         }
+        net.metalmod.debug.ResourceTelemetry.end(telemetry, "texture.texel-emulation",
+                buffer.diagnosticLabel(), format, needed);
         return texture;
     }
 
@@ -1178,6 +1184,7 @@ public final class MetalDevice implements GpuDeviceBackend {
 
     @Override
     public GpuBuffer createBuffer(Supplier<String> label, int usage, long size) {
+        String name = label == null ? null : label.get();
         BUFFER_COUNT.incrementAndGet();
         long safeSize = Math.max(1L, size);
         // MSL rounds uniform structs to 16-byte alignment beyond the logical std140 tail.
@@ -1190,11 +1197,13 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (memory.address() == 0) {
             reportResourceFailure("buffer size=" + safeSize + " usage=" + usage);
         }
-        return new MetalBuffer(usage, safeSize, handle, memory, true, null);
+        return new MetalBuffer(usage, safeSize, handle, memory, true, null)
+                .diagnosticLabel(name);
     }
 
     @Override
     public GpuBuffer createBuffer(Supplier<String> label, int usage, ByteBuffer data) {
+        String name = label == null ? null : label.get();
         BUFFER_COUNT.incrementAndGet();
         int requested = data.remaining();
         long safeSize = Math.max(1L, requested);
@@ -1207,9 +1216,13 @@ public final class MetalDevice implements GpuDeviceBackend {
         if (memory.address() == 0) {
             reportResourceFailure("buffer (initial data) size=" + safeSize + " usage=" + usage);
         } else if (requested > 0) {
+            long telemetry = net.metalmod.debug.ResourceTelemetry.begin();
             memory.asByteBuffer().order(java.nio.ByteOrder.nativeOrder()).put(data.duplicate());
+            net.metalmod.debug.ResourceTelemetry.end(telemetry, "buffer.initial-write",
+                    name, "buffer", requested);
         }
-        return new MetalBuffer(usage, safeSize, handle, memory, true, null);
+        return new MetalBuffer(usage, safeSize, handle, memory, true, null)
+                .diagnosticLabel(name);
     }
 
     @Override

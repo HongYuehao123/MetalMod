@@ -113,6 +113,8 @@ public final class PerformanceCapture {
                     + (route == null ? "" : "\nKnown routes: " + CaptureRouteStore.describeAvailable(minecraft))
                     + "\nCapture limit: 60 seconds or 36000 frames"
                     + "\nBoundary: after GpuSurface.present(), on any backend. First partial interval discarded."
+                    + "\nResource attribution: " + Boolean.getBoolean("metalmod.resourceTelemetry")
+                    + "; optional resources.csv, CPU API time only; instrumented captures excluded from throughput."
                     + "\nCensus diagnostics at start: " + (nativeEnabled && MetalDevice.censusEnabled());
             startedAt = lastFrame = 0;
             lastSeconds = -1;
@@ -151,6 +153,7 @@ public final class PerformanceCapture {
             }
             if (lastFrame == 0) {
                 if (nativeEnabled) MetalNative.captureSetEnabled(true);
+                ResourceTelemetry.start(nativeEnabled && Boolean.getBoolean("metalmod.resourceTelemetry"));
                 startedAt = lastFrame = now;
                 lastFfi = MetalNative.ffiCallCount();
                 lastCompile = lastCompileCount = 0;
@@ -327,6 +330,7 @@ public final class PerformanceCapture {
             return;
         }
         recording = null;
+        ResourceTelemetry.stop();
         status = "Capture failed; see latest.log";
         notify(minecraft, status);
     }
@@ -334,6 +338,7 @@ public final class PerformanceCapture {
     private static void finish(Minecraft minecraft, String reason, boolean synchronous) {
         PerformanceRecording completed = recording;
         recording = null;
+        ResourceTelemetry.Snapshot resources = ResourceTelemetry.stop();
         releaseNative();
         if (completed.size() == 0) {
             status = "Capture cancelled; F8 records again";
@@ -353,6 +358,7 @@ public final class PerformanceCapture {
             try {
                 Path directory = completed.write(completedRoot, completedPrefix, completedMetadata, reason,
                         completedRoute);
+                resources.write(directory);
                 message = "Capture saved: " + directory.toAbsolutePath();
                 status = "Capture saved in debug/metalmod; F8 records again";
             } catch (Exception error) {

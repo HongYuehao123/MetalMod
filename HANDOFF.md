@@ -56,6 +56,32 @@ keeps the vanilla backends as a fallback, so a `BackendCreationException` degrad
 | 9 — hybrid ray tracing | not started |
 | Optional — GLSL shaderpacks | deferred; not an RT prerequisite |
 
+## Performance Stage 0 complete (2026-10-17)
+
+Opt-in `-Dmetalmod.resourceTelemetry=true` exports bounded resource/format bytes, CPU API time,
+full/partial clears and pass attachment declarations with F8 captures. Disabled by default;
+instrumented captures are excluded from ordinary throughput claims. Logical footprints and CPU
+wall time are not GPU duration/bandwidth; engine-owned mapped writes and native-only FX/presentation
+remain outside attribution coverage.
+
+All five offline gates pass (934 native, 87+9 shaders, 236 core render checks, standalone tests),
+as do 21 tooling checks. Copied HMCL-world validation passes **14 canonical captures / 32,347 frames**
+plus Computer-driven F8 start/stop/export/cancel and inventory rendering (1,446 frames, 1,445 partial
+clears). All nine test launches exit 0; **691 checked normal-instance files are unchanged**.
+
+Vanilla dense RD32 ordinary repeats give **58.41 / 57.93 rendered FPS** at 5120×2664; bounded
+completion controls give **58.66 / 58.56 presented versus 63.66 / 63.64 offscreen completed GPU FPS**.
+Surface RD16 ordinary repeats vary **120.97 / 59.26 FPS**, with drawable waits **5.03 / 13.73 ms**.
+Preserve that session sensitivity; no root cause or optimization gain is claimed. Moving-surface
+completion references validate the full camera cycle and report raw per-run rates without a gain
+ratio; the fixed underground control retains the strict 1% draw-workload match. Native health
+counters are zero. Frame intervals, completion clocks and presentation timestamp events remain
+separate metrics. One interrupted dense diagnostic is retained and rejected before its clean retry.
+
+Stage 0 started from `349ef76`; exact artifacts, fixture manifests, commands, scope and later-stage
+review corrections are in [the telemetry contract](docs/performance/stage0-resource-telemetry.md)
+and [live results](docs/performance/stage0-live-20261017.md). Stage 1+ remains unimplemented.
+
 ## BUG-051 stationary temporal instability fixed (2026-10-16)
 
 The core native fix replaces interpolated cross-surface depth checks with real footprint samples,
